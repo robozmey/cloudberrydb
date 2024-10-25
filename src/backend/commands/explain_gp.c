@@ -952,12 +952,6 @@ typedef struct CdbExplain_DepStatAcc
 	CdbExplain_StatInst *rsimax;
 	/* max's inst in NodeSummary */
 	CdbExplain_StatInst *nsimax;
-	/* min's received StatHdr */
-	CdbExplain_StatHdr *rshmin;
-	/* min's received inst in StatHdr */
-	CdbExplain_StatInst *rsimin;
-	/* min's inst in NodeSummary */
-	CdbExplain_StatInst *nsimin;
 	/* max run-time of all the segments */
 	double		max_total;
 	/* start time of the first iteration for node with maximum runtime */
@@ -971,9 +965,6 @@ cdbexplain_depStatAcc_init0(CdbExplain_DepStatAcc *acc)
 	acc->rshmax = NULL;
 	acc->rsimax = NULL;
 	acc->nsimax = NULL;
-	acc->rshmin = NULL;
-	acc->rsimin = NULL;
-	acc->nsimin = NULL;
 	acc->max_total = 0;
 	INSTR_TIME_SET_ZERO(acc->firststart_of_max_total);
 }								/* cdbexplain_depStatAcc_init0 */
@@ -990,11 +981,6 @@ cdbexplain_depStatAcc_upd(CdbExplain_DepStatAcc *acc,
 		acc->rshmax = rsh;
 		acc->rsimax = rsi;
 		acc->nsimax = nsi;
-	}
-	if (rsh->segindex == acc->agg.imin) {
-		acc->rshmin = rsh;
-		acc->rsimin = rsi;
-		acc->nsimin = nsi;
 	}
 	if (acc->max_total < nsi->total)
 	{
