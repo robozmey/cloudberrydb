@@ -821,7 +821,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 
 	{
 		{"gp_enable_explain_rows_out", PGC_USERSET, CLIENT_CONN_OTHER,
-			gettext_noop("GP5 feature: print avg, min and max rows out in segments in EXPLAIN ANALYZE."),
+			gettext_noop("Print avg, min and max rows out and which segments reach them in EXPLAIN ANALYZE."),
 			NULL,
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
