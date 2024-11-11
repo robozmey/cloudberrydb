@@ -1832,14 +1832,12 @@ cdbexplain_showExecStats(struct PlanState *planstate, ExplainState *es)
                                  ntuples_imin);
         }
         else {
-            // ExplainOpenGroup("Rows Out", NULL, false, es);
             ExplainPropertyInteger("Workers", NULL, ntuples_cnt, es);
             ExplainPropertyFloat("Average Rows", NULL, ntuples_avg, 1, es);
             ExplainPropertyFloat("Max Rows", NULL, ntuples_max, 0, es);
             ExplainPropertyInteger("Max Rows Segment", NULL, ntuples_imax, es);
             ExplainPropertyFloat("Min Rows", NULL, ntuples_min, 0, es);
             ExplainPropertyInteger("Min Rows Segment", NULL, ntuples_imin, es);
-            // ExplainCloseGroup("Rows out", NULL, false, es);
         }
     }
 
