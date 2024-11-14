@@ -282,6 +282,9 @@ int			gp_hashagg_groups_per_bucket = 5;
 /* Analyzing aid */
 int			gp_motion_slice_noop = 0;
 
+/* Greenplum Database EXPLAIN Feature GUCs */
+bool		gp_enable_explain_node_summary = FALSE;
+
 /* Cloudberry Database Experimental Feature GUCs */
 bool		gp_enable_explain_allstat = false;
 bool		gp_enable_motion_deadlock_sanity = false;	/* planning time sanity
