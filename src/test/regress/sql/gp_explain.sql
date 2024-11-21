@@ -230,7 +230,7 @@ set gp_enable_explain_allstat=DEFAULT;
 
 -- Test explain rows out.
 set gp_enable_explain_rows_out=on;
-explain analyze SELECT * FROM explaintest;
+explain (costs off, summary off, timing off, analyze) SELECT * FROM explaintest;
 set gp_enable_explain_rows_out=DEFAULT;
 
 
