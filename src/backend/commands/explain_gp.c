@@ -1524,10 +1524,10 @@ ExplainPropertyAgg(const char *qlabel, CdbExplain_Agg agg, ExplainState *es)
 {
 	ExplainOpenGroup(qlabel, qlabel, true, es);
 
-	ExplainPropertyFloat("vmax", agg.vmax, 0, es);
-	ExplainPropertyFloat("vsum", agg.vsum, 0, es);
-	ExplainPropertyInteger("vcnt", agg.vcnt, es);
-	ExplainPropertyInteger("imax", agg.imax, es);
+	ExplainPropertyFloat("vmax", NULL, agg.vmax, 0, es);
+	ExplainPropertyFloat("vsum", NULL, agg.vsum, 0, es);
+	ExplainPropertyInteger("vcnt", NULL, agg.vcnt, es);
+	ExplainPropertyInteger("imax", NULL, agg.imax, es);
 
 	ExplainCloseGroup(qlabel, qlabel, true, es);
 }
@@ -1584,7 +1584,7 @@ nodeSupportWorkfileCaching(PlanState *planstate)
 			IsA(planstate, MaterialState));
 }
 
-void
+static void
 cdbexplain_NodeSummary(ExplainState *es, CdbExplain_NodeSummary *ns) {
 	int			i;
 	char		aggbuf[100];
@@ -1605,6 +1605,10 @@ cdbexplain_NodeSummary(ExplainState *es, CdbExplain_NodeSummary *ns) {
 		appendStringInfo(es->str, "ntuples:               %s\n", aggbuf);
 
 		appendStringInfoSpaces(es->str, ns_spaces);
+		cdbexplain_formatAgg(aggbuf, sizeof(aggbuf), ns->nloops);
+		appendStringInfo(es->str, "nloops:               %s\n", aggbuf);
+
+		appendStringInfoSpaces(es->str, ns_spaces);
 		cdbexplain_formatAgg(aggbuf, sizeof(aggbuf), ns->execmemused);
 		appendStringInfo(es->str, "execmemused:           %s\n", aggbuf);
 
@@ -1619,10 +1623,6 @@ cdbexplain_NodeSummary(ExplainState *es, CdbExplain_NodeSummary *ns) {
 		appendStringInfoSpaces(es->str, ns_spaces);
 		cdbexplain_formatAgg(aggbuf, sizeof(aggbuf), ns->totalWorkfileCreated);
 		appendStringInfo(es->str, "totalWorkfileCreated:  %s\n", aggbuf);
-
-		appendStringInfoSpaces(es->str, ns_spaces);
-		cdbexplain_formatAgg(aggbuf, sizeof(aggbuf), ns->peakMemBalance);
-		appendStringInfo(es->str, "peakMemBalance:        %s\n", aggbuf);
 
 		appendStringInfoSpaces(es->str, ns_spaces);
 		cdbexplain_formatAgg(aggbuf, sizeof(aggbuf), ns->totalPartTableScanned);
@@ -1643,15 +1643,15 @@ cdbexplain_NodeSummary(ExplainState *es, CdbExplain_NodeSummary *ns) {
 		ExplainOpenGroup("CdbExplain_NodeSummary", "CdbExplain_NodeSummary", true, es);
 
 		ExplainPropertyAgg("ntuples", ns->ntuples, es);
+		ExplainPropertyAgg("nloops", ns->nloops, es);
 		ExplainPropertyAgg("execmemused", ns->execmemused, es);
 		ExplainPropertyAgg("workmemused", ns->workmemused, es);
 		ExplainPropertyAgg("workmemwanted", ns->workmemwanted, es);
 		ExplainPropertyAgg("totalWorkfileCreated", ns->totalWorkfileCreated, es);
-		ExplainPropertyAgg("peakMemBalance", ns->peakMemBalance, es);
 		ExplainPropertyAgg("totalPartTableScanned", ns->totalPartTableScanned, es);
 
-		ExplainPropertyInteger("segindex0", ns->segindex0, es);
-		ExplainPropertyInteger("ninst", ns->ninst, es);
+		ExplainPropertyInteger("segindex0", NULL, ns->segindex0, es);
+		ExplainPropertyInteger("ninst", NULL, ns->ninst, es);
 
 		ExplainOpenGroup("CdbExplain_StatInsts", "CdbExplain_StatInsts", false, es);
 	}
@@ -1665,42 +1665,107 @@ cdbexplain_NodeSummary(ExplainState *es, CdbExplain_NodeSummary *ns) {
 
 			appendStringInfoSpaces(es->str, nsi_spaces);
 
-			appendStringInfo(es->str, "(seg%d) %d %.2f %.2f %.2f %.2f %.2f %.0f %.0f %.0f %.0f %.0f %d %.2f %.0f %d %d %d %ld %d %d\n", 
+			appendStringInfo(es->str, 
+				"(seg%d) %d %.ld %.ld "
+				"%.2f %.2f %.2f "
+				"%.0lf %.0lf %.0lf %.0lf %.0lf %.0lf %.0lf %.0lf "
+				"%d "
+				"%ld "
+				"%d "
+				"%d %d %ld %ld "
+				"%d %d %d %d %ld "
+				"%ld %ld %ld %d %ld %ld "
+				"%ld %ld %ld %d %ld %ld "
+				"%d %d %d "
+				"%ld %ld %ld"
+				"\n", 
 				ns->segindex0 + i, 
 				nsi->pstype, 
-				nsi->starttime.tv_sec, nsi->counter.tv_sec, nsi->firsttuple, nsi->startup, nsi->total,
-				nsi->ntuples, nsi->nloops, nsi->execmemused, nsi->workmemused, nsi->workmemwanted,
+				nsi->starttime.tv_sec, nsi->counter.tv_sec, 
+				nsi->firsttuple, nsi->startup, nsi->total,
+				nsi->ntuples, nsi->ntuples2, nsi->nloops, nsi->nfiltered1, nsi->nfiltered2, nsi->execmemused, nsi->workmemused, nsi->workmemwanted,
 				nsi->workfileCreated,
 				nsi->firststart.tv_sec,
-				nsi->peakMemBalance,
-				nsi->numPartScanned, nsi->sortMethod, nsi->sortSpaceType,
-				nsi->sortSpaceUsed,
-				nsi->bnotes, nsi->enotes);
+				nsi->numPartScanned,
+
+				nsi->sortstats.sortMethod, 
+					nsi->sortstats.spaceType, 
+					nsi->sortstats.spaceUsed, 
+					nsi->sortstats.workmemused,
+				nsi->hashstats.nbatch, 
+					nsi->hashstats.nbatch_original, 
+					nsi->hashstats.nbuckets, 
+					nsi->hashstats.nbuckets_original, 
+					nsi->hashstats.space_peak,
+				nsi->fullsortGroupInfo.groupCount, 
+					nsi->fullsortGroupInfo.maxDiskSpaceUsed, 
+					nsi->fullsortGroupInfo.maxMemorySpaceUsed, 
+					nsi->fullsortGroupInfo.sortMethods, 
+					nsi->fullsortGroupInfo.totalDiskSpaceUsed, 
+					nsi->fullsortGroupInfo.totalMemorySpaceUsed,
+				nsi->prefixsortGroupInfo.groupCount, 
+					nsi->prefixsortGroupInfo.maxDiskSpaceUsed, 
+					nsi->prefixsortGroupInfo.maxMemorySpaceUsed, 
+					nsi->prefixsortGroupInfo.sortMethods, 
+					nsi->prefixsortGroupInfo.totalDiskSpaceUsed, 
+					nsi->prefixsortGroupInfo.totalMemorySpaceUsed,
+				nsi->bnotes, nsi->enotes, nsi->nworkers_launched,
+				nsi->walusage.wal_bytes, nsi->walusage.wal_fpi, nsi->walusage.wal_records);
 		}
 		else
 		{
 			ExplainOpenGroup("CdbExplain_StatInst", NULL, true, es);
-			ExplainPropertyInteger("Segment", ns->segindex0 + i, es);
-			ExplainPropertyInteger("pstype", nsi->pstype, es);
-			ExplainPropertyFloat("starttime", nsi->starttime.tv_sec, 2, es);
-			ExplainPropertyFloat("counter", nsi->counter.tv_sec, 2, es);
-			ExplainPropertyFloat("firsttuple", nsi->firsttuple, 2, es);
-			ExplainPropertyFloat("startup", nsi->startup, 2, es);
-			ExplainPropertyFloat("total", nsi->total, 2, es);
-			ExplainPropertyFloat("ntuples", nsi->ntuples, 0, es);
-			ExplainPropertyFloat("nloops", nsi->nloops, 0, es);
-			ExplainPropertyFloat("execmemused", nsi->execmemused, 0, es);
-			ExplainPropertyFloat("workmemused", nsi->workmemused, 0, es);
-			ExplainPropertyFloat("workmemwanted", nsi->workmemwanted, 0, es);
-			ExplainPropertyInteger("workfileCreated", nsi->workfileCreated, es);
-			ExplainPropertyFloat("firststart", nsi->firststart.tv_sec, 2, es);
-			ExplainPropertyFloat("peakMemBalance", nsi->peakMemBalance, 0, es);
-			ExplainPropertyInteger("numPartScanned", nsi->numPartScanned, es);
-			ExplainPropertyInteger("sortMethod", nsi->sortMethod, es);
-			ExplainPropertyInteger("sortSpaceType", nsi->sortSpaceType, es);
-			ExplainPropertyLong("sortSpaceUsed", nsi->sortSpaceUsed, es);
-			ExplainPropertyInteger("bnotes", nsi->bnotes, es);
-			ExplainPropertyInteger("enotes", nsi->enotes, es);
+			ExplainPropertyInteger("Segment", NULL, ns->segindex0 + i, es);
+			ExplainPropertyInteger("pstype", NULL, nsi->pstype, es);
+			ExplainPropertyFloat("starttime", NULL, nsi->starttime.tv_sec, 2, es);
+			ExplainPropertyFloat("counter", NULL, nsi->counter.tv_sec, 2, es);
+			ExplainPropertyFloat("firsttuple", NULL, nsi->firsttuple, 2, es);
+			ExplainPropertyFloat("startup", NULL, nsi->startup, 2, es);
+			ExplainPropertyFloat("total", NULL, nsi->total, 2, es);
+			ExplainPropertyFloat("ntuples", NULL, nsi->ntuples, 0, es);
+			ExplainPropertyFloat("ntuples2", NULL, nsi->ntuples, 0, es);
+			ExplainPropertyFloat("nloops", NULL, nsi->nloops, 0, es);
+			ExplainPropertyFloat("nfiltered1", NULL, nsi->nloops, 0, es);
+			ExplainPropertyFloat("nfiltered2", NULL, nsi->nloops, 0, es);
+			ExplainPropertyFloat("execmemused", NULL, nsi->execmemused, 0, es);
+			ExplainPropertyFloat("workmemused", NULL, nsi->workmemused, 0, es);
+			ExplainPropertyFloat("workmemwanted", NULL, nsi->workmemwanted, 0, es);
+			ExplainPropertyInteger("workfileCreated", NULL, nsi->workfileCreated, es);
+			ExplainPropertyFloat("firststart", NULL, nsi->firststart.tv_sec, 2, es);
+			ExplainPropertyInteger("numPartScanned", NULL, nsi->numPartScanned, es);
+
+			ExplainPropertyUInteger("sortstats.sortMethod", NULL, nsi->sortstats.sortMethod, es);
+			ExplainPropertyUInteger("sortstats.spaceType", NULL, nsi->sortstats.spaceType, es);
+			ExplainPropertyInteger("sortstats.spaceUsed", NULL, nsi->sortstats.spaceUsed, es);
+			ExplainPropertyInteger("sortstats.workmemused", NULL, nsi->sortstats.workmemused, es);
+
+			ExplainPropertyInteger("hashstats.nbatch", NULL, nsi->hashstats.nbatch, es);
+			ExplainPropertyInteger("hashstats.nbatch_original", NULL, nsi->hashstats.nbatch_original, es);
+			ExplainPropertyInteger("hashstats.nbuckets", NULL, nsi->hashstats.nbuckets, es);
+			ExplainPropertyInteger("hashstats.nbuckets_original", NULL, nsi->hashstats.nbuckets_original, es);
+			ExplainPropertyInteger("hashstats.space_peak", NULL, nsi->hashstats.space_peak, es);
+
+			ExplainPropertyInteger("fullsortGroupInfo.groupCount", NULL, nsi->fullsortGroupInfo.groupCount, es);
+			ExplainPropertyInteger("fullsortGroupInfo.maxDiskSpaceUsed", NULL, nsi->fullsortGroupInfo.maxDiskSpaceUsed, es);
+			ExplainPropertyInteger("fullsortGroupInfo.maxMemorySpaceUsed", NULL, nsi->fullsortGroupInfo.maxMemorySpaceUsed, es);
+			ExplainPropertyInteger("fullsortGroupInfo.sortMethods", NULL, nsi->fullsortGroupInfo.sortMethods, es);
+			ExplainPropertyInteger("fullsortGroupInfo.totalDiskSpaceUsed", NULL, nsi->fullsortGroupInfo.totalDiskSpaceUsed, es);
+			ExplainPropertyInteger("fullsortGroupInfo.totalMemorySpaceUsed", NULL, nsi->fullsortGroupInfo.totalMemorySpaceUsed, es);
+			
+			ExplainPropertyInteger("prefixsortGroupInfo.groupCount", NULL, nsi->prefixsortGroupInfo.groupCount, es);
+			ExplainPropertyInteger("prefixsortGroupInfo.maxDiskSpaceUsed", NULL, nsi->prefixsortGroupInfo.maxDiskSpaceUsed, es);
+			ExplainPropertyInteger("prefixsortGroupInfo.maxMemorySpaceUsed", NULL, nsi->prefixsortGroupInfo.maxMemorySpaceUsed, es);
+			ExplainPropertyInteger("prefixsortGroupInfo.sortMethods", NULL, nsi->prefixsortGroupInfo.sortMethods, es);
+			ExplainPropertyInteger("prefixsortGroupInfo.totalDiskSpaceUsed", NULL, nsi->prefixsortGroupInfo.totalDiskSpaceUsed, es);
+			ExplainPropertyInteger("prefixsortGroupInfo.totalMemorySpaceUsed", NULL, nsi->prefixsortGroupInfo.totalMemorySpaceUsed, es);
+			
+			ExplainPropertyInteger("bnotes", NULL, nsi->bnotes, es);
+			ExplainPropertyInteger("enotes", NULL, nsi->enotes, es);
+			ExplainPropertyInteger("nworkers_launched", NULL, nsi->nworkers_launched, es);
+
+			ExplainPropertyUInteger("walusage.wal_bytes", NULL, nsi->walusage.wal_bytes, es);
+			ExplainPropertyInteger("walusage.wal_fpi", NULL, nsi->walusage.wal_fpi, es);
+			ExplainPropertyInteger("walusage.wal_records", NULL, nsi->walusage.wal_records, es);
 			ExplainCloseGroup("CdbExplain_StatInst", NULL, true, es);
 		}
 	}

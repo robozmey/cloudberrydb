@@ -283,7 +283,7 @@ int			gp_hashagg_groups_per_bucket = 5;
 int			gp_motion_slice_noop = 0;
 
 /* Greenplum Database EXPLAIN Feature GUCs */
-bool		gp_enable_explain_node_summary = FALSE;
+bool		gp_enable_explain_node_summary = false;
 
 /* Cloudberry Database Experimental Feature GUCs */
 bool		gp_enable_explain_allstat = false;
