@@ -35,8 +35,6 @@ supported_types = [
     'timestamp',
     'timestamptz',
     'interval',
-    'abstime',
-    'reltime',
 
     # 'point',            # GEOMENTY
     # 'circle',

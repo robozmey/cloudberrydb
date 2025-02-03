@@ -4,13 +4,13 @@
 #include "utils/syscache.h"
 #include "utils/lsyscache.h"
 #include "nodes/nodeFuncs.h"
-#include "nodes/miscnodes.h"
+// #include "nodes/miscnodes.h"
 
 #include "executor/spi.h"
 
 #include "funcapi.h"
 
-// #define USE_PG_TRY_CATCH
+#define USE_PG_TRY_CATCH
 
 PG_MODULE_MAGIC;
 
@@ -25,6 +25,16 @@ typedef enum ConversionType
 	CONVERSION_TYPE_ARRAY,	
     CONVERSION_TYPE_NONE	
 } ConversionType;
+
+
+ConversionType find_conversion_way(Oid targetTypeId, Oid sourceTypeId, Oid *funcId);
+ConversionType find_typmod_conversion_function(Oid typeId, Oid *funcId);
+Datum convert_from_function(Datum value, int32 typmod, Oid funcId, bool *is_failed);
+Datum convert_via_io(Datum value, Oid sourceTypeId, Oid targetTypeId, int32 targetTypMod, bool *is_failed);
+int32 get_call_expr_argtypmod(Node *expr, int argnum);
+Oid get_fn_expr_argtypmod(FmgrInfo *flinfo, int argnum);
+Datum convert(Datum value, ConversionType conversion_type, Oid funcId, Oid sourceTypeId, Oid targetTypeId, int32 targetTypMod, bool *is_failed);
+Datum convert_type_typmod(Datum value, int32 sourceTypMod, Oid targetTypeId, int32 targetTypMod, bool *is_failed);
 
 
 ConversionType
@@ -146,8 +156,6 @@ ConversionType
 find_typmod_conversion_function(Oid typeId, Oid *funcId)
 {
 	ConversionType result;
-	// HeapTuple	targetType;
-	Form_pg_type typeForm;
 	HeapTuple	tuple;
 
 	*funcId = InvalidOid;
@@ -177,18 +185,18 @@ convert_from_function(Datum value, int32 typmod, Oid funcId, bool *is_failed)
 {
     Datum res = 0;
 
-	ErrorSaveContext escontext = {T_ErrorSaveContext, false};
+	// ErrorSaveContext escontext = {T_ErrorSaveContext, false};
 
 #ifdef USE_PG_TRY_CATCH
 	PG_TRY();
 	{
 #endif
 
-	res = OidFunctionCall3Safe(funcId, value, typmod, true, &escontext);
+	res = OidFunctionCall3(funcId, value, typmod, true);
 
-	if (escontext.error_occurred) {
-		*is_failed = true;
-	}
+	// if (escontext.error_occurred) {
+	// 	*is_failed = true;
+	// }
 
 #ifdef USE_PG_TRY_CATCH
 	}
@@ -232,7 +240,7 @@ convert_via_io(Datum value, Oid sourceTypeId, Oid targetTypeId, int32 targetTypM
 	char* string;
     bool pushed;
 
-	ErrorSaveContext escontext = {T_ErrorSaveContext, false};
+	// ErrorSaveContext escontext = {T_ErrorSaveContext, false};
 
 #ifdef USE_PG_TRY_CATCH
 	PG_TRY();
@@ -243,17 +251,15 @@ convert_via_io(Datum value, Oid sourceTypeId, Oid targetTypeId, int32 targetTypM
 	string = OutputFunctionCall(&outfunc, value);
 
 	pushed = SPI_push_conditional();
-	res = OidFunctionCall3Safe(infuncId,
-							   CStringGetDatum(string),
-							   ObjectIdGetDatum(intypioparam),
-							   Int32GetDatum(-1),
-
-							   &escontext);
+	res = OidFunctionCall3(infuncId,
+						   CStringGetDatum(string),
+						   ObjectIdGetDatum(intypioparam),
+						   Int32GetDatum(-1));
 	SPI_pop_conditional(pushed);
 
-	if (escontext.error_occurred) {
-		*is_failed = true;
-	}
+	// if (escontext.error_occurred) {
+	// 	*is_failed = true;
+	// }
 
 #ifdef USE_PG_TRY_CATCH
 	}
@@ -343,12 +349,13 @@ convert(Datum value, ConversionType conversion_type, Oid funcId, Oid sourceTypeI
         return convert_via_io(value, sourceTypeId, targetTypeId, targetTypMod, is_failed);
 
     case CONVERSION_TYPE_ARRAY:
-        elog(ERROR, "no sopport for ARRAY CONVERSION");
-        is_failed = true;
+        elog(ERROR, "no support for ARRAY CONVERSION");
+        *is_failed = true;
         break;
 
     case CONVERSION_TYPE_NONE:
-        is_failed = true;
+		elog(ERROR, "no cast wat found");
+        *is_failed = true;
         return 0;
     
     default:
@@ -375,7 +382,7 @@ Datum convert_type_typmod(Datum value, int32 sourceTypMod, Oid targetTypeId, int
 Datum
 try_convert(PG_FUNCTION_ARGS)
 {
-    if (fcinfo->argnull[0]) {
+    if (fcinfo->args[0].isnull) {
         PG_RETURN_NULL();
     }
 
@@ -389,14 +396,14 @@ try_convert(PG_FUNCTION_ARGS)
 	Oid baseTypeId = getBaseTypeAndTypmod(targetTypeId, &baseTypMod);
 
 	if (targetTypeId != baseTypeId) {
-		elog(ERROR, "no sopport for DOMAIN CONVERSION");
+		elog(ERROR, "no support for DOMAIN CONVERSION");
 	}
 
     Oid funcId;
 
     ConversionType conversion_type = find_conversion_way(targetTypeId, sourceTypeId, &funcId);
 
-    Datum value = fcinfo->arg[0];
+    Datum value = fcinfo->args[0].value;
 
     Datum res = value;
 	Oid resTypeId = sourceTypeId;
@@ -409,8 +416,8 @@ try_convert(PG_FUNCTION_ARGS)
 		res = convert(value, conversion_type, funcId, sourceTypeId, baseTypeId, baseTypMod, &is_failed);
 
 		if (is_failed) {
-			fcinfo->isnull = fcinfo->argnull[1];
-			res = fcinfo->arg[1];
+			fcinfo->isnull = fcinfo->args[1].isnull;
+			res = fcinfo->args[1].value;
 		}
 
 		resTypeId = baseTypeId;
@@ -431,8 +438,8 @@ try_convert(PG_FUNCTION_ARGS)
 	res = convert_type_typmod(res, -1, targetTypeId, targetTypMod, &is_failed);
 
 	if (is_failed) {
-		fcinfo->isnull = fcinfo->argnull[1];
-		res = fcinfo->arg[1];
+		fcinfo->isnull = fcinfo->args[1].isnull;
+		res = fcinfo->args[1].value;
 	}
     
     return res;
