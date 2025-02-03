@@ -5,24 +5,29 @@ import os, glob
 
 top_srcdir = '../..'
 
-pg_type_path = f'{top_srcdir}/src/include/catalog/pg_type.h'
-pg_cast_path = f'{top_srcdir}/src/include/catalog/pg_cast.h'
-pg_proc_path = f'{top_srcdir}/src/backend/catalog/pg_proc_combined.h'
+pg_type_path = f'{top_srcdir}/src/include/catalog/pg_type.dat'
+pg_cast_path = f'{top_srcdir}/src/include/catalog/pg_cast.dat'
+pg_proc_path = f'{top_srcdir}/src/include/catalog/pg_proc.dat'
 
 
 def get_pg_proc():
     f = open(pg_proc_path)
     content = f.read()
     
-    # DATA(insert OID =  46 (  textin			   PGNSP PGUID 12 1 0 0 0 f f f f t f i 1 0 25 "2275" _null_ _null_ _null_ _null_ textin _null_ _null_ _null_ ));
-    func_pattern = r'DATA\(insert OID =\s+(\w*)\s+\(.*?(\w*) _null_ _null_ _null_ n?\s?a?\s?\)\);';
+    # { oid => '42', descr => 'I/O',
+    #   proname => 'int4in', prorettype => 'int4', proargtypes => 'cstring',
+    #   prosrc => 'int4in' },
+    # func_pattern = r'DATA\(insert OID =\s+(\w*)\s+\(.*?(\w*) _null_ _null_ _null_ n?\s?a?\s?\)\);';
+    func_pattern = r"\{ oid => '(\w*)',[\s\S]*?prosrc => '(\w*)'[\s\S]*?\}";
 
     func_id_name = {}
 
-    func_id_name['0'] = 'via I/O'
+    # func_id_name['0'] = 'via I/O'
 
     for (id, name) in re.findall(func_pattern, content):
         func_id_name[id] = name
+
+    print('func_id_name', len(func_id_name))
 
     return func_id_name
 
@@ -31,7 +36,12 @@ def get_pg_type():
     f = open(pg_type_path)
     content = f.read()
 
-    type_pattern = r'DATA\(insert OID = (.*) \([\s]+(.*?)[\s]+(.*?\s+){12}(.*?)\s+(.*?)\s+';
+    # { oid => '23', array_type_oid => '1007',
+    #   descr => '-2 billion to 2 billion integer, 4-byte storage',
+    #   typname => 'int4', typlen => '4', typbyval => 't', typcategory => 'N',
+    #   typinput => 'int4in', typoutput => 'int4out', typreceive => 'int4recv',
+    #   typsend => 'int4send', typalign => 'i' },
+    type_pattern = r"\{ oid => '(\w*)',[\s\S]*?typname => '(\w*)'[\s\S]*?typinput => '(\w*)'[\s\S]*?typoutput => '(\w*)'[\s\S]*?\}";
 
     type_name_id = {}
     type_id_name = {}
@@ -40,8 +50,8 @@ def get_pg_type():
     for t in re.findall(type_pattern, content):
         id = t[0]
         name = t[1]
-        infunc = t[3]
-        outfunc = t[4]
+        infunc = t[2]
+        outfunc = t[3]
 
         type_io_funcs[name] = [infunc, outfunc]
         # print(len(t), t[3])
@@ -50,6 +60,8 @@ def get_pg_type():
             type_id_name[id] = name
             type_name_id[name] = id
 
+    print('type_name_id', len(type_name_id))
+
     return type_name_id, type_id_name, type_io_funcs
 
 
@@ -57,13 +69,16 @@ def get_pg_cast(type_id_name, func_id_name):
     f = open(pg_cast_path)
     content = f.read()
 
-    cast_pattern = r'DATA\(insert \([\s]*(\d+)[\s]+(\d+)[\s]+(\d+)[\s]+(.)[\s]+(.)';
+#     { castsource => 'int8', casttarget => 'int4', castfunc => 'int4(int8)',
+#       castcontext => 'a', castmethod => 'f' },
+    # cast_pattern = r'DATA\(insert \([\s]*(\d+)[\s]+(\d+)[\s]+(\d+)[\s]+(.)[\s]+(.)';
+    cast_pattern = r"\{ castsource => '(\w+)', casttarget => '(\w+)', castfunc => '(\w+)',\s*castcontext => '(\w+)', castmethod => '(\w+)' \}";
 
     casts = []
 
     for (source, target, funcid, _, meth) in re.findall(cast_pattern, content):
-        if int(source) not in type_id_name or int(target) not in type_id_name:
-            continue
+        # if int(source) not in type_id_name or int(target) not in type_id_name:
+        #     continue
 
         way = '______unknown'
 
@@ -83,8 +98,10 @@ def get_pg_cast(type_id_name, func_id_name):
 
 
 
-        casts += [(type_id_name[int(source)], type_id_name[int(target)], way)]
+        casts += [(source, target, way)]
         # print(type_id_name[int(source)], ' -> ', type_id_name[int(target)], ' via ', meth, f'({funcid} - {func_id_name[funcid]}) ', f'{source}-{target}')
+
+    print('casts', len(casts))
 
     return casts
 
