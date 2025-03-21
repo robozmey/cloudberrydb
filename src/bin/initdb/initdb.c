@@ -38,7 +38,6 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -212,8 +211,8 @@ static bool authwarning = false;
  * but here it is more convenient to pass it as an environment variable
  * (no quoting to worry about).
  */
-static const char *boot_options = "-F";
-static const char *backend_options = "--single -F -O -j -c gp_role=utility -c search_path=pg_catalog -c exit_on_error=true";
+static const char *boot_options = "-F -c log_checkpoints=false";
+static const char *backend_options = "--single -F -O -j -c gp_role=utility -c search_path=pg_catalog -c exit_on_error=true -c log_checkpoints=false";
 
 /* Additional switches to pass to backend (either boot or standalone) */
 static char *extra_options = "";
@@ -1195,18 +1194,11 @@ setup_config(void)
 							  repltok);
 #endif
 
-#if 0
-/*
- * GPDB_12_MERGE_FIXME: the bgwriter section is missing from the sample
- * configuration used for this, should we keep that off the default config
- * or was it all an omission?
- */
 #if DEFAULT_BGWRITER_FLUSH_AFTER > 0
 	snprintf(repltok, sizeof(repltok), "#bgwriter_flush_after = %dkB",
 			 DEFAULT_BGWRITER_FLUSH_AFTER * (BLCKSZ / 1024));
 	conflines = replace_token(conflines, "#bgwriter_flush_after = 0",
 							  repltok);
-#endif
 #endif
 
 #if DEFAULT_CHECKPOINT_FLUSH_AFTER > 0
@@ -3258,7 +3250,7 @@ initialize_data_directory(void)
 
 	load_exttable(cmdfd);
 
-	/* sets up the Cloudberry Database admin schema */
+	/* sets up the Apache Cloudberry admin schema */
 	setup_cdb_schema(cmdfd);
 
 	vacuum_db(cmdfd);
@@ -3348,12 +3340,12 @@ main(int argc, char *argv[])
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			puts("initdb (Cloudberry Database) " PG_VERSION);
+			puts("initdb (Apache Cloudberry) " PG_VERSION);
 			exit(0);
 		}
 		if (strcmp(argv[1], "--gp-version") == 0)
 		{
-			puts("initdb (Cloudberry Database) " GP_VERSION);
+			puts("initdb (Apache Cloudberry) " GP_VERSION);
 			exit(0);
 		}
 	}

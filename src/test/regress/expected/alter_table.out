@@ -697,7 +697,7 @@ DROP TABLE FKTABLE;
 -- because int=int8 exists and is a member of the integer opfamily
 CREATE TEMP TABLE FKTABLE (ftest1 int8);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable;
-WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Cloudberry Database, will not be enforced
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 -- Check it actually works
 INSERT INTO FKTABLE VALUES(42);		-- should succeed
 INSERT INTO FKTABLE VALUES(43);		-- should fail
@@ -717,7 +717,7 @@ CREATE TEMP TABLE PKTABLE (ptest1 numeric PRIMARY KEY);
 INSERT INTO PKTABLE VALUES(42);
 CREATE TEMP TABLE FKTABLE (ftest1 int);
 ALTER TABLE FKTABLE ADD FOREIGN KEY(ftest1) references pktable;
-WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Cloudberry Database, will not be enforced
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 -- Check it actually works
 INSERT INTO FKTABLE VALUES(42);		-- should succeed
 INSERT INTO FKTABLE VALUES(43);		-- should fail
@@ -1313,7 +1313,7 @@ ERROR:  relation "nosuchtable" does not exist
 create table atacc1 (a int4 not null, b int4, c int4 not null, d int4);
 insert into atacc1 values (1, 2, 3, 4);
 alter table atacc1 drop a;
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
 alter table atacc1 drop a;
 ERROR:  column "a" of relation "atacc1" does not exist
 -- SELECTs
@@ -1588,7 +1588,7 @@ drop table atacc1;
 create table parent (a int, b int, c int);
 insert into parent values (1, 2, 3);
 alter table parent drop a;
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
 create table child (d varchar(255)) inherits (parent);
 NOTICE:  table has parent, setting distribution columns to match parent table
 insert into child values (12, 13, 'testing');
@@ -1698,9 +1698,9 @@ ERROR:  cannot drop inherited column "b"
 alter table only dropColumn drop column e;
 alter table dropColumnChild drop column c;
 alter table dropColumn drop column a;
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
 create table renameColumn (a int);
 create table renameColumnChild (b int) inherits (renameColumn);
 NOTICE:  table has parent, setting distribution columns to match parent table
@@ -1736,7 +1736,7 @@ alter table c1 drop column f1;
 ERROR:  cannot drop inherited column "f1"
 -- should work
 alter table p1 drop column f1;
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
 -- c1.f1 is still there, but no longer inherited
 select f1 from c1;
  f1 
@@ -1744,7 +1744,7 @@ select f1 from c1;
 (0 rows)
 
 alter table c1 drop column f1;
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
 select f1 from c1;
 ERROR:  column "f1" does not exist
 LINE 1: select f1 from c1;
@@ -1759,8 +1759,8 @@ NOTICE:  table has parent, setting distribution columns to match parent table
 alter table c1 drop column f1;
 ERROR:  cannot drop inherited column "f1"
 alter table p1 drop column f1;
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
 -- c1.f1 is dropped now, since there is no local definition for it
 select f1 from c1;
 ERROR:  column "f1" does not exist
@@ -1776,10 +1776,10 @@ NOTICE:  table has parent, setting distribution columns to match parent table
 alter table c1 drop column f1;
 ERROR:  cannot drop inherited column "f1"
 alter table only p1 drop column f1;
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
 -- c1.f1 is NOT dropped, but must now be considered non-inherited
 alter table c1 drop column f1;
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
 drop table p1 cascade;
 NOTICE:  drop cascades to table c1
 create table p1 (f1 int, f2 int);
@@ -1790,10 +1790,10 @@ NOTICE:  merging column "f1" with inherited definition
 alter table c1 drop column f1;
 ERROR:  cannot drop inherited column "f1"
 alter table only p1 drop column f1;
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
 -- c1.f1 is still there, but no longer inherited
 alter table c1 drop column f1;
-NOTICE:  dropping a column that is part of the distribution policy forces a NULL distribution policy
+NOTICE:  dropping a column that is part of the distribution policy forces a random distribution policy
 drop table p1 cascade;
 NOTICE:  drop cascades to table c1
 create table p1(id int, name text);
@@ -2888,7 +2888,7 @@ select * from my_locks order by 1;
 (0 rows)
 
 alter table alterlock2 add foreign key (f1) references alterlock (f1);
-WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Cloudberry Database, will not be enforced
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 select * from my_locks order by 1;
   relname   |     max_lockmode      
 ------------+-----------------------
@@ -2900,7 +2900,7 @@ rollback;
 begin;
 alter table alterlock2
 add constraint alterlock2nv foreign key (f1) references alterlock (f1) NOT VALID;
-WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Cloudberry Database, will not be enforced
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 select * from my_locks order by 1;
   relname   |     max_lockmode      
 ------------+-----------------------
@@ -3678,7 +3678,7 @@ CREATE TABLE test_part (
           PARTITION p2017 START ('2017-01-01'::date) END ('2018-01-01'::date) WITH (appendonly=false ),
           DEFAULT PARTITION p_overflow  WITH (appendonly=false )
           );
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'field_part' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'field_part' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 DROP TABLE IF EXISTS test_ref;
 NOTICE:  table "test_ref" does not exist, skipping
@@ -4745,3 +4745,58 @@ DETAIL:  Failing row contains (2, 1).
 -- ...and doesn't when the partition is detached along with its own partition
 alter table target_parted detach partition attach_parted;
 insert into attach_parted_part1 values (2, 1);
+CREATE TABLE IF NOT EXISTS table_issue_15494(c0 boolean NULL);
+ALTER TABLE table_issue_15494 ALTER c0 SET DEFAULT (6>5) IS NULL;
+DROP TABLE table_issue_15494;
+CREATE TABLE IF NOT EXISTS table_issue_15494(c0 boolean);
+ALTER TABLE table_issue_15494 ALTER c0 SET DEFAULT ((1.5::FLOAT) NOTNULL);
+DROP TABLE table_issue_15494;
+-- please refer to:  https://github.com/greenplum-db/gpdb/issues/15034
+create table transform_issue_15034(c DECIMAL);
+alter table transform_issue_15034 alter c SET DEFAULT (((0.1)>(0.9) IS UNKNOWN)::INT)::MONEY;
+drop table transform_issue_15034;
+-- please refer to:  https://github.com/greenplum-db/gpdb/issues/16805
+create table IF NOT EXISTS float2double_table(c1 float,c2 float,c3 float);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create index float2double_table_idx_c1c2c3 on float2double_table(c1,c2,c3);
+create unique index float2double_table_uniqidx_c1c2c3 on float2double_table(c1,c2,c3);
+ALTER TABLE float2double_table ALTER COLUMN c1 TYPE double precision;
+DROP TABLE float2double_table;
+-- Test that altering owner of partition root should recurse into the child tables.
+create role atown_r1;
+create role atown_r2 in role atown_r1;
+set role atown_r2;
+create table atown_part(a int, b int) partition by range(a) (partition p1 start (1) end (100));
+select c.relname, r.rolname from pg_class c join pg_roles r on c.relowner = r.oid where relname like 'atown_part%';
+       relname       | rolname  
+---------------------+----------
+ atown_part          | atown_r2
+ atown_part_1_prt_p1 | atown_r2
+(2 rows)
+
+alter table atown_part owner to atown_r1;
+alter table atown_part add partition start(100) end(200);
+-- both existing and new child tables should have the new owner
+select c.relname, r.rolname from pg_class c join pg_roles r on c.relowner = r.oid where relname like 'atown_part%';
+       relname       | rolname  
+---------------------+----------
+ atown_part          | atown_r1
+ atown_part_1_prt_1  | atown_r1
+ atown_part_1_prt_p1 | atown_r1
+(3 rows)
+
+-- should only alter the partition root with ONLY keyword
+alter table only atown_part owner to atown_r2;
+select c.relname, r.rolname from pg_class c join pg_roles r on c.relowner = r.oid where relname like 'atown_part%';
+       relname       | rolname  
+---------------------+----------
+ atown_part          | atown_r2
+ atown_part_1_prt_1  | atown_r1
+ atown_part_1_prt_p1 | atown_r1
+(3 rows)
+
+drop table atown_part;
+reset role;
+drop role atown_r1;
+drop role atown_r2;

@@ -3,7 +3,6 @@
  * matview.c
  *	  materialized view support
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -184,7 +183,6 @@ static Query *get_matview_query(Relation matviewRel);
 static Query *rewrite_query_for_preupdate_state(Query *query, List *tables,
 								  ParseState *pstate, Oid matviewid);
 static void register_delta_ENRs(ParseState *pstate, Query *query, List *tables);
-static char *make_delta_enr_name(const char *prefix, Oid relid, int count);
 static RangeTblEntry *get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 				 QueryEnvironment *queryEnv, Oid matviewid);
 static RangeTblEntry *replace_rte_with_delta(RangeTblEntry *rte, MV_TriggerTable *table, bool is_new,
@@ -290,6 +288,46 @@ MakeRefreshClause(bool concurrent, bool skipData, RangeVar *relation)
 }
 
 /*
+ * SetDynamicTableState
+ *		Mark a materialized view as Dynamic Table, or not.
+ *
+ * NOTE: caller must be holding an appropriate lock on the relation.
+ */
+void
+SetDynamicTableState(Relation relation)
+{
+	Relation	pgrel;
+	HeapTuple	tuple;
+
+	Assert(relation->rd_rel->relkind == RELKIND_MATVIEW);
+
+	/*
+	 * Update relation's pg_class entry.  Crucial side-effect: other backends
+	 * (and this one too!) are sent SI message to make them rebuild relcache
+	 * entries.
+	 */
+	pgrel = table_open(RelationRelationId, RowExclusiveLock);
+	tuple = SearchSysCacheCopy1(RELOID,
+								ObjectIdGetDatum(RelationGetRelid(relation)));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for relation %u",
+			 RelationGetRelid(relation));
+
+	((Form_pg_class) GETSTRUCT(tuple))->relisdynamic = true;
+
+	CatalogTupleUpdate(pgrel, &tuple->t_self, tuple);
+
+	heap_freetuple(tuple);
+	table_close(pgrel, RowExclusiveLock);
+
+	/*
+	 * Advance command counter to make the updated pg_class row locally
+	 * visible.
+	 */
+	CommandCounterIncrement();
+}
+
+/*
  * SetMatViewIVMState
  *		Mark a materialized view as IVM, or not.
  *
@@ -371,6 +409,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	ObjectAddress address;
 	RefreshClause *refreshClause;
 	bool oldPopulated;
+	bool ao_has_index;
 
 	/* MATERIALIZED_VIEW_FIXME: Refresh MatView is not MPP-fied. */
 
@@ -470,7 +509,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 	/*
 	 * Fast path to REFRESH a view:
-	 * avoid do the real REFRESH if the data of view
+	 * avoid doing the real REFRESH if the data of view
 	 * is up to date. The data should be the logically same as after
 	 * REFRESH when there is data changed since latest REFRESH.
 	 * In that case we may save a lot, ex: a cron task REFRESH view periodically
@@ -482,7 +521,8 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	if (gp_enable_refresh_fast_path &&
 		!RelationIsIVM(matviewRel) &&
 		!stmt->skipData &&
-		MatviewIsGeneralyUpToDate(matviewOid))
+		MatviewIsUpToDate(matviewOid) &&
+		!MatviewHasForeignTables(matviewOid))
 	{
 		table_close(matviewRel, NoLock);
 
@@ -610,12 +650,18 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	}
 
 	/*
+	 * Fix issue https://github.com/apache/cloudberry/issues/865
+	 * Create blockdir for Matartalized View of AO/AOCS storage has index.
+	 */
+	ao_has_index = matviewRel->rd_rel->relhasindex && RelationIsAppendOptimized(matviewRel);
+
+	/*
 	 * Create the transient table that will receive the regenerated data. Lock
 	 * it against access by any other process until commit (by which time it
 	 * will be gone).
 	 */
-	OIDNewHeap = make_new_heap(matviewOid, tableSpace, relpersistence,
-							   ExclusiveLock, false, true);
+	OIDNewHeap = make_new_heap_with_colname(matviewOid, tableSpace, matviewRel->rd_rel->relam, relpersistence,
+							   ExclusiveLock, ao_has_index, true, "_$");
 	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
 	dest = CreateTransientRelDestReceiver(OIDNewHeap, matviewOid, concurrent, relpersistence,
 										  stmt->skipData);
@@ -623,7 +669,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	refreshClause = MakeRefreshClause(concurrent, stmt->skipData, stmt->relation);
 
 	/*
-	 * Only in dispather role, we should set intoPolicy, else it should remain NULL.
+	 * Only in dispatcher role, we should set intoPolicy, else it should remain NULL.
 	 */
 	if (GP_ROLE_DISPATCH == Gp_role)
 	{
@@ -668,7 +714,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		 * QD, so both the segments and coordinator will have pgstat for this
 		 * relation. See pgstat_combine_from_qe(pgstat.c) for more details.
 		 * Then comment out the below codes on the dispatcher side and leave
-		 * the current comment to avoid futher upstream merge issues.
+		 * the current comment to avoid further upstream merge issues.
 		 * The pgstat is updated in function transientrel_shutdown on QE side.
 		 * This related to issue: https://github.com/greenplum-db/gpdb/issues/11375
 		 */
@@ -701,7 +747,12 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	 * completion tag output might break applications using it.
 	 */
 	if (qc)
-		SetQueryCompletion(qc, CMDTAG_REFRESH_MATERIALIZED_VIEW, processed);
+	{
+		if (stmt->isdynamic)
+			SetQueryCompletion(qc, CMDTAG_REFRESH_DYNAMIC_TABLE, processed);
+		else
+			SetQueryCompletion(qc, CMDTAG_REFRESH_MATERIALIZED_VIEW, processed);
+	}
 
 	return address;
 }
@@ -726,21 +777,21 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 
 	/*
 	 * Cloudberry specific behavior:
-	 * MPP architecture need to make sure OIDs of the temp table are the same
+	 * MPP architecture needs to make sure OIDs of the temp table are the same
 	 * among QD and all QEs. It stores the OID in the static variable dispatch_oids.
 	 * This variable will be consumed for each dispatch.
 	 *
 	 * During planning, Cloudberry might pre-evalute some function expr, this will
-	 * lead to dispatch if the function is in SQL or PLPGSQL and consume the above
+	 * lead to dispatch if the function is in SQL or PLPGSQL and consumes the above
 	 * static variable. So later refresh matview's dispatch will not find the
 	 * oid on QEs.
 	 *
 	 * We first store the OIDs information in a local variable, and then restore
-	 * it for later refresh matview's dispatch to solve the above issue.
+	 * it is for later refresh matview's dispatch to solve the above issue.
 	 *
 	 * See Github Issue for details: https://github.com/greenplum-db/gpdb/issues/11956
 	 */
-	List       *saved_dispatch_oids = GetAssignedOidsForDispatch();
+	List       *saved_dispatch_oids = SaveOidAssignments();
 
 	/* Lock and rewrite, using a copy to preserve the original query. */
 	copied_query = copyObject(query);
@@ -751,6 +802,21 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 	if (list_length(rewritten) != 1)
 		elog(ERROR, "unexpected rewrite result for REFRESH MATERIALIZED VIEW");
 	query = (Query *) linitial(rewritten);
+	/*
+	 * In GPDB, the refresh clause is dispatched to segments when execute the query plan.
+	 * But for WITH NO DATA option, it's effectively like a TRUNCATE, so it doesn't need
+	 * to take a long time to run the query.
+	 *
+	 * Add a constant-FALSE to the qual to simulate a plan like this, dispatch the refresh
+	 * clause without run the long query:
+	 * Motion
+	 * 	Result  (cost=0.00..0.01 rows=1 width=0)
+	 * 	  One-Time Filter: false
+	 * Planner create the motion node on the top according to the matview's distribution
+	 * policy in the query->intoPolicy.
+	 */
+	if (refreshClause->skipData)
+		query->jointree->quals = (Node *) makeBoolConst(false, false);
 
 	/* Check for user-requested abort. */
 	CHECK_FOR_INTERRUPTS();
@@ -782,16 +848,6 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 
 	/* run the plan */
 	ExecutorRun(queryDesc, ForwardScanDirection, 0L, true);
-
-	/*
-	 * GPDB: The total processed tuples here is always 0 on QD since we get it
-	 * before we fetch the total processed tuples from segments(which is done by
-	 * ExecutorEnd).
-	 * In upstream, the number is used to update pgstat, but in GPDB we do the
-	 * pgstat update on segments.
-	 * Since the processed is not used, no need to get correct value here.
-	 */
-	processed = queryDesc->estate->es_processed;
 
 	/* and clean up */
 	ExecutorFinish(queryDesc);
@@ -838,6 +894,7 @@ transientrel_init(QueryDesc *queryDesc)
 	char		relpersistence;
 	LOCKMODE	lockmode;
 	RefreshClause *refreshClause;
+	bool		ao_has_index;
 
 	refreshClause = queryDesc->plannedstmt->refreshClause;
 	/* Determine strength of lock needed. */
@@ -869,13 +926,17 @@ transientrel_init(QueryDesc *queryDesc)
 		tableSpace = matviewRel->rd_rel->reltablespace;
 		relpersistence = matviewRel->rd_rel->relpersistence;
 	}
+
+	ao_has_index = matviewRel->rd_rel->relhasindex && RelationIsAppendOptimized(matviewRel);
+
 	/*
 	 * Create the transient table that will receive the regenerated data. Lock
 	 * it against access by any other process until commit (by which time it
 	 * will be gone).
 	 */
-	OIDNewHeap = make_new_heap(matviewOid, tableSpace, relpersistence,
-							   ExclusiveLock, false, false);
+	OIDNewHeap = make_new_heap(matviewOid, tableSpace, matviewRel->rd_rel->relam,
+							   relpersistence,
+							   ExclusiveLock, ao_has_index, false);
 	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
 
 	queryDesc->dest = CreateTransientRelDestReceiver(OIDNewHeap, matviewOid, concurrent,
@@ -1061,6 +1122,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	char	   *tempname;
 	char	   *diffname;
 	TupleDesc	tupdesc;
+	TupleDesc   newHeapDesc;
 	bool		foundUniqueIndex;
 	List	   *indexoidlist;
 	ListCell   *indexoidscan;
@@ -1105,8 +1167,8 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 					 "(SELECT 1 FROM %s newdata2 WHERE newdata2.* IS NOT NULL "
 					 "AND newdata2.* OPERATOR(pg_catalog.*=) newdata.* "
 					 "AND newdata2.ctid OPERATOR(pg_catalog.<>) "
-					 "newdata.ctid and newdata2.gp_segment_id = "
-					 "newdata.gp_segment_id)",
+					 "newdata.ctid AND newdata2.gp_segment_id "
+					 "OPERATOR(pg_catalog.=) newdata.gp_segment_id)",
 					 tempname, tempname, tempname);
 	if (SPI_execute(querybuf.data, false, 1) != SPI_OK_SELECT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
@@ -1127,17 +1189,50 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 						   SPI_getvalue(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1))));
 	}
 
+	/*
+	 * Create the temporary "diff" table.
+	 *
+	 * Temporarily switch out of the SECURITY_RESTRICTED_OPERATION context,
+	 * because you cannot create temp tables in SRO context.  For extra
+	 * paranoia, add the composite type column only after switching back to
+	 * SRO context.
+	 *
+	 * Greenplum doesn't store diffs in a composite type column, instead it
+	 * creates a similar table with the same distribution for performance
+	 * considerations.
+	 */
 	SetUserIdAndSecContext(relowner,
 						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
-
-	/* Start building the query for creating the diff table. */
 	resetStringInfo(&querybuf);
 
 	appendStringInfo(&querybuf,
-					 "CREATE TEMP TABLE %s AS "
-					 "SELECT mv.ctid AS tid, mv.gp_segment_id as sid, newdata.*::%s AS newdata "
+					 "CREATE TEMP TABLE %s (LIKE %s)",
+					 diffname, tempname);
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	SetUserIdAndSecContext(relowner,
+						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
+	resetStringInfo(&querybuf);
+	appendStringInfo(&querybuf,
+					 "ALTER TABLE %s ADD COLUMN tid pg_catalog.tid",
+					 diffname);
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+
+	resetStringInfo(&querybuf);
+	appendStringInfo(&querybuf,
+					 "ALTER TABLE %s ADD COLUMN sid pg_catalog.int4",
+					 diffname);
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+
+	/* Start building the query for populating the diff table. */
+	resetStringInfo(&querybuf);
+	appendStringInfo(&querybuf,
+					 "INSERT INTO %s "
+					 "SELECT newdata.*, mv.ctid AS tid, mv.gp_segment_id as sid "
 					 "FROM %s mv FULL JOIN %s newdata ON (",
-					 diffname, tempname, matviewname, tempname);
+					 diffname, matviewname, tempname);
 
 	/*
 	 * Get the list of index OIDs for the table from the relcache, and look up
@@ -1146,6 +1241,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	 * include all rows.
 	 */
 	tupdesc = matviewRel->rd_att;
+	newHeapDesc = tempRel->rd_att;
 	opUsedForQual = (Oid *) palloc0(sizeof(Oid) * relnatts);
 	foundUniqueIndex = false;
 
@@ -1180,6 +1276,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 				int			attnum = indexStruct->indkey.values[i];
 				Oid			opclass = indclass->values[i];
 				Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
+				Form_pg_attribute newattr = TupleDescAttr(newHeapDesc, attnum - 1);
 				Oid			attrtype = attr->atttypid;
 				HeapTuple	cla_ht;
 				Form_pg_opclass cla_tup;
@@ -1230,7 +1327,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 					appendStringInfoString(&querybuf, " AND ");
 
 				leftop = quote_qualified_identifier("newdata",
-													NameStr(attr->attname));
+													NameStr(newattr->attname));
 				rightop = quote_qualified_identifier("mv",
 													 NameStr(attr->attname));
 
@@ -1265,12 +1362,9 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 						   "WHERE newdata.* IS NULL OR mv.* IS NULL "
 						   "ORDER BY tid");
 
-	/* Create the temporary "diff" table. */
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+	/* Populate the temporary "diff" table. */
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
-
-	SetUserIdAndSecContext(relowner,
-						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 
 	/*
 	 * We have no further use for data from the "full-data" temp table, but we
@@ -1290,18 +1384,27 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	appendStringInfo(&querybuf,
 					 "DELETE FROM %s mv WHERE ctid OPERATOR(pg_catalog.=) ANY "
 					 "(SELECT diff.tid FROM %s diff "
-					 "WHERE diff.tid = mv.ctid and diff.sid = mv.gp_segment_id and"
-	 				 " diff.tid IS NOT NULL)",
+					 "WHERE diff.tid IS NOT NULL "
+					 "AND diff.tid OPERATOR(pg_catalog.=) mv.ctid AND diff.sid "
+					 "OPERATOR(pg_catalog.=) mv.gp_segment_id)",
 					 matviewname, diffname);
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
 	/* Inserts go last. */
 	resetStringInfo(&querybuf);
+	appendStringInfo(&querybuf, "INSERT INTO %s SELECT", matviewname);
+	for (int i = 0; i < newHeapDesc->natts; ++i)
+	{
+		Form_pg_attribute attr = TupleDescAttr(newHeapDesc, i);
+		if (i == newHeapDesc->natts - 1)
+			appendStringInfo(&querybuf, " %s", NameStr(attr->attname));
+		else
+			appendStringInfo(&querybuf, " %s,", NameStr(attr->attname));
+	}
 	appendStringInfo(&querybuf,
-					 "INSERT INTO %s SELECT (diff.newdata).* "
 					 " FROM %s diff WHERE tid IS NULL",
-					 matviewname, diffname);
+					 diffname);
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
@@ -1979,7 +2082,7 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 
 				RangeTblEntry *rte_pre = get_prestate_rte(r, table, pstate->p_queryEnv, matviewid);
 				/*
-				 * Set a row security poslicies of the modified table to the subquery RTE which
+				 * Set a row security policies of the modified table to the subquery RTE which
 				 * represents the pre-update state of the table.
 				 */
 				get_row_security_policies(query, table->original_rte, i,
@@ -2028,9 +2131,7 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 	{
 		MV_TriggerTable *table = (MV_TriggerTable *) lfirst(lc);
 		ListCell *lc2;
-		int count;
 
-		count = 0;
 		foreach(lc2, table->old_tuplestores)
 		{
 			Tuplestorestate *oldtable = (Tuplestorestate *) lfirst(lc2);
@@ -2043,7 +2144,7 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 			if (freezed || shared_name)
 				enr->md.name = pstrdup(shared_name);
 			else
-				enr->md.name = make_delta_enr_name("old", table->table_id, gp_command_count);
+				enr->md.name = MakeDeltaName("old", table->table_id, gp_command_count);
 			enr->md.reliddesc = table->table_id;
 			enr->md.tupdesc = CreateTupleDescCopy(table->rel->rd_att);
 			enr->md.enrtype = ENR_NAMED_TUPLESTORE;
@@ -2055,7 +2156,6 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 			rte = nsitem->p_rte;
 			query->rtable = list_append_unique_ptr(query->rtable, rte);
 
-			count++;
 			/* Note: already freezed case */
 			if (freezed)
 			{
@@ -2068,7 +2168,6 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 			tuplestore_freeze(oldtable);
 		}
 
-		count = 0;
 		foreach(lc2, table->new_tuplestores)
 		{
 			Tuplestorestate *newtable = (Tuplestorestate *) lfirst(lc2);
@@ -2081,7 +2180,7 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 			if (freezed || shared_name)
 				enr->md.name = pstrdup(shared_name);
 			else
-				enr->md.name = make_delta_enr_name("new", table->table_id, gp_command_count);
+				enr->md.name = MakeDeltaName("new", table->table_id, gp_command_count);
 			enr->md.reliddesc = table->table_id;
 			enr->md.tupdesc = CreateTupleDescCopy(table->rel->rd_att);
 			enr->md.enrtype = ENR_NAMED_TUPLESTORE;
@@ -2094,7 +2193,6 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 
 			query->rtable = list_append_unique_ptr(query->rtable, rte);
 
-			count++;
 			/* Note: already freezed case */
 			if (freezed)
 			{
@@ -2249,24 +2347,6 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 }
 
 /*
- * make_delta_enr_name
- *
- * Make a name for ENR of a transition table from the base table's oid.
- * prefix will be "new" or "old" depending on its transition table kind..
- */
-static char*
-make_delta_enr_name(const char *prefix, Oid relid, int count)
-{
-	char buf[NAMEDATALEN];
-	char *name;
-
-	snprintf(buf, NAMEDATALEN, "__ivm_%s_%u_%u", prefix, relid, count);
-	name = pstrdup(buf);
-
-	return name;
-}
-
-/*
  * replace_rte_with_delta
  *
  * Replace RTE of the modified table with a single table delta that combine its
@@ -2310,7 +2390,7 @@ replace_rte_with_delta(RangeTblEntry *rte, MV_TriggerTable *table, bool is_new,
 	sub = transformStmt(pstate, raw->stmt);
 
 	/*
-	 * Update the subquery so that it represent the combined transition
+	 * Update the subquery so that it represents the combined transition
 	 * table.  Note that we leave the security_barrier and securityQuals
 	 * fields so that the subquery relation can be protected by the RLS
 	 * policy as same as the modified table.
@@ -2397,7 +2477,7 @@ calc_delta_old(Tuplestorestate *ts, Relation matviewRel, MV_TriggerTable *table,
 	{
 		/* Replace the modified table with the old delta table and calculate the old view delta. */
 		replace_rte_with_delta(rte, table, false, queryEnv);
-		enrname = make_delta_enr_name(OLD_DELTA_ENRNAME, RelationGetRelid(matviewRel), gp_command_count);
+		enrname = MakeDeltaName(OLD_DELTA_ENRNAME, RelationGetRelid(matviewRel), gp_command_count);
 		es_processed = refresh_matview_memoryfill(dest_old, query, queryEnv,
 									tupdesc_old, enrname, matviewRel);
 		if (ts)
@@ -2423,7 +2503,7 @@ calc_delta_new(Tuplestorestate *ts, Relation matviewRel, MV_TriggerTable *table,
 	{
 		/* Replace the modified table with the new delta table and calculate the new view delta*/
 		replace_rte_with_delta(rte, table, true, queryEnv);
-		enrname = make_delta_enr_name(NEW_DELTA_ENRNAME, RelationGetRelid(matviewRel), gp_command_count);
+		enrname = MakeDeltaName(NEW_DELTA_ENRNAME, RelationGetRelid(matviewRel), gp_command_count);
 		es_processed = refresh_matview_memoryfill(dest_new, query, queryEnv,
 									tupdesc_new, enrname, matviewRel);
 		if (ts)
@@ -2624,8 +2704,8 @@ apply_delta(char *old_enr, char *new_enr, MV_TriggerTable *table, Oid matviewOid
 		/* apply new delta */
 		if (use_count)
 			apply_new_delta_with_count(matviewname, enr->md.name,
-										keys, aggs_set_new,
-										&target_list_buf, count_colname);
+										keys, &target_list_buf,
+										aggs_set_new, count_colname);
 		else
 			apply_new_delta(matviewname, enr->md.name, &target_list_buf);
 	}
@@ -2851,7 +2931,7 @@ get_operation_string(IvmOp op, const char *col, const char *arg1, const char *ar
  * get_null_condition_string
  *
  * Build a predicate string for CASE clause to check if an aggregate value
- * will became NULL after the given operation is applied.
+ * will become NULL after the given operation is applied.
  */
 static char *
 get_null_condition_string(IvmOp op, const char *arg1, const char *arg2,
@@ -2887,12 +2967,12 @@ get_null_condition_string(IvmOp op, const char *arg1, const char *arg2,
 /*
  * apply_old_delta_with_count
  *
- * Execute a query for applying a delta table given by deltname_old
- * which contains tuples to be deleted from to a materialized view given by
+ * Execute a query for applying a delta table given by deltaname_old
+ * which contains tuples to be deleted from a materialized view given by
  * matviewname.  This is used when counting is required, that is, the view
  * has aggregate or distinct.
  *
- * If the view desn't have aggregates or has GROUP BY, this requires a keys
+ * If the view doesn't have aggregates or has GROUP BY, this requires a keys
  * list to identify a tuple in the view. If the view has aggregates, this
  * requires strings representing resnames of aggregates and SET clause for
  * updating aggregate values.
@@ -2905,7 +2985,6 @@ apply_old_delta_with_count(const char *matviewname, Oid matviewRelid, const char
 	const char * tempTableName;
 
 	StringInfoData	querybuf;
-	StringInfoData	tselect;
 	char   *match_cond;
 	bool	agg_without_groupby = (list_length(keys) == 0);
 
@@ -2943,11 +3022,10 @@ apply_old_delta_with_count(const char *matviewname, Oid matviewRelid, const char
 					matviewname);
 #else
 	/* CBDB_IVM_FIXME: use tuplestore to replace temp table. */
-	tempTableName = make_delta_enr_name("temp_old_delta", matviewRelid, gp_command_count);
+	tempTableName = MakeDeltaName("temp_old_delta", matviewRelid, gp_command_count);
 
-	initStringInfo(&tselect);
 	initStringInfo(&querybuf);
-	appendStringInfo(&tselect,
+	appendStringInfo(&querybuf,
 					"CREATE TEMP TABLE %s AS SELECT diff.%s, "			/* count column */
 								"(diff.%s OPERATOR(pg_catalog.=) mv.%s AND %s) AS for_dlt, "
 								"mv.ctid AS tid, mv.gp_segment_id AS gid"
@@ -2962,11 +3040,12 @@ apply_old_delta_with_count(const char *matviewname, Oid matviewRelid, const char
 					match_cond);
 
 	/* Create the temporary table. */
-	if (SPI_exec(tselect.data, 0) != SPI_OK_UTILITY)
-		elog(ERROR, "SPI_exec failed: %s", tselect.data);
-	elogif(Debug_print_ivm, INFO, "IVM apply_old_delta_with_count select: %s", tselect.data);
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	elogif(Debug_print_ivm, INFO, "IVM apply_old_delta_with_count select: %s", querybuf.data);
 
 	/* Search for matching tuples from the view and update or delete if found. */
+	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
 					"UPDATE %s AS mv SET %s = mv.%s OPERATOR(pg_catalog.-) t.%s "
 											"%s"	/* SET clauses for aggregates */
@@ -3001,8 +3080,8 @@ apply_old_delta_with_count(const char *matviewname, Oid matviewRelid, const char
 /*
  * apply_old_delta
  *
- * Execute a query for applying a delta table given by deltname_old
- * which contains tuples to be deleted from to a materialized view given by
+ * Execute a query for applying a delta table given by deltaname_old
+ * which contains tuples to be deleted from a materialized view given by
  * matviewname.  This is used when counting is not required.
  */
 static void
@@ -3051,19 +3130,19 @@ apply_old_delta(const char *matviewname, const char *deltaname_old,
 /*
  * apply_new_delta_with_count
  *
- * Execute a query for applying a delta table given by deltname_new
+ * Execute a query for applying a delta table given by deltaname_new
  * which contains tuples to be inserted into a materialized view given by
  * matviewname.  This is used when counting is required, that is, the view
  * has aggregate or distinct. Also, when a table in EXISTS sub queries
  * is modified.
  *
- * If the view desn't have aggregates or has GROUP BY, this requires a keys
+ * If the view doesn't have aggregates or has GROUP BY, this requires a keys
  * list to identify a tuple in the view. If the view has aggregates, this
  * requires strings representing SET clause for updating aggregate values.
  */
 static void
 apply_new_delta_with_count(const char *matviewname, const char* deltaname_new,
-				List *keys, StringInfo aggs_set, StringInfo target_list,
+				List *keys, StringInfo target_list, StringInfo aggs_set,
 				const char* count_colname)
 {
 	StringInfoData	querybuf;
@@ -3100,7 +3179,7 @@ apply_new_delta_with_count(const char *matviewname, const char* deltaname_new,
 						"FROM %s AS diff "
 						"WHERE %s "					/* tuple matching condition */
 						"RETURNING %s"				/* returning keys of updated tuples */
-					") INSERT INTO %s (%s)"	/* insert a new tuple if this doesn't existw */
+					") INSERT INTO %s (%s)"	/* insert a new tuple if this doesn't exist */
 						"SELECT %s FROM %s AS diff "
 						"WHERE NOT EXISTS (SELECT 1 FROM updt AS mv WHERE %s);",
 					matviewname, count_colname, count_colname, count_colname,
@@ -3127,7 +3206,7 @@ apply_new_delta_with_count(const char *matviewname, const char* deltaname_new,
 
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
-					"INSERT INTO %s (%s)"	/* insert a new tuple if this doesn't existw */
+					"INSERT INTO %s (%s)"	/* insert a new tuple if this doesn't exist */
 						"SELECT %s FROM %s AS diff "
 						"WHERE NOT EXISTS (SELECT 1 FROM %s AS mv WHERE %s);",
 					matviewname, target_list->data,
@@ -3142,7 +3221,7 @@ apply_new_delta_with_count(const char *matviewname, const char* deltaname_new,
 /*
  * apply_new_delta
  *
- * Execute a query for applying a delta table given by deltname_new
+ * Execute a query for applying a delta table given by deltaname_new
  * which contains tuples to be inserted into a materialized view given by
  * matviewname.  This is used when counting is not required.
  */
@@ -3206,7 +3285,7 @@ get_matching_condition_string(List *keys)
 }
 
 /*
- * generate_equals
+ * generate_equal
  *
  * Generate an equality clause using given operands' default equality
  * operator.
@@ -3385,10 +3464,10 @@ clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry, bool is_abort)
 static void
 clean_up_ivm_dsm_entry(MV_TriggerHashEntry *entry)
 {
-	SnapshotDumpEntry	*pDump;
 	if (entry->snapname && entry->snapname[0] != '\0' && Gp_is_writer)
 	{
-		bool found;
+		bool 				found;
+		SnapshotDumpEntry	*pDump;
 		LWLockAcquire(GPIVMResLock, LW_EXCLUSIVE);
 		pDump = (SnapshotDumpEntry *) hash_search(mv_trigger_snapshot,
 													(void *)entry->snapname,
@@ -3412,7 +3491,7 @@ clean_up_ivm_dsm_entry(MV_TriggerHashEntry *entry)
 /*
  * isIvmName
  *
- * Check if this is a IVM hidden column from the name.
+ * Check if this is an IVM hidden column from the name.
  */
 bool
 isIvmName(const char *s)
@@ -3759,7 +3838,7 @@ ExecuteTruncateGuts_IVM(Relation matviewRel,
 	* it against access by any other process until commit (by which time it
 	* will be gone).
 	*/
-	OIDNewHeap = make_new_heap(matviewOid, matviewRel->rd_rel->reltablespace,
+	OIDNewHeap = make_new_heap(matviewOid, matviewRel->rd_rel->reltablespace, matviewRel->rd_rel->relam,
 								relpersistence, ExclusiveLock, false, true);
 	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
 	dest = CreateTransientRelDestReceiver(OIDNewHeap, matviewOid, false,
@@ -3840,7 +3919,7 @@ makeIvmIntoClause(const char *enrname, Relation matviewRel)
 {
 	IntoClause *intoClause = makeNode(IntoClause);
 	intoClause->ivm = true;
-	/* rel is NULL means put tuples into memory.*/
+	/* rel is NULL means putting tuples into memory.*/
 	intoClause->rel = NULL;
 	intoClause->enrname = (char*) enrname;
 	intoClause->distributedBy = (Node*) make_distributedby_for_rel(matviewRel);

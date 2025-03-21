@@ -16,6 +16,7 @@
 
 #include "catalog/pg_appendonly.h"
 #include "catalog/pg_compression.h"
+#include "storage/smgr.h"
 #include "cdb/cdbappendonlystorage.h"
 #include "cdb/cdbappendonlystoragelayer.h"
 #include "cdb/cdbbufferedread.h"
@@ -124,9 +125,10 @@ typedef struct AppendOnlyStorageRead
 	int32		largeReadLen;
 
 	/*
-	 * Name of the relation to use in system logging and error messages.
+	 * Name and OID of the relation to use in system logging and error messages.
 	 */
 	char	   *relationName;
+	Oid			reloid;
 
 	/*
 	 * A phrase that better describes the purpose of the this open.
@@ -191,14 +193,15 @@ typedef struct AppendOnlyStorageRead
 										 * pointers. The array index
 										 * corresponds to COMP_FUNC_*	*/
 
+	const struct f_smgr_ao *smgrAO;
 } AppendOnlyStorageRead;
 
 extern void AppendOnlyStorageRead_Init(AppendOnlyStorageRead *storageRead,
 						   MemoryContext memoryContext,
 						   int32 maxBufferLen,
-						   char *relationName, char *title,
+						   char *relationName, Oid reloid, char *title,
 						   AppendOnlyStorageAttributes *storageAttributes,
-						   RelFileNode *relFileNode);
+						   RelFileNode *relFileNode, const struct f_smgr_ao *smgrAO);
 
 extern char *AppendOnlyStorageRead_RelationName(AppendOnlyStorageRead *storageRead);
 extern char *AppendOnlyStorageRead_SegmentFileName(AppendOnlyStorageRead *storageRead);

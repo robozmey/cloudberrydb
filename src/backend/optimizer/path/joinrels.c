@@ -3,7 +3,6 @@
  * joinrels.c
  *	  Routines to determine which relations should be joined
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -25,6 +24,8 @@
 #include "optimizer/paths.h"
 #include "partitioning/partbounds.h"
 #include "utils/memutils.h"
+
+make_join_rel_hook_type make_join_rel_hook = NULL;
 
 static void make_rels_by_clause_joins(PlannerInfo *root,
 									  RelOptInfo *old_rel,
@@ -693,7 +694,7 @@ join_is_legal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
  * turned into joins.
  */
 RelOptInfo *
-make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
+make_join_relation(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 {
 	Relids		joinrelids;
 	SpecialJoinInfo *sjinfo;
@@ -784,6 +785,13 @@ make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 		make_grouped_join_rel(root, rel1, rel2, joinrel, sjinfo, restrictlist);
 
 	return joinrel;
+}
+
+RelOptInfo *
+make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
+{
+	return make_join_rel_hook != NULL ? make_join_rel_hook(root, rel1, rel2)
+		: make_join_relation(root, rel1, rel2);
 }
 
 /*
@@ -1001,16 +1009,39 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 									 JOIN_SEMI, sjinfo,
 									 restrictlist);
 
-				/*
-				 * In GPDB, also try a path, where we perform a normal inner
-				 * join, and eliminate duplicates afterwards.
-				 */
-				add_paths_to_joinrel(root, joinrel, rel1, rel2,
-									 JOIN_DEDUP_SEMI, sjinfo,
-									 restrictlist);
-				add_paths_to_joinrel(root, joinrel, rel2, rel1,
-									 JOIN_DEDUP_SEMI_REVERSE, sjinfo,
-									 restrictlist);
+				if (root->upd_del_replicated_table > 0 &&
+					(bms_is_member(root->upd_del_replicated_table, rel1->relids) ||
+					 bms_is_member(root->upd_del_replicated_table, rel2->relids)))
+				{
+					/*
+					 * Blank clause for pure comments.
+					 * A case might reach here can be found in Github Issue 17460:
+					 *   - DML like update or delete
+					 *   - result relation is replicated table
+					 *   - Postgres-based planner pull up sublink to SEMI-JOIN or ANTI-SEMI-JOIN
+					 *   - delete from t_replicate where a in (select a from t_hash_dist_table);
+					 *
+					 * Unique RowId Path will change the replicated table's locus to single QE (read
+					 * more in the comments of cdbpath_motion_for_join) which is not a good thing
+					 * for planning DML(update|delete) for replicated table because:
+					 *   - replicated table's CTID might not be consistent among all the segments
+					 *   - update|delete on replicated has to dispatch to each segment and the scan
+					 *     of result relation has to be locally
+					 */
+				}
+				else
+				{
+					/*
+					 * In GPDB, also try a path, where we perform a normal inner
+					 * join, and eliminate duplicates afterwards.
+					 */
+					add_paths_to_joinrel(root, joinrel, rel1, rel2,
+										 JOIN_DEDUP_SEMI, sjinfo,
+										 restrictlist);
+					add_paths_to_joinrel(root, joinrel, rel2, rel1,
+										 JOIN_DEDUP_SEMI_REVERSE, sjinfo,
+										 restrictlist);
+				}
 			}
 
 			/*

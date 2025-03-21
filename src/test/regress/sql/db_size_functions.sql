@@ -7,6 +7,13 @@
 -- Hence, we better have extra tests for those things.
 --
 
+-- start_matchsubs
+--
+-- # remove line number and entrydb in error message
+-- m/\(xlogfuncs_gp\.c\:\d+.*/
+-- s/\(xlogfuncs_gp\.c:\d+.*/\(xlogfuncs_gp\.c:LINE_NUM\)/
+--
+-- end_matchsubs
 
 -- The total depends on the number of segments, and will also change whenever
 -- the built-in objects change, so be lenient.
@@ -96,6 +103,15 @@ select pg_table_size('aocssizetest') > pg_relation_size('aocssizetest');
 select pg_total_relation_size('aocssizetest') between 1500000 and 3000000; -- 1884456
 select pg_total_relation_size('aocssizetest') = pg_table_size('aocssizetest');
 
+-- Test when the auxiliary relation of AO table is corrupted, the database will not PANIC.
+create table ao_with_malformed_visimaprelid (a int) with (appendonly=true);
+-- Set visimaprelid record in the pg_appendonly table to a malformed value.
+set allow_system_table_mods=true;
+update pg_appendonly
+  set visimaprelid=16383
+  where relid=(select oid from pg_class where relname='ao_with_malformed_visimaprelid');
+select pg_table_size('ao_with_malformed_visimaprelid');
+drop table ao_with_malformed_visimaprelid;
 
 -- Also test pg_relation_size() in a query that selects from pg_class. It is a
 -- very typical way to use the functions, so make sure it works. (A

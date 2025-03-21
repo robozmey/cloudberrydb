@@ -6,7 +6,6 @@
  * See src/backend/utils/misc/README for more information.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Copyright (c) 2000-2021, PostgreSQL Global Development Group
@@ -48,6 +47,7 @@
 #include "catalog/pg_authid.h"
 #include "catalog/pg_profile.h"
 #include "catalog/storage.h"
+#include "catalog/storage_directory_table.h"
 #include "catalog/index.h"
 #include "commands/async.h"
 #include "commands/prepare.h"
@@ -1386,7 +1386,7 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&wal_compression,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -1416,7 +1416,7 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&log_checkpoints,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 	{
@@ -2202,6 +2202,13 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"allow_dml_directory_table", PGC_SUSET, DEVELOPER_OPTIONS},
+		&allow_dml_directory_table,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -2491,7 +2498,7 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"work_mem", PGC_USERSET, DEPRECATED_OPTIONS,
+		{"work_mem", PGC_USERSET, RESOURCES_MEM,
 			gettext_noop("Sets the maximum memory to be used for query workspaces."),
 			gettext_noop("This much memory can be used by each internal "
 						 "sort operation and hash table before switching to "
@@ -2872,7 +2879,7 @@ static struct config_int ConfigureNamesInt[] =
 		{"checkpoint_timeout", PGC_SIGHUP, WAL_CHECKPOINTS,
 			gettext_noop("Sets the maximum time between automatic WAL checkpoints."),
 			NULL,
-			GUC_UNIT_S | GUC_NOT_IN_SAMPLE | GUC_NO_SHOW_ALL | GUC_DISALLOW_USER_SET
+			GUC_UNIT_S
 		},
 		&CheckPointTimeout,
 		300, 30, 86400,
@@ -2972,7 +2979,7 @@ static struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&max_replication_slots,
-		10, 1, MAX_BACKENDS /* XXX? */ ,
+		10, 0, MAX_BACKENDS /* XXX? */ ,
 		NULL, NULL, NULL
 	},
 
@@ -3337,10 +3344,9 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"autovacuum_vacuum_threshold", PGC_SIGHUP, DEFUNCT_OPTIONS,
+		{"autovacuum_vacuum_threshold", PGC_SIGHUP, AUTOVACUUM,
 			gettext_noop("Minimum number of tuple updates or deletes prior to vacuum."),
-			NULL,
-			GUC_NOT_IN_SAMPLE | GUC_NO_SHOW_ALL
+			NULL
 		},
 		&autovacuum_vac_thresh,
 		50, 0, INT_MAX,
@@ -3366,10 +3372,9 @@ static struct config_int ConfigureNamesInt[] =
 	},
 	{
 		/* see varsup.c for why this is PGC_POSTMASTER not PGC_SIGHUP */
-		{"autovacuum_freeze_max_age", PGC_POSTMASTER, DEFUNCT_OPTIONS,
+		{"autovacuum_freeze_max_age", PGC_POSTMASTER, AUTOVACUUM,
 			gettext_noop("Age at which to autovacuum a table to prevent transaction ID wraparound."),
-			NULL,
-			GUC_NOT_IN_SAMPLE | GUC_NO_SHOW_ALL
+			NULL
 		},
 		&autovacuum_freeze_max_age,
 
@@ -3709,6 +3714,7 @@ static struct config_real ConfigureNamesReal[] =
 		DEFAULT_CPU_OPERATOR_COST, 0, DBL_MAX,
 		NULL, NULL, NULL
 	},
+	/* GPDB_96_MERGE_FIXME: figure out the appropriate default values for the two parallel gucs below. */
 	{
 		{"parallel_tuple_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of "
@@ -3842,10 +3848,10 @@ static struct config_real ConfigureNamesReal[] =
 	},
 
 	{
-		{"autovacuum_vacuum_cost_delay", PGC_SIGHUP, DEFUNCT_OPTIONS,
+		{"autovacuum_vacuum_cost_delay", PGC_SIGHUP, AUTOVACUUM,
 			gettext_noop("Vacuum cost delay in milliseconds, for autovacuum."),
 			NULL,
-			GUC_UNIT_MS | GUC_NOT_IN_SAMPLE | GUC_NO_SHOW_ALL
+			GUC_UNIT_MS
 		},
 		&autovacuum_vac_cost_delay,
 		2, -1, 100,
@@ -3855,8 +3861,7 @@ static struct config_real ConfigureNamesReal[] =
 	{
 		{"autovacuum_vacuum_scale_factor", PGC_SIGHUP, AUTOVACUUM,
 			gettext_noop("Number of tuple updates or deletes prior to vacuum as a fraction of reltuples."),
-			NULL,
-			GUC_NOT_IN_SAMPLE | GUC_NO_SHOW_ALL
+			NULL
 		},
 		&autovacuum_vac_scale,
 		0.2, 0.0, 100.0,
@@ -3927,7 +3932,7 @@ static struct config_string ConfigureNamesString[] =
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Sets the shell command that will be called to archive a WAL file."),
 			NULL,
-			GUC_NOT_IN_SAMPLE | GUC_NO_SHOW_ALL
+			GUC_NOT_IN_SAMPLE
 		},
 		&XLogArchiveCommand,
 		"",
@@ -4441,7 +4446,7 @@ static struct config_string ConfigureNamesString[] =
 		{"data_directory", PGC_POSTMASTER, FILE_LOCATIONS,
 			gettext_noop("Sets the server's data directory."),
 			NULL,
-			GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+			GUC_SUPERUSER_ONLY | GUC_DISALLOW_IN_AUTO_FILE | GUC_NOT_IN_SAMPLE
 		},
 		&data_directory,
 		NULL,
@@ -5115,6 +5120,7 @@ static struct config_enum ConfigureNamesEnum[] =
 static const char *const map_old_guc_names[] = {
 	"sort_mem", "work_mem",
 	"vacuum_mem", "maintenance_work_mem",
+	"gp_session_role", "gp_role",
 	NULL
 };
 
@@ -8415,8 +8421,7 @@ SetConfigOption(const char *name, const char *value,
 /*
  * Fetch the current value of the option `name', as a string.
  *
- * If the option doesn't exist, return NULL if missing_ok is true (NOTE that
- * this cannot be distinguished from a string variable with a NULL value!),
+ * If the option doesn't exist, return NULL if missing_ok is true,
  * otherwise throw an ereport and don't return.
  *
  * If restrict_privileged is true, we also enforce that only superusers and
@@ -8459,7 +8464,8 @@ GetConfigOption(const char *name, bool missing_ok, bool restrict_privileged)
 			return buffer;
 
 		case PGC_STRING:
-			return *((struct config_string *) record)->variable;
+			return *((struct config_string *) record)->variable ?
+				*((struct config_string *) record)->variable : "";
 
 		case PGC_ENUM:
 			return config_enum_lookup_by_value((struct config_enum *) record,
@@ -8506,7 +8512,8 @@ GetConfigOptionResetString(const char *name)
 			return buffer;
 
 		case PGC_STRING:
-			return ((struct config_string *) record)->reset_val;
+			return ((struct config_string *) record)->reset_val ?
+				((struct config_string *) record)->reset_val : "";
 
 		case PGC_ENUM:
 			return config_enum_lookup_by_value((struct config_enum *) record,
@@ -10794,7 +10801,8 @@ write_one_nondefault_variable(FILE *fp, struct config_generic *gconf)
 			{
 				struct config_string *conf = (struct config_string *) gconf;
 
-				fprintf(fp, "%s", *conf->variable);
+				if (*conf->variable)
+					fprintf(fp, "%s", *conf->variable);
 			}
 			break;
 

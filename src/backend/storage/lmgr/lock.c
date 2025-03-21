@@ -3,7 +3,6 @@
  * lock.c
  *	  POSTGRES primary lock mechanism
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -937,19 +936,24 @@ LockAcquireExtended(const LOCKTAG *locktag,
 			if (lockHolderProcPtr == MyProc)
 			{
 				/* Find the guy who should manage our locks */
-				PGPROC * proc = FindProcByGpSessionId(gp_session_id);
+				volatile PGPROC * proc = FindProcByGpSessionId(gp_session_id);
 				int count = 0;
 				while(proc==NULL && count < 5)
 				{
 					pg_usleep( /* microseconds */ 2000);
 					count++;
 					CHECK_FOR_INTERRUPTS();
+					/*
+					 * The reason for using pg_memory_barrier() is to ensure that
+					 * all CPU cores can see the latest shared memory modifications.
+					 */
+					pg_memory_barrier();
 					proc = FindProcByGpSessionId(gp_session_id);
 				}
 				if (proc != NULL)
 				{
 					elog(DEBUG1,"Found writer proc entry.  My Pid %d, his pid %d", MyProc-> pid, proc->pid);
-					lockHolderProcPtr = proc;
+					lockHolderProcPtr = (PGPROC*) proc;
 				}
 				else
 					ereport(FATAL,
@@ -1593,7 +1597,7 @@ RemoveLocalLock(LOCALLOCK *locallock)
  * the same group.  So, we must subtract off these locks when determining
  * whether the requested new lock conflicts with those already held.
  *
- * In Cloudberry Database, the conflict is more complicated;  not only the
+ * In Apache Cloudberry, the conflict is more complicated;  not only the
  * process itself but also other processes within the same MPP session may
  * have held conflicting locks.  We must take into consideration
  * those MPP session member processes to subtract off the lock mask.
@@ -2517,6 +2521,8 @@ LockReleaseAll(LOCKMETHODID lockmethodid, bool allLocks)
 	int			partition;
 	bool		have_fast_path_lwlock = false;
 
+	Assert(lockmethodid != RESOURCE_LOCKMETHOD);
+
 	if (lockmethodid <= 0 || lockmethodid >= lengthof(LockMethods))
 		elog(ERROR, "unrecognized lock method: %d", lockmethodid);
 	lockMethodTable = LockMethods[lockmethodid];
@@ -2553,11 +2559,21 @@ LockReleaseAll(LOCKMETHODID lockmethodid, bool allLocks)
 		 * If the LOCALLOCK entry is unused, we must've run out of shared
 		 * memory while trying to set up this lock.  Just forget the local
 		 * entry.
+		 *
+		 * GPDB: Add an exception for resource queue based locallocks. Neither
+		 * do we maintain nLocks for them, nor do we use the resource owner
+		 * mechanism for them.
 		 */
 		if (locallock->nLocks == 0)
 		{
-			RemoveLocalLock(locallock);
-			continue;
+			if (locallock->lock &&
+				locallock->lock->tag.locktag_type == LOCKTAG_RESOURCE_QUEUE)
+				Assert(locallock->numLockOwners == 0);
+			else
+			{
+				RemoveLocalLock(locallock);
+				continue;
+			}
 		}
 
 		/* Ignore items that are not of the lockmethod to be removed */

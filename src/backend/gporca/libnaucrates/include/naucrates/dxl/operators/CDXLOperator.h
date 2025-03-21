@@ -30,7 +30,7 @@ class CXMLSerializer;
 enum Edxlopid
 {
 	EdxlopLogicalGet,
-	EdxlopLogicalExternalGet,
+	EdxlopLogicalForeignGet,
 	EdxlopLogicalProject,
 	EdxlopLogicalSelect,
 	EdxlopLogicalJoin,
@@ -56,6 +56,7 @@ enum Edxlopid
 	EdxlopScalarCmp,
 	EdxlopScalarDistinct,
 	EdxlopScalarIdent,
+	EdxlopScalarParam,
 	EdxlopScalarProjectList,
 	EdxlopScalarProjectElem,
 	EdxlopScalarConstTuple,
@@ -68,6 +69,7 @@ enum Edxlopid
 	EdxlopScalarHashCondList,
 	EdxlopScalarArray,
 	EdxlopScalarArrayRef,
+	EdxlopScalarFieldSelect,
 	EdxlopScalarArrayRefIndexList,
 
 	EdxlopScalarAssertConstraintList,
@@ -116,13 +118,6 @@ enum Edxlopid
 
 	EdxlopScalarDMLAction,
 	EdxlopScalarOpList,
-	EdxlopScalarPartOid,
-	EdxlopScalarPartDefault,
-	EdxlopScalarPartBound,
-	EdxlopScalarPartBoundInclusion,
-	EdxlopScalarPartBoundOpen,
-	EdxlopScalarPartListValues,
-	EdxlopScalarPartListNullTest,
 	EdxlopScalarValuesList,
 	EdxlopScalarSortGroupClause,
 
@@ -131,11 +126,11 @@ enum Edxlopid
 	EdxlopPhysicalProjection,
 	EdxlopPhysicalTableScan,
 	EdxlopPhysicalBitmapTableScan,
-	EdxlopPhysicalExternalScan,
+	EdxlopPhysicalDynamicBitmapTableScan,
+	EdxlopPhysicalForeignScan,
 	EdxlopPhysicalIndexScan,
 	EdxlopPhysicalIndexOnlyScan,
 	EdxlopScalarBitmapIndexProbe,
-	EdxlopPhysicalSubqueryScan,
 	EdxlopPhysicalConstTable,
 	EdxlopPhysicalNLJoin,
 	EdxlopPhysicalHashJoin,
@@ -150,7 +145,11 @@ enum Edxlopid
 	EdxlopPhysicalSort,
 	EdxlopPhysicalAppend,
 	EdxlopPhysicalMaterialize,
+	EdxlopPhysicalDynamicForeignScan,
 	EdxlopPhysicalSequence,
+	EdxlopPhysicalDynamicTableScan,
+	EdxlopPhysicalDynamicIndexScan,
+	EdxlopPhysicalDynamicIndexOnlyScan,
 	EdxlopPhysicalPartitionSelector,
 	EdxlopPhysicalTVF,
 	EdxlopPhysicalWindow,
@@ -160,7 +159,6 @@ enum Edxlopid
 
 	EdxlopPhysicalDML,
 	EdxlopPhysicalSplit,
-	EdxlopPhysicalRowTrigger,
 
 	EdxlopPhysicalAssert,
 

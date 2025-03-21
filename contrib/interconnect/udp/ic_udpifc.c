@@ -2,7 +2,6 @@
  * ic_udpifc.c
  *	   Interconnect code specific to UDP transport.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2011, Greenplum Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Copyright (c) 2011-2012, EMC Corporation
@@ -738,7 +737,7 @@ static void freeDisorderedPackets(MotionConn *conn);
 static void prepareRxConnForRead(MotionConn *conn);
 static TupleChunkListItem receiveChunksUDPIFC(ChunkTransportState *pTransportStates, ChunkTransportStateEntry *pEntry,
 					int16 motNodeID, int16 *srcRoute, MotionConn *conn);
-static bool dispatcherAYT(void);
+static void dispatcherAYT(void);
 static void checkQDConnectionAlive(void);
 
 
@@ -3748,8 +3747,8 @@ TeardownUDPIFCInterconnect_Internal(ChunkTransportState *transportStates,
 		pfree(transportStates);
 	}
 
-	if (gp_log_interconnect >= GPVARS_VERBOSITY_TERSE)
-		elog(DEBUG1, "TeardownUDPIFCInterconnect successful");
+	if (gp_log_interconnect >= GPVARS_VERBOSITY_DEBUG)
+		elog(DEBUG4, "TeardownUDPIFCInterconnect successful");
 
 	RESUME_INTERRUPTS();
 }
@@ -6101,9 +6100,10 @@ SendStopMessageUDPIFC(ChunkTransportState *transportStates, int16 motNodeID)
  *
  * The connection is a struct Port, stored in the global MyProcPort.
  *
- * Return true if the dispatcher connection is still alive.
+ * ERROR out if the connection was closed or if we encountered an unrecoverable
+ * error trying to recv().
  */
-static bool
+static void
 dispatcherAYT(void)
 {
 	ssize_t		ret;
@@ -6114,10 +6114,15 @@ dispatcherAYT(void)
 	 * As a result, MyProcPort is NULL. We should skip dispatcherAYT check here.
 	 */
 	if (MyProcPort == NULL)
-		return true;
+		return;
 
-	if (MyProcPort->sock < 0)
-		return false;
+	if (MyProcPort->sock == PGINVALID_SOCKET)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+				errmsg("backend socket is invalid (recv)"),
+				errdetail("it could already have been closed")));
+	}
 
 #ifndef WIN32
 	ret = recv(MyProcPort->sock, &buf, 1, MSG_PEEK | MSG_DONTWAIT);
@@ -6126,21 +6131,23 @@ dispatcherAYT(void)
 #endif
 
 	if (ret == 0)				/* socket has been closed. EOF */
-		return false;
-
-	if (ret > 0)				/* data waiting on socket, it must be OK. */
-		return true;
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+				errmsg("dispatch connection lost (recv)"),
+				errdetail("peer socket has been closed, eof received")));
+	}
 
 	if (ret == -1)				/* error, or would be block. */
 	{
 		if (errno == EAGAIN || errno == EINPROGRESS)
-			return true;		/* connection intact, no data available */
-		else
-			return false;
+			return;		/* connection intact, no data available */
+		else                    /* unrecoverable error */
+			ereport(ERROR,
+					(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+					errmsg("dispatch connection lost (recv): %m")));
 	}
-	/* not reached */
-
-	return true;
+	/* data waiting on socket, it must be OK. */
 }
 
 /*
@@ -6150,16 +6157,9 @@ dispatcherAYT(void)
 static void
 checkQDConnectionAlive(void)
 {
-	if (!dispatcherAYT())
+	if (Gp_role == GP_ROLE_EXECUTE)
 	{
-		if (Gp_role == GP_ROLE_EXECUTE)
-			ereport(ERROR,
-					(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
-					 errmsg("interconnect error segment lost contact with master (recv)")));
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
-					 errmsg("interconnect error master lost contact with client (recv)")));
+		dispatcherAYT();
 	}
 }
 
@@ -6555,7 +6555,7 @@ rxThreadFunc(void *arg)
 				continue;
 		}
 
-		if (skip_poll || (n == 1 && (nfd.events & POLLIN)))
+		if (skip_poll || (n == 1 && (nfd.revents & POLLIN)))
 		{
 			/* we've got something interesting to read */
 			/* handle incoming */

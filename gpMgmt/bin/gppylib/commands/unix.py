@@ -30,44 +30,6 @@ platform_list = [LINUX, DARWIN, FREEBSD, OPENBSD]
 
 curr_platform = platform.uname()[0].lower()
 
-GPHOME = os.environ.get('GPHOME', None)
-
-# ---------------command path--------------------
-CMDPATH = ['/usr/kerberos/bin', '/usr/sfw/bin', '/opt/sfw/bin', '/bin', '/usr/local/bin',
-           '/usr/bin', '/sbin', '/usr/sbin', '/usr/ucb', '/sw/bin', '/opt/Navisphere/bin']
-
-if GPHOME:
-    CMDPATH.append(GPHOME)
-
-CMD_CACHE = {}
-
-
-# ----------------------------------
-class CommandNotFoundException(Exception):
-    def __init__(self, cmd, paths):
-        self.cmd = cmd
-        self.paths = paths
-
-    def __str__(self):
-        return "Could not locate command: '%s' in this set of paths: %s" % (self.cmd, repr(self.paths))
-
-
-def findCmdInPath(cmd):
-    global CMD_CACHE
-
-    if cmd not in CMD_CACHE:
-        for p in CMDPATH:
-            f = os.path.join(p, cmd)
-            if os.path.exists(f):
-                CMD_CACHE[cmd] = f
-                return f
-
-        logger.critical('Command %s not found' % cmd)
-        search_path = CMDPATH[:]
-        raise CommandNotFoundException(cmd, search_path)
-    else:
-        return CMD_CACHE[cmd]
-
 
 # For now we'll leave some generic functions outside of the Platform framework
 def getLocalHostname():
@@ -107,50 +69,20 @@ def check_pid(pid):
 
 
 """
-Given the data directory, port and pid for a segment, 
-kill -9 all the processes associated with that segment.
-If pid is -1, then the postmaster is already stopped, 
-so we check for any leftover processes for that segment 
-and kill -9 those processes
-E.g postgres:  45002, logger process
-    postgres:  45002, sweeper process
-    postgres:  45002, checkpoint process
+Given the data directory, pid list and host,
+kill -9 all the processes from the pid list.
 """
+def kill_9_segment_processes(datadir, pids, host):
+    logger.info('Terminating processes for segment {0}'.format(datadir))
 
+    for pid in pids:
+        if check_pid_on_remotehost(pid, host):
 
-def kill_9_segment_processes(datadir, port, pid):
-    logger.info('Terminating processes for segment %s' % datadir)
+            cmd = Command("kill -9 process", ("kill -9 {0}".format(pid)), ctxt=REMOTE, remoteHost=host)
+            cmd.run()
 
-    pid_list = []
-
-    # pid is the pid of the postgres process.
-    # pid can be -1 if the process is down already
-    if pid != -1:
-        pid_list = [pid]
-
-    cmd = Command('get a list of processes to kill -9',
-                  cmdStr='ps ux | grep "[p]ostgres:\s*%s" | awk \'{print $2}\'' % (port))
-
-    try:
-        cmd.run(validateAfter=True)
-    except Exception as e:
-        logger.warning('Unable to get the pid list of processes for segment %s: (%s)' % (datadir, str(e)))
-        return
-
-    results = cmd.get_results()
-    results = results.stdout.strip().split('\n')
-
-    for result in results:
-        if result:
-            pid_list.append(int(result))
-
-    for pid in pid_list:
-        # Try to kill -9 the process.
-        # We ignore any errors 
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except Exception as e:
-            logger.error('Failed to kill processes for segment %s: (%s)' % (datadir, str(e)))
+            if cmd.get_results().rc != 0:
+                logger.error('Failed to kill process {0} for segment {1}: {2}'.format(pid, datadir, cmd.get_results().stderr))
 
 
 def logandkill(pid, sig):
@@ -200,6 +132,38 @@ def kill_sequence(pid):
 
     # all else failed - try SIGABRT
     logandkill(pid, signal.SIGABRT)
+
+"""
+Terminate a process tree (including grandchildren) with signal 'sig'.
+'on_terminate', if specified, is a callback function which is
+called as soon as a child terminates.
+"""
+def terminate_proc_tree(pid, sig=signal.SIGTERM, include_parent=True, timeout=None, on_terminate=None):
+    parent = psutil.Process(pid)
+
+    children = list()
+    terminated = set()
+
+    if include_parent:
+        children.append(parent)
+
+    children.extend(parent.children(recursive=True))
+    while children:
+        process = children.pop()
+        
+        try:
+            # Update the list with any new process spawned after the initial list creation
+            children.extend(process.children(recursive=True))
+            process.send_signal(sig)
+            terminated.add(process)
+        except psutil.NoSuchProcess:
+            pass
+
+    _, alive = psutil.wait_procs(terminated, timeout=timeout, callback=on_terminate)
+
+    # Forcefully terminate any remaining processes
+    for process in alive:
+        process.kill()
 
 
 # ---------------Platform Framework--------------------
@@ -593,8 +557,8 @@ class PgPortIsActive(Command):
 
         for r in rows:
             val = r.split('.')
-            netstatport = int(val[len(val) - 1])
-            if netstatport == self.port:
+            ssport = int(val[len(val) - 1])
+            if ssport == self.port:
                 return True
 
         return False
@@ -676,6 +640,6 @@ elif curr_platform == DARWIN:
 elif curr_platform == FREEBSD:
     SYSTEM = FreeBsdPlatform()
 elif curr_platform == OPENBSD:
-    SYSTEM = OpenBSDPlatform();
+    SYSTEM = OpenBSDPlatform()
 else:
     raise Exception("Platform %s is not supported.  Supported platforms are: %s", SYSTEM, str(platform_list))

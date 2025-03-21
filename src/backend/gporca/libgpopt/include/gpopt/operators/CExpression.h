@@ -108,11 +108,6 @@ private:
 
 #endif	// GPOS_DEBUG
 
-#if 0
-	// check if the expression satisfies partition enforcer condition
-	BOOL FValidPartEnforcers(CDrvdPropCtxtPlan *pdpctxtplan);
-#endif
-
 	// check if the distributions of all children are compatible
 	BOOL FValidChildrenDistribution(CDrvdPropCtxtPlan *pdpctxtplan);
 
@@ -256,7 +251,6 @@ public:
 	// compare entire expression rooted here
 	BOOL Matches(CExpression *pexpr) const;
 
-#ifdef GPOS_DEBUG
 	// match against given pattern
 	BOOL FMatchPattern(CExpression *pexpr) const;
 
@@ -269,7 +263,6 @@ public:
 	// debug print; for interactive debugging sessions only
 	// prints expression properties as well
 	void DbgPrintWithProperties() const;
-#endif	// GPOS_DEBUG
 
 	// check if the expression satisfies given required properties
 	BOOL FValidPlan(const CReqdPropPlan *prpp, CDrvdPropCtxtPlan *pdpctxtplan);
@@ -297,7 +290,7 @@ public:
 	CFunctionProp *DeriveFunctionProperties();
 	CFunctionalDependencyArray *DeriveFunctionalDependencies();
 	CPartInfo *DerivePartitionInfo();
-	CTableDescriptor *DeriveTableDescriptor();
+	CTableDescriptorHashSet *DeriveTableDescriptor();
 
 	// Scalar property accessors - derived as needed
 	CColRefSet *DeriveDefinedColumns();
@@ -310,6 +303,9 @@ public:
 	ULONG DeriveTotalDistinctAggs();
 	BOOL DeriveHasMultipleDistinctAggs();
 	BOOL DeriveHasScalarArrayCmp();
+	BOOL DeriveHasScalarFuncProject();
+	BOOL DeriveContainsOnlyReplicationSafeAggFuncs();
+	ULONG DeriveTotalOrderedAggs();
 
 };	// class CExpression
 

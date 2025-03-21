@@ -3,7 +3,6 @@
  * syscache.c
  *	  System cache management routines
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2007-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -26,6 +25,7 @@
 #include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "catalog/pg_aggregate.h"
+#include "catalog/pg_attribute_encoding.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_amproc.h"
@@ -1209,6 +1209,17 @@ static const struct cachedesc cacheinfo[] = {
 			0
 		},
 		2
+	},
+	{AttributeEncodingRelationId,		/* ATTENCODINGNUM */
+		AttributeEncodingAttrelidAttnumIndexId,
+		2,
+		{
+			Anum_pg_attribute_encoding_attrelid,
+			Anum_pg_attribute_encoding_attnum,
+			0,
+			0
+		},
+		128
 	}
 };
 

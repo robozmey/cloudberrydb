@@ -3,7 +3,6 @@
  * postinit.c
  *	  postgres initialization utilities
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -99,11 +98,13 @@ static void StatementTimeoutHandler(void);
 static void LockTimeoutHandler(void);
 static void IdleInTransactionSessionTimeoutHandler(void);
 static void IdleSessionTimeoutHandler(void);
+static void GpParallelRetrieveCursorCheckTimeoutHandler(void);
 static void ClientCheckTimeoutHandler(void);
 static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
 static void process_settings(Oid databaseid, Oid roleid);
 
+extern bool DoingCommandRead;
 #ifdef USE_ORCA
 extern void InitGPOPT();
 extern void TerminateGPOPT();
@@ -429,8 +430,12 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 		 * ideally one should succeed and one fail.  Getting that to work
 		 * exactly seems more trouble than it is worth, however; instead we
 		 * just document that the connection limit is approximate.
+		 *
+		 * We do not want to do this for QEs since a single QD might initialise
+		 * many connections to each segment to execute a non-trivial plan and
+		 * the db connection limit does not map, semantically, to that idea.
 		 */
-		if (dbform->datconnlimit >= 0 &&
+		if (Gp_role == GP_ROLE_DISPATCH && dbform->datconnlimit >= 0 &&
 			!am_superuser &&
 			CountDBConnections(MyDatabaseId) > dbform->datconnlimit)
 			ereport(FATAL,
@@ -713,6 +718,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 						IdleInTransactionSessionTimeoutHandler);
 		RegisterTimeout(GANG_TIMEOUT, IdleGangTimeoutHandler);
 		RegisterTimeout(IDLE_SESSION_TIMEOUT, IdleSessionTimeoutHandler);
+		RegisterTimeout(GP_PARALLEL_RETRIEVE_CURSOR_CHECK_TIMEOUT, GpParallelRetrieveCursorCheckTimeoutHandler);
 		RegisterTimeout(CLIENT_CONNECTION_CHECK_TIMEOUT, ClientCheckTimeoutHandler);
 	}
 
@@ -1163,6 +1169,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 
 	SetDatabasePath(fullpath);
+	pfree(fullpath);
 
 	/*
 	 * It's now possible to do real access to the system catalogs.
@@ -1251,7 +1258,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 * report this backend in the PgBackendStatus array, meanwhile, we do not
 	 * want users to see auxiliary background worker like fts in pg_stat_* views.
 	 */
-	if (!bootstrap && !amAuxiliaryBgWorker())
+	if (!bootstrap && (!amAuxiliaryBgWorker() || IsDtxRecoveryProcess()))
 		pgstat_bestart();
 
 	/* 
@@ -1702,6 +1709,36 @@ ClientCheckTimeoutHandler(void)
 	CheckClientConnectionPending = true;
 	InterruptPending = true;
 	SetLatch(MyLatch);
+}
+
+static void
+GpParallelRetrieveCursorCheckTimeoutHandler(void)
+{
+	/*
+	 * issue: https://github.com/greenplum-db/gpdb/issues/15143
+	 *
+	 * handle errors of parallel retrieve cursor's non-root slices
+	 */
+	if (DoingCommandRead)
+	{
+		Assert(Gp_role == GP_ROLE_DISPATCH);
+
+		/* It calls cdbdisp_checkForCancel(), which doesn't raise error */
+		gp_check_parallel_retrieve_cursor_error();
+		int num = GetNumOfParallelRetrieveCursors();
+
+		/* Reset the alarm to check after a timeout */
+		if (num > 0)
+		{
+			elog(DEBUG1, "There are still %d parallel retrieve cursors alive", num);
+			enable_parallel_retrieve_cursor_check_timeout();
+		}
+	}
+	else
+	{
+		elog(DEBUG1, "DoingCommandRead is false, check parallel cursor timeout delay");
+		enable_parallel_retrieve_cursor_check_timeout();
+	}
 }
 
 /*

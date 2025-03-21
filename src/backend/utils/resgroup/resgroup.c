@@ -3,7 +3,6 @@
  * resgroup.c
  *	  GPDB resource group management code.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2010, Greenplum inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -496,8 +495,11 @@ InitResGroups(void)
 
 		cgroupOpsRoutine->createcgroup(groupId);
 
-		if (caps.io_limit != NULL)
-			cgroupOpsRoutine->setio(groupId, cgroupOpsRoutine->parseio(caps.io_limit));
+		if (caps.io_limit != NIL)
+		{
+			cgroupOpsRoutine->setio(groupId, caps.io_limit);
+			cgroupOpsRoutine->freeio(caps.io_limit);
+		}
 
 		if (CpusetIsEmpty(caps.cpuset))
 		{
@@ -803,7 +805,7 @@ ResGroupAlterOnCommit(const ResourceGroupCallbackContext *callbackCtx)
 		}
 		else if (callbackCtx->limittype == RESGROUP_LIMIT_TYPE_IO_LIMIT)
 		{
-			cgroupOpsRoutine->setio(callbackCtx->groupid, callbackCtx->ioLimit);
+			cgroupOpsRoutine->setio(callbackCtx->groupid, callbackCtx->caps.io_limit);
 		}
 
 		/* reset default group if cpuset has changed */
@@ -975,7 +977,7 @@ createGroup(Oid groupId, const ResGroupCaps *caps)
 	group->caps = *caps;
 
 	/* remove local pointers */
-	group->caps.io_limit = NULL;
+	group->caps.io_limit = NIL;
 
 	group->nRunning = 0;
 	group->nRunningBypassed = 0;
@@ -1423,7 +1425,7 @@ SerializeResGroupInfo(StringInfo str)
 	appendBinaryStringInfo(str, (char *) &itmp, sizeof(int32));
 	itmp = htonl(caps->cpuWeight);
 	appendBinaryStringInfo(str, (char *) &itmp, sizeof(int32));
-	itmp = htonl(caps->memory_limit);
+	itmp = htonl(caps->memory_quota);
 	appendBinaryStringInfo(str, (char *) &itmp, sizeof(int32));
 	itmp = htonl(caps->min_cost);
 	appendBinaryStringInfo(str, (char *) &itmp, sizeof(int32));
@@ -1464,7 +1466,7 @@ DeserializeResGroupInfo(struct ResGroupCaps *capsOut,
 	memcpy(&itmp, ptr, sizeof(int32)); ptr += sizeof(int32);
 	capsOut->cpuWeight = ntohl(itmp);
 	memcpy(&itmp, ptr, sizeof(int32)); ptr += sizeof(int32);
-	capsOut->memory_limit = ntohl(itmp);
+	capsOut->memory_quota = ntohl(itmp);
 	memcpy(&itmp, ptr, sizeof(int32)); ptr += sizeof(int32);
 	capsOut->min_cost = ntohl(itmp);
 
@@ -3610,8 +3612,9 @@ ResourceGroupGetQueryMemoryLimit(void)
 
 	Assert(Gp_role == GP_ROLE_DISPATCH || Gp_role == GP_ROLE_UTILITY);
 
+	/* for bypass query,use statement_mem as the query mem. */
 	if (bypassedGroup)
-		return 0;
+		return stateMem;
 
 	if (gp_resgroup_memory_query_fixed_mem > 0)
 		return (uint64) gp_resgroup_memory_query_fixed_mem * 1024L;
@@ -3621,7 +3624,7 @@ ResourceGroupGetQueryMemoryLimit(void)
 	LWLockAcquire(ResGroupLock, LW_SHARED);
 
 	caps = &self->group->caps;
-	resgLimit = caps->memory_limit;
+	resgLimit = caps->memory_quota;
 
 	AssertImply(resgLimit < 0, resgLimit == -1);
 	if (resgLimit == -1)

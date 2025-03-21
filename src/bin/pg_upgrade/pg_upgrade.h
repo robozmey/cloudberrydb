@@ -3,7 +3,6 @@
 /*
  *	pg_upgrade.h
  *
- *	Portions Copyright (c) 2023, HashData Technology Limited.
  *	Portions Copyright (c) 2016-Present, VMware, Inc. or its affiliates
  *	Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/pg_upgrade.h
@@ -35,6 +34,16 @@
 /* contains both global db information and CREATE DATABASE commands */
 #define GLOBALS_DUMP_FILE	"pg_upgrade_dump_globals.sql"
 #define DB_DUMP_FILE_MASK	"pg_upgrade_dump_%u.custom"
+
+/*
+ * Base directories that include all the files generated internally, from the
+ * root path of the new cluster.  The paths are dynamically built as of
+ * BASE_OUTPUTDIR/$timestamp/{LOG_OUTPUTDIR,DUMP_OUTPUTDIR} to ensure their
+ * uniqueness in each run.
+ */
+#define BASE_OUTPUTDIR		"pg_upgrade_output.d"
+#define LOG_OUTPUTDIR		 "log"
+#define DUMP_OUTPUTDIR		 "dump"
 
 #define DB_DUMP_LOG_FILE_MASK	"pg_upgrade_dump_%u.log"
 #define SERVER_LOG_FILE		"pg_upgrade_server.log"
@@ -99,23 +108,6 @@ extern char *output_files[];
 
 #define atooid(x)  ((Oid) strtoul((x), NULL, 10))
 #define atorelfilenodeid(x) ((RelFileNodeId) strtoul((x), NULL, 10))
-
-/* OID system catalog preservation added during PG 9.0 development */
-#define TABLE_SPACE_SUBDIRS_CAT_VER 201001111
-/* postmaster/postgres -b (binary_upgrade) flag added during PG 9.1 development */
-/* In GPDB, it was introduced during GPDB 5.0 development. */
-#define BINARY_UPGRADE_SERVER_FLAG_CAT_VER 301607301
-
-/*
- *	Visibility map changed with this 9.2 commit,
- *	8f9fe6edce358f7904e0db119416b4d1080a83aa; pick later catalog version.
- */
-#define VISIBILITY_MAP_CRASHSAFE_CAT_VER 201107031
-
-/*
- * change in JSONB format during 9.4 beta
- */
-#define JSONB_FORMAT_CHANGE_CAT_VER 201409291
 
 /*
  * The format of visibility map is changed with this 9.6 commit,
@@ -332,7 +324,7 @@ typedef struct
 	uint32		large_object;
 	bool		date_is_int;
 	bool		float8_pass_by_value;
-	bool		data_checksum_version;
+	uint32		data_checksum_version;
 	int			file_encryption_method;
 } ControlData;
 
@@ -393,6 +385,12 @@ typedef struct
 	FILE	   *internal;		/* internal log FILE */
 	bool		verbose;		/* true -> be verbose in messages */
 	bool		retain;			/* retain log files on success */
+	/* Set of internal directories for output files */
+	char	   *rootdir;		/* Root directory, aka pg_upgrade_output.d */
+	char	   *basedir;		/* Base output directory, with timestamp */
+	char	   *dumpdir;		/* Dumps */
+	char	   *logdir;			/* Log files */
+	bool		isatty;			/* is stdout a tty */
 } LogOpts;
 
 
@@ -552,11 +550,13 @@ void		report_status(eLogType type, const char *fmt,...) pg_attribute_printf(2, 3
 void		pg_log(eLogType type, const char *fmt,...) pg_attribute_printf(2, 3);
 void		pg_fatal(const char *fmt,...) pg_attribute_printf(1, 2) pg_attribute_noreturn();
 void		end_progress_output(void);
+void		cleanup_output_dirs(void);
 void		prep_status(const char *fmt,...) pg_attribute_printf(1, 2);
-void		check_ok(void);
+void		prep_status_progress(const char *fmt,...) pg_attribute_printf(1, 2);
 unsigned int str2uint(const char *str);
 uint64		str2uint64(const char *str);
 void		pg_putenv(const char *var, const char *val);
+void 		gp_fatal_log(const char *fmt,...) pg_attribute_printf(1, 2);
 
 
 /* version.c */
@@ -567,8 +567,6 @@ bool		check_for_data_types_usage(ClusterInfo *cluster,
 bool		check_for_data_type_usage(ClusterInfo *cluster,
 									  const char *type_name,
 									  const char *output_path);
-void		new_9_0_populate_pg_largeobject_metadata(ClusterInfo *cluster,
-													 bool check_mode);
 void		old_9_3_check_for_line_data_type_usage(ClusterInfo *cluster);
 void		old_9_6_check_for_unknown_data_type_usage(ClusterInfo *cluster);
 void		old_9_6_invalidate_hash_indexes(ClusterInfo *cluster,

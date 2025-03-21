@@ -9,7 +9,6 @@
  * Reading data from the input file or client and parsing it into Datums
  * is handled in copyfromparse.c.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -568,7 +567,7 @@ CopyMultiInsertBufferCleanup(CopyMultiInsertInfo *miinfo,
 	{
 		/*
 		 * CBDB: do not call table_finish_bulk_insert for AO/AOCO or PAX tables.
-		 * https://github.com/cloudberrydb/cloudberrydb/issues/547
+		 * https://github.com/apache/cloudberry/issues/547
 		 * Do not clean up context or resource here, table_finish_bulk_insert
 		 * routine will be called more than once during COPY FROM if
 		 * the partition buffer is flushed but COPY is not finished.
@@ -1410,6 +1409,14 @@ BeginCopyFromDirectoryTable(ParseState *pstate,
 		cstate->rel && cstate->rel->rd_cdbpolicy &&
 		cstate->rel->rd_cdbpolicy->ptype != POLICYTYPE_ENTRY)
 		cstate->dispatch_mode = COPY_DISPATCH;
+	/*
+	 * Handle case where fdw executes on coordinator while it's acting as a segment
+	 * This occurs when fdw is under a redistribute on the coordinator
+	 */
+	else if (Gp_role == GP_ROLE_EXECUTE &&
+			 cstate->rel && cstate->rel->rd_cdbpolicy &&
+			 cstate->rel->rd_cdbpolicy->ptype == POLICYTYPE_ENTRY)
+		cstate->dispatch_mode = COPY_DIRECT;
 	else if (Gp_role == GP_ROLE_EXECUTE)
 		cstate->dispatch_mode = COPY_EXECUTOR;
 	else
@@ -2103,6 +2110,38 @@ CopyFrom(CopyFromState cstate)
 			}
 		}
 
+		if (cstate->dispatch_mode != COPY_DISPATCH && is_check_distkey)
+		{
+			/*
+			 * In COPY FROM ON SEGMENT, check the distribution key in the
+			 * QE.
+			 * Note: For partitioned tables, the order of the root table's columns can be
+			 * inconsistent with the order of the partition's columns and Greenplum/PostgreSQL
+			 * allows such behavior. When they have different orders, we need to re-order the
+			 * TupleTableSlot (myslot) to make it match the partition's columns (see execute_attr_map_slot()
+			 * for details). We must perform this check before the re-ordering of TupleTableslot,
+			 * or the value of target_seg will be incorrect.
+			 */
+			if (distData->policy->nattrs != 0)
+			{
+				target_seg = GetTargetSeg(distData, myslot);
+				if (GpIdentity.segindex != target_seg)
+				{
+					PG_TRY();
+					{
+						ereport(ERROR,
+								(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
+								 errmsg("value of distribution key doesn't belong to segment with ID %d, it belongs to segment with ID %d",
+										GpIdentity.segindex, target_seg)));
+					}
+					PG_CATCH();
+					{
+						HandleCopyError(cstate);
+					}
+					PG_END_TRY();
+				}
+			}
+		}
 		/* Determine the partition to insert the tuple into */
 		if (proute && cstate->dispatch_mode != COPY_DISPATCH)
 		{
@@ -2242,37 +2281,6 @@ CopyFrom(CopyFromState cstate)
 		{
 			/* In QD, compute the target segment to send this row to. */
 			target_seg = GetTargetSeg(distData, myslot);
-		}
-		else if (is_check_distkey)
-		{
-			/*
-			 * In COPY FROM ON SEGMENT, check the distribution key in the
-			 * QE.
-			 */
-			if (distData->policy->nattrs != 0)
-			{
-				target_seg = GetTargetSeg(distData, myslot);
-
-				if (GpIdentity.segindex != target_seg)
-				{
-					PG_TRY();
-					{
-						ereport(ERROR,
-								(errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
-								 errmsg("value of distribution key doesn't belong to segment with ID %d, it belongs to segment with ID %d",
-										GpIdentity.segindex, target_seg)));
-					}
-					PG_CATCH();
-					{
-						HandleCopyError(cstate);
-					}
-					PG_END_TRY();
-				}
-			}
-		}
-
-		if (cstate->dispatch_mode == COPY_DISPATCH)
-		{
 			bool send_to_all = distData &&
 							   GpPolicyIsReplicated(distData->policy);
 
@@ -2770,6 +2778,14 @@ BeginCopyFrom(ParseState *pstate,
 			 cstate->rel && cstate->rel->rd_cdbpolicy &&
 			 cstate->rel->rd_cdbpolicy->ptype != POLICYTYPE_ENTRY)
 		cstate->dispatch_mode = COPY_DISPATCH;
+	/*
+	 * Handle case where fdw executes on coordinator while it's acting as a segment
+	 * This occurs when fdw is under a redistribute on the coordinator
+	 */
+	else if (Gp_role == GP_ROLE_EXECUTE &&
+			 cstate->rel && cstate->rel->rd_cdbpolicy &&
+			 cstate->rel->rd_cdbpolicy->ptype == POLICYTYPE_ENTRY)
+		cstate->dispatch_mode = COPY_DIRECT;
 	else if (Gp_role == GP_ROLE_EXECUTE)
 		cstate->dispatch_mode = COPY_EXECUTOR;
 	else
@@ -3327,9 +3343,14 @@ NextCopyFromX(CopyFromState cstate, ExprContext *econtext,
 				fldct = 0;
 			field_strings = cstate->raw_fields;
 		}
-
-		/* check for overflowing fields */
-		if (attr_count > 0 && fldct > attr_count)
+		/* 
+		 * Check for overflowing fields.
+		 * GPDB: Change below condition compared to upstream to 
+		 * greater than or equal to 0 as in QE, 
+		 * attr_count may be equal to 0, 
+		 * when all fields are processed in the QD.
+		 */
+		if (fldct > attr_count)
 			ereport(ERROR,
 					(errcode(ERRCODE_BAD_COPY_FILE_FORMAT),
 					 errmsg("extra data after last expected column")));

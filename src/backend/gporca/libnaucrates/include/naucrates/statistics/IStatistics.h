@@ -101,6 +101,9 @@ public:
 	// how many rows
 	virtual CDouble Rows() const = 0;
 
+	// set how many rows
+	virtual void SetRows(CDouble rows) = 0;
+
 	// number of blocks in the relation (not always up to-to-date)
 	virtual ULONG RelPages() const = 0;
 
@@ -135,7 +138,14 @@ public:
 	// look up the number of distinct values of a particular column
 	virtual CDouble GetNDVs(const CColRef *colref) = 0;
 
+	// look up the fraction of null values of a particular column
+	virtual CDouble GetNullFreq(const CColRef *colref) = 0;
+
 	virtual ULONG GetNumberOfPredicates() const = 0;
+
+	// Compute stats for given column
+	virtual IStatistics *ComputeColStats(CMemoryPool *mp, CColRef *colref,
+										 IMDId *rel_mdid) = 0;
 
 	// inner join with another stats structure
 	virtual IStatistics *CalcInnerJoinStats(
@@ -195,6 +205,27 @@ public:
 	{
 		return (IStatistics::EsjtLeftAntiSemiJoin == join_type) ||
 			   (IStatistics::EsjtLeftSemiJoin == join_type);
+	}
+
+	BOOL
+	operator==(const IStatistics &other) const
+	{
+		if (this == &other)
+		{
+			// same object reference
+			return true;
+		}
+
+		// XXX: How are we supposed to compar statistics objects?  I suppose we
+		//      could print it out and compare, but that seems expensive.
+		//      Instead, we opt for some basic comparison, knowing that it's
+		//      nowhere near exhaustive.
+		return Rows() == other.Rows() && RelPages() == other.RelPages() &&
+			   RelAllVisible() == other.RelAllVisible() &&
+			   IsEmpty() == other.IsEmpty() &&
+			   NumRebinds() == other.NumRebinds() && Width() == other.Width() &&
+			   StatsEstimationRisk() == other.StatsEstimationRisk() &&
+			   GetNumberOfPredicates() == other.GetNumberOfPredicates();
 	}
 };	// class IStatistics
 

@@ -77,6 +77,9 @@ enum EOptTraceFlag
 	// print equivalent distribution specs
 	EopttracePrintEquivDistrSpecs = 101017,
 
+	// log results of hint parsing
+	EopttracePrintPgHintPlanLog = 101018,
+
 	///////////////////////////////////////////////////////
 	////////////////// transformations flags //////////////
 	///////////////////////////////////////////////////////
@@ -182,10 +185,6 @@ enum EOptTraceFlag
 	// Eager Agg
 	EopttraceEnableEagerAgg = 103030,
 
-	// Translate unused colrefs. specifically translate all colrefs, including ones
-	// that are not referenced in the query.
-	EopttraceTranslateUnusedColrefs = 103031,
-
 	// ExpandFullJoin
 	EopttraceExpandFullJoin = 103032,
 
@@ -210,10 +209,25 @@ enum EOptTraceFlag
 	// Use legacy (cdbhash) opfamilies for compatibility
 	EopttraceUseLegacyOpfamilies = 103039,
 
-	// enable NL Left Join plan alternatives where inner child is redistributed if possible
+	// Enable NL Left Join plan alternatives where inner child is redistributed if possible
 	EopttraceEnableRedistributeNLLOJInnerChild = 103040,
 
 	EopttraceForceComprehensiveJoinImplementation = 103041,
+
+	// Enable use the distribution key in DQA
+	EopttraceEnableUseDistributionInDQA = 103042,
+
+	// Discard HashJoin with RedistributeMotion nodes
+	EopttraceDiscardRedistributeHashJoin = 103044,
+
+	// disable hash join alternatives
+	EopttraceDisableInnerHashJoin = 103045,
+
+	// enable nested loop join alternatives
+	EopttraceDisableInnerNLJ = 103046,
+
+	// Ordered Agg
+	EopttraceDisableOrderedAgg = 103047,
 
 	///////////////////////////////////////////////////////
 	///////////////////// statistics flags ////////////////

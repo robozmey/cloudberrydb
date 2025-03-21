@@ -56,7 +56,7 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 			  Buffer oldbuf, OffsetNumber oldoff,
 			  const BrinTuple *origtup, Size origsz,
 			  const BrinTuple *newtup, Size newsz,
-			  bool samepage, bool skipextend)
+			  bool samepage)
 {
 	Page		oldpage;
 	ItemId		oldlp;
@@ -78,9 +78,7 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 		return false;			/* keep compiler quiet */
 	}
 
-	/* make sure the revmap is long enough to contain the entry we need */
-	if (!skipextend)
-		brinRevmapExtend(revmap, heapBlk);
+	brinRevmapExtend(revmap, heapBlk);
 
 	if (!samepage)
 	{
@@ -478,14 +476,19 @@ brin_page_init(Page page, uint16 type)
 {
 	PageInit(page, BLCKSZ, sizeof(BrinSpecialSpace));
 
-	BrinPageType(page) = type;
+	BrinPageType(page)       = type;
+	/* GPDB: AO/CO tables: pageNum, nextRevmapPage is to be assigned later */
+	BrinLogicalPageNum(page) = InvalidLogicalPageNum;
+	BrinNextRevmapPage(page) = InvalidBlockNumber;
 }
 
 /*
  * Initialize a new BRIN index's metapage.
+ * GPDB: We have the additional argument 'isAO' which is true if the base table
+ * is append-optimized (false otherwise, like for heap tables).
  */
 void
-brin_metapage_init(Page page, BlockNumber pagesPerRange, uint16 version, bool isAo)
+brin_metapage_init(Page page, BlockNumber pagesPerRange, uint16 version, bool isAO)
 {
 	BrinMetaPageData *metadata;
 
@@ -496,7 +499,7 @@ brin_metapage_init(Page page, BlockNumber pagesPerRange, uint16 version, bool is
 	metadata->brinMagic = BRIN_META_MAGIC;
 	metadata->brinVersion = version;
 	metadata->pagesPerRange = pagesPerRange;
-	metadata->isAo = isAo;
+	metadata->isAO = isAO;
 
 	/*
 	 * Note we cheat here a little.  0 is not a valid revmap block number
@@ -504,6 +507,14 @@ brin_metapage_init(Page page, BlockNumber pagesPerRange, uint16 version, bool is
 	 * revmap page to be created when the index is.
 	 */
 	metadata->lastRevmapPage = 0;
+
+	/* GPDB: AO table metadata initialization */
+	for (int i = 0; i < MAX_AOREL_CONCURRENCY; i++)
+	{
+		metadata->aoChainInfo[i].firstPage = InvalidBlockNumber;
+		metadata->aoChainInfo[i].lastPage = InvalidBlockNumber;
+		metadata->aoChainInfo[i].lastLogicalPageNum = InvalidLogicalPageNum;
+	}
 
 	/*
 	 * Set pd_lower just past the end of the metadata.  This is essential,
@@ -543,7 +554,12 @@ brin_start_evacuating_page(Relation idxRel, Buffer buf)
 		lp = PageGetItemId(page, off);
 		if (ItemIdIsUsed(lp))
 		{
-			/* prevent other backends from adding more stuff to this page */
+			/*
+			 * Prevent other backends from adding more stuff to this page:
+			 * BRIN_EVACUATE_PAGE informs br_page_get_freespace that this page
+			 * can no longer be used to add new tuples.  Note that this flag
+			 * is not WAL-logged, except accidentally.
+			 */
 			BrinPageFlags(page) |= BRIN_EVACUATE_PAGE;
 			MarkBufferDirtyHint(buf, true);
 
@@ -591,7 +607,7 @@ brin_evacuate_page(Relation idxRel, BlockNumber pagesPerRange,
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 
 			if (!brin_doupdate(idxRel, pagesPerRange, revmap, tup->bt_blkno,
-							   buf, off, tup, sz, tup, sz, false, true))
+							   buf, off, tup, sz, tup, sz, false))
 				off--;			/* retry */
 
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -650,8 +666,7 @@ brin_page_cleanup(Relation idxrel, Buffer buf)
 
 	/* Nothing to be done for non-regular index pages */
 	if (BRIN_IS_META_PAGE(BufferGetPage(buf)) ||
-		BRIN_IS_REVMAP_PAGE(BufferGetPage(buf)) ||
-		BRIN_IS_UPPER_PAGE(BufferGetPage(buf)))
+		BRIN_IS_REVMAP_PAGE(BufferGetPage(buf)))
 		return;
 
 	/* Measure free space and record it */

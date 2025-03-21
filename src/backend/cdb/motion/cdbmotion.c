@@ -6,7 +6,6 @@
  *
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Portions Copyright (c) 2023, HashData Technology Limited.
  *
  * IDENTIFICATION
  *	    src/backend/cdb/motion/cdbmotion.c
@@ -222,7 +221,7 @@ createMotionLayerState(int maxMotNodeID)
 
 		/*
 		 * we'll just set this to 0.  later, ml_ipc will call
-		 * setExpectedReceivers() to set this if we are a "Receiving" motion node.
+		 * UpdateMotionExpectedReceivers() to set this if we are a "Receiving" motion node.
 		 */
 		pEntry->num_senders = 0;
 	}
@@ -525,12 +524,6 @@ SendTuple(MotionLayerState *mlStates,
 	clearTCList(&pMNEntry->ser_tup_info.chunkCache, &tcList);
 
 	return rc;
-}
-
-TupleChunkListItem
-get_eos_tuplechunklist(void)
-{
-	return s_eos_chunk_data;
 }
 
 /*

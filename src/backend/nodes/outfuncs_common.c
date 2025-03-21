@@ -3,7 +3,6 @@
  * outfuncs_common.c
  *	  Common serialization functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2008, PostgreSQL Global Development Group
@@ -398,6 +397,7 @@ _outShareInputScan(StringInfo str, const ShareInputScan *node)
 	WRITE_INT_FIELD(producer_slice_id);
 	WRITE_INT_FIELD(this_slice_id);
 	WRITE_INT_FIELD(nconsumers);
+	WRITE_BOOL_FIELD(discard_output);
 
 	_outPlanInfo(str, (Plan *) node);
 }
@@ -437,7 +437,6 @@ _outSplitUpdate(StringInfo str, const SplitUpdate *node)
 	WRITE_NODE_TYPE("SplitUpdate");
 
 	WRITE_INT_FIELD(actionColIdx);
-	WRITE_INT_FIELD(tupleoidColIdx);
 	WRITE_NODE_FIELD(insertColIdx);
 	WRITE_NODE_FIELD(deleteColIdx);
 
@@ -647,6 +646,7 @@ _outDropStmt(StringInfo str, const DropStmt *node)
 	WRITE_ENUM_FIELD(behavior, DropBehavior);
 	WRITE_BOOL_FIELD(missing_ok);
 	WRITE_BOOL_FIELD(concurrent);
+	WRITE_BOOL_FIELD(isdynamic);
 }
 
 static void
@@ -781,6 +781,7 @@ _outAlteredTableInfo(StringInfo str, const AlteredTableInfo *node)
 	WRITE_NODE_FIELD(afterStmts);
 	WRITE_BOOL_FIELD(verify_new_notnull);
 	WRITE_INT_FIELD(rewrite);
+	WRITE_OID_FIELD(newAccessMethod);
 	WRITE_BOOL_FIELD(dist_opfamily_changed);
 	WRITE_OID_FIELD(new_opclass);
 	/*
@@ -1770,9 +1771,29 @@ _outEphemeralNamedRelationInfo(StringInfo str, const EphemeralNamedRelationInfo 
 static void
 _outAlterDatabaseStmt(StringInfo str, const AlterDatabaseStmt *node)
 {
-	WRITE_NODE_TYPE("AlterDatabaseStmt");
+	WRITE_NODE_TYPE("ALTERDATABASESTMT");
 	WRITE_STRING_FIELD(dbname);
 	WRITE_NODE_FIELD(options);
 	WRITE_NODE_FIELD(tags);
 	WRITE_BOOL_FIELD(unsettag);
+}
+
+static void
+_outDropStmtInfo(StringInfo str, const DropStmt *node)
+{
+	WRITE_NODE_FIELD(objects);
+	WRITE_ENUM_FIELD(removeType, ObjectType);
+	WRITE_ENUM_FIELD(behavior, DropBehavior);
+	WRITE_BOOL_FIELD(missing_ok);
+	WRITE_BOOL_FIELD(concurrent);
+	WRITE_BOOL_FIELD(isdynamic);
+}
+
+static void
+_outDropDirectoryTableStmt(StringInfo str, const DropDirectoryTableStmt *node)
+{
+	WRITE_NODE_TYPE("DROPDIRECTORYTABLESTMT");
+
+	_outDropStmtInfo(str, (const DropStmt *) node);
+	WRITE_BOOL_FIELD(with_content);
 }

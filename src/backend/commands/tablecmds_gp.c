@@ -3,7 +3,6 @@
  * tablecmds_gp.c
  *	  Cloudberry extensions for ALTER TABLE.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
@@ -997,7 +996,7 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 		elem->options = p_reloptions;
 
 		/* create first partition stmt */
-		stmts = lappend(stmts, makePartitionCreateStmt(rel, partname1, boundspec1, NULL, elem, &partcomp));
+		stmts = lappend(stmts, makePartitionCreateStmt(rel, partname1, boundspec1, NULL, elem, &partcomp, ORIGIN_GP_CLASSIC_ALTER_GEN));
 
 		/* create second partition stmt */
 		if (defaultpartname)
@@ -1005,7 +1004,7 @@ AtExecGPSplitPartition(Relation rel, AlterTableCmd *cmd)
 			partcomp.tablename = defaultpartname;
 			partname2 = NULL;
 		}
-		stmts = lappend(stmts, makePartitionCreateStmt(rel, partname2, boundspec2, NULL, elem, &partcomp));
+		stmts = lappend(stmts, makePartitionCreateStmt(rel, partname2, boundspec2, NULL, elem, &partcomp, ORIGIN_GP_CLASSIC_ALTER_GEN));
 	}
 
 	foreach (l, stmts)
@@ -1243,7 +1242,7 @@ ATExecGPPartCmds(Relation origrel, AlterTableCmd *cmd)
 
 			List *cstmts = generatePartitions(RelationGetRelid(rel),
 											  gpPartDef, subpart, cmd->queryString,
-											  NIL, NULL, NULL, false);
+											  NIL, NULL, NULL, ORIGIN_GP_CLASSIC_ALTER_GEN);
 			foreach(l, cstmts)
 			{
 				Node *stmt = (Node *) lfirst(l);

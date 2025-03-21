@@ -159,6 +159,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/builtins.h"
+#include "utils/faultinjector.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -367,8 +368,9 @@ retry:
 
 		if (testSlot->slotindex > arrayP->maxSlots)
 		{
+			char *slot_dump = SharedSnapshotDump();
 			LWLockRelease(SharedSnapshotLock);
-			elog(ERROR, "Shared Local Snapshots Array appears corrupted: %s", SharedSnapshotDump());
+			elog(ERROR, "Shared Local Snapshots Array appears corrupted: %s", slot_dump);
 		}
 
 		if (testSlot->slotid == slotId)
@@ -670,6 +672,7 @@ readSharedLocalSnapshot_forCursor(Snapshot snapshot, DtxContext distributedTrans
 	Assert(SharedLocalSnapshotSlot != NULL);
 	Assert(snapshot->xip != NULL);
 
+	SIMPLE_FAULT_INJECTOR("before_read_shared_snapshot_for_cursor");
 
 	if (dumpHtab == NULL)
 	{

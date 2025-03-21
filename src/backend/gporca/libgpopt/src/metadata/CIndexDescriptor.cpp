@@ -142,12 +142,6 @@ CIndexDescriptor::Pindexdesc(CMemoryPool *mp, const CTableDescriptor *ptabdesc,
 	return pindexdesc;
 }
 
-BOOL
-CIndexDescriptor::SupportsIndexOnlyScan() const
-{
-	return m_index_type == IMDIndex::EmdindBtree;
-}
-
 //---------------------------------------------------------------------------
 //	@function:
 //		CIndexDescriptor::OsPrint

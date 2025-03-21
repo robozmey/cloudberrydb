@@ -4,7 +4,6 @@
  *	  POSTGRES process array definitions.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -100,8 +99,8 @@ extern void XidCacheRemoveRunningXids(TransactionId xid,
 									  int nxids, const TransactionId *xids,
 									  TransactionId latestXid);
 						  
-extern PGPROC *FindProcByGpSessionId(long gp_session_id);
-extern void UpdateSerializableCommandId(CommandId curcid);
+extern volatile PGPROC *FindProcByGpSessionId(long gp_session_id);
+extern void UpdateCommandIdInSnapshot(CommandId curcid);
 
 extern void updateSharedLocalSnapshot(struct DtxContextInfo *dtxContextInfo,
 									  DtxContext distributedTransactionContext,

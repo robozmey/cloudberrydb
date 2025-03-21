@@ -346,7 +346,7 @@ FETCH 1 FROM foo3;
 (1 row)
 
 FETCH BACKWARD 1 FROM foo3; -- should fail
-ERROR:  backward scan is not supported in this version of Cloudberry Database
+ERROR:  backward scan is not supported in this version of Apache Cloudberry
 END;
 -- Cursors outside transaction blocks
 BEGIN;
@@ -1179,7 +1179,6 @@ insert into bms_ao_bug select 1, 1, a.c1::char(100) from generate_series(1, 2000
 create index bms_ao_bug_ix1 on bms_ao_bug (c2);
 set enable_seqscan=off;
 set work_mem=256;
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 select
 a.c1,
 count(*) row_cnt
@@ -1234,7 +1233,7 @@ reset enable_seqscan;
 create table aocs_small_and_dense_content (a int, b int) with
 (appendonly =true, orientation=column, blocksize=409600,
  compresstype=rle_type, compresslevel=4);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into aocs_small_and_dense_content select i,i from
 generate_series(1,800000)i;

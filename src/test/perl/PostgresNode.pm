@@ -1,5 +1,4 @@
 
-# Portions Copyright (c) 2023, HashData Technology Limited.
 # Copyright (c) 2021, PostgreSQL Global Development Group
 
 =pod
@@ -529,7 +528,7 @@ sub init
 		print $conf "shared_buffers = 1MB\n";
 		print $conf "max_connections = 20\n";
 		# limit disk space consumption, too:
-		print $conf "max_wal_size = 128MB\n";
+		print $conf "max_wal_size = 512MB\n";
 
 	}
 	else
@@ -872,7 +871,7 @@ sub start
 		# Note: We set the cluster_name here, not in postgresql.conf (in
 		# sub init) so that it does not get copied to standbys.
 		$ret = TestLib::system_log('pg_ctl', '-D', $self->data_dir, '-l',
-		$self->logfile, '-o', "--cluster-name=$name -c gp_role=utility --gp_dbid=$self->{_dbid} --gp_contentid=0",
+		$self->logfile, '-o', "--cluster-name=$name -c gp_role=utility --gp_dbid=$self->{_dbid} --gp_contentid=0 -c maintenance_mode=on",
 			'start');
 	}
 
@@ -1185,9 +1184,6 @@ sub _update_pid
 {
 	my ($self, $is_running) = @_;
 	my $name = $self->name;
-
-	#GPDB_12_MERGE_FIXME: somehow without this fails to find the pid file
-	sleep(1);
 
 	# If we can open the PID file, read its first line and that's the PID we
 	# want.

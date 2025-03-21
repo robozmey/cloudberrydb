@@ -3,7 +3,6 @@
  *
  *	Postgres-version-specific routines
  *
- * 	Portions Copyright (c) 2023, HashData Technology Limited.
  *	Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/version.c
  */
@@ -14,87 +13,6 @@
 #include "fe_utils/string_utils.h"
 #include "pg_upgrade.h"
 
-/*
- * new_9_0_populate_pg_largeobject_metadata()
- *	new >= 9.0, old <= 8.4
- *	9.0 has a new pg_largeobject permission table
- */
-void
-new_9_0_populate_pg_largeobject_metadata(ClusterInfo *cluster, bool check_mode)
-{
-	int			dbnum;
-	FILE	   *script = NULL;
-	bool		found = false;
-	char		output_path[MAXPGPATH];
-
-	prep_status("Checking for large objects");
-
-	snprintf(output_path, sizeof(output_path), "pg_largeobject.sql");
-
-	for (dbnum = 0; dbnum < cluster->dbarr.ndbs; dbnum++)
-	{
-		PGresult   *res;
-		int			i_count;
-		DbInfo	   *active_db = &cluster->dbarr.dbs[dbnum];
-		PGconn	   *conn = connectToServer(cluster, active_db->db_name);
-
-		/* find if there are any large objects */
-		res = executeQueryOrDie(conn,
-								"SELECT count(*) "
-								"FROM	pg_catalog.pg_largeobject ");
-
-		i_count = PQfnumber(res, "count");
-		if (atoi(PQgetvalue(res, 0, i_count)) != 0)
-		{
-			found = true;
-			if (!check_mode)
-			{
-				PQExpBufferData connectbuf;
-
-				if (script == NULL && (script = fopen_priv(output_path, "w")) == NULL)
-					pg_fatal("could not open file \"%s\": %s\n", output_path,
-							 strerror(errno));
-
-				initPQExpBuffer(&connectbuf);
-				appendPsqlMetaConnect(&connectbuf, active_db->db_name);
-				fputs(connectbuf.data, script);
-				termPQExpBuffer(&connectbuf);
-
-				fprintf(script,
-						"SELECT pg_catalog.lo_create(t.loid)\n"
-						"FROM (SELECT DISTINCT loid FROM pg_catalog.pg_largeobject) AS t;\n");
-			}
-		}
-
-		PQclear(res);
-		PQfinish(conn);
-	}
-
-	if (script)
-		fclose(script);
-
-	if (found)
-	{
-		report_status(PG_WARNING, "warning");
-		if (check_mode)
-			pg_log(PG_WARNING, "\n"
-				   "Your installation contains large objects.  The new database has an\n"
-				   "additional large object permission table.  After upgrading, you will be\n"
-				   "given a command to populate the pg_largeobject_metadata table with\n"
-				   "default permissions.\n\n");
-		else
-			pg_log(PG_WARNING, "\n"
-				   "Your installation contains large objects.  The new database has an\n"
-				   "additional large object permission table, so default permissions must be\n"
-				   "defined for all large objects.  The file\n"
-				   "    %s\n"
-				   "when executed by psql by the database superuser will set the default\n"
-				   "permissions.\n\n",
-				   output_path);
-	}
-	else
-		check_ok();
-}
 
 static PQExpBuffer
 create_recursive_oids(PGconn *conn, int major_version, const char *base_query)
@@ -216,69 +134,70 @@ check_for_data_types_usage(ClusterInfo *cluster,
 		 * concern here).  To handle all these cases we need a recursive CTE.
 		 */
 		initPQExpBuffer(&querybuf);
-#if 0
-		/* Move this recursive CTE to function create_recursive_oids().
-		 * GPDB doesn't support recursive CTE that the subquery in recursive
-		 * part has self-reference. See 3f5cf5c730f2f32d524d03c193743c70e
-		 *
-		 * The return WITH clause contains all expaneded sub-with clauses.
-		 */
-		appendPQExpBuffer(&querybuf,
-						  "WITH RECURSIVE oids AS ( "
-		/* start with the type(s) returned by base_query */
-						  "	%s "
-						  "	UNION ALL "
-						  "	SELECT * FROM ( "
-		/* inner WITH because we can only reference the CTE once */
-						  "		WITH x AS (SELECT oid FROM oids) "
-		/* domains on any type selected so far */
-						  "			SELECT t.oid FROM pg_catalog.pg_type t, x WHERE typbasetype = x.oid AND typtype = 'd' "
-						  "			UNION ALL "
-		/* arrays over any type selected so far */
-						  "			SELECT t.oid FROM pg_catalog.pg_type t, x WHERE typelem = x.oid AND typtype = 'b' "
-						  "			UNION ALL "
-		/* composite types containing any type selected so far */
-						  "			SELECT t.oid FROM pg_catalog.pg_type t, pg_catalog.pg_class c, pg_catalog.pg_attribute a, x "
-						  "			WHERE t.typtype = 'c' AND "
-						  "				  t.oid = c.reltype AND "
-						  "				  c.oid = a.attrelid AND "
-						  "				  NOT a.attisdropped AND "
-						  "				  a.atttypid = x.oid ",
-						  base_query);
+		if (GET_MAJOR_VERSION(cluster->major_version) <= 904)
+		{
+			/*
+			 * GPDB: Recursive CTE with self-reference in a subquery is not
+			 * supported by GPDB6. Instead, we use a plpgsql function to perform
+			 * the check.
+			 */
+			appendPQExpBuffer(&querybuf,
+							  "SELECT * FROM __gpupgrade_tmp.data_type_checks( "
+							  "	$$SELECT ARRAY(%s)$$ "
+							  ")",
+							  base_query);
+		}
+		else
+		{
+			appendPQExpBuffer(&querybuf,
+							  "WITH RECURSIVE oids AS ( "
+			/* start with the type(s) returned by base_query */
+							  "	%s "
+							  "	UNION ALL "
+							  "	SELECT * FROM ( "
+			/* inner WITH because we can only reference the CTE once */
+							  "		WITH x AS (SELECT oid FROM oids) "
+			/* domains on any type selected so far */
+							  "			SELECT t.oid FROM pg_catalog.pg_type t, x WHERE typbasetype = x.oid AND typtype = 'd' "
+							  "			UNION ALL "
+			/* arrays over any type selected so far */
+							  "			SELECT t.oid FROM pg_catalog.pg_type t, x WHERE typelem = x.oid AND typtype = 'b' "
+							  "			UNION ALL "
+			/* composite types containing any type selected so far */
+							  "			SELECT t.oid FROM pg_catalog.pg_type t, pg_catalog.pg_class c, pg_catalog.pg_attribute a, x "
+							  "			WHERE t.typtype = 'c' AND "
+							  "				  t.oid = c.reltype AND "
+							  "				  c.oid = a.attrelid AND "
+							  "				  NOT a.attisdropped AND "
+							  "				  a.atttypid = x.oid ",
+							  base_query);
 
-		/* Ranges were introduced in 9.2 */
-		if (GET_MAJOR_VERSION(cluster->major_version) >= 902)
-			appendPQExpBufferStr(&querybuf,
-								 "			UNION ALL "
+				appendPQExpBuffer(&querybuf,
+						  "			UNION ALL "
 			/* ranges containing any type selected so far */
-								 "			SELECT t.oid FROM pg_catalog.pg_type t, pg_catalog.pg_range r, x "
-								 "			WHERE t.typtype = 'r' AND r.rngtypid = t.oid AND r.rngsubtype = x.oid");
-
-		appendPQExpBufferStr(&querybuf,
-							 "	) foo "
-							 ") "
-#endif
-		appendPQExpBuffer(&querybuf,
-							 "%s "
-		/* now look for stored columns of any such type */
-							 "SELECT n.nspname, c.relname, a.attname "
-							 "FROM	pg_catalog.pg_class c, "
-							 "		pg_catalog.pg_namespace n, "
-							 "		pg_catalog.pg_attribute a "
-							 "WHERE	c.oid = a.attrelid AND "
-							 "		NOT a.attisdropped AND "
-							 "		a.atttypid IN (SELECT oid FROM oids) AND "
-							 "		c.relkind IN ("
-							 CppAsString2(RELKIND_RELATION) ", "
-							 CppAsString2(RELKIND_MATVIEW) ", "
-							 CppAsString2(RELKIND_INDEX) ") AND "
-							 "		c.relnamespace = n.oid AND "
-		/* exclude possible orphaned temp tables */
-							 "		n.nspname !~ '^pg_temp_' AND "
-							 "		n.nspname !~ '^pg_toast_temp_' AND "
-		/* exclude system catalogs, too */
-							 "		n.nspname NOT IN ('pg_catalog', 'information_schema')",
-			cte_oids->data);
+						  "			SELECT t.oid FROM pg_catalog.pg_type t, pg_catalog.pg_range r, x "
+						  "			WHERE t.typtype = 'r' AND r.rngtypid = t.oid AND r.rngsubtype = x.oid"
+						  "	) foo "
+						  ") "
+			/* now look for stored columns of any such type */
+							  "SELECT n.nspname, c.relname, a.attname "
+							  "FROM	pg_catalog.pg_class c, "
+							  "		pg_catalog.pg_namespace n, "
+							  "		pg_catalog.pg_attribute a "
+							  "WHERE	c.oid = a.attrelid AND "
+							  "		NOT a.attisdropped AND "
+							  "		a.atttypid IN (SELECT oid FROM oids) AND "
+							  "		c.relkind IN ("
+							  CppAsString2(RELKIND_RELATION) ", "
+							  CppAsString2(RELKIND_MATVIEW) ", "
+							  CppAsString2(RELKIND_INDEX) ") AND "
+							  "		c.relnamespace = n.oid AND "
+			/* exclude possible orphaned temp tables */
+							  "		n.nspname !~ '^pg_temp_' AND "
+							  "		n.nspname !~ '^pg_toast_temp_' AND "
+			/* exclude system catalogs, too */
+							  "		n.nspname NOT IN ('pg_catalog', 'information_schema')");
+		}
 
 		res = executeQueryOrDie(conn, "%s", querybuf.data);
 		destroyPQExpBuffer(cte_oids);
@@ -399,12 +318,14 @@ old_9_6_check_for_unknown_data_type_usage(ClusterInfo *cluster)
 
 	prep_status("Checking for invalid \"unknown\" user columns");
 
-	snprintf(output_path, sizeof(output_path), "tables_using_unknown.txt");
+	snprintf(output_path, sizeof(output_path), "%s/%s",
+				 log_opts.basedir,
+				 "tables_using_unknown.txt");
 
 	if (check_for_data_type_usage(cluster, "pg_catalog.unknown", output_path))
 	{
 		pg_log(PG_REPORT, "fatal\n");
-		pg_fatal("Your installation contains the \"unknown\" data type in user tables.\n"
+		gp_fatal_log("Your installation contains the \"unknown\" data type in user tables.\n"
 				 "This data type is no longer allowed in tables, so this\n"
 				 "cluster cannot currently be upgraded.  You can\n"
 				 "drop the problem columns and restart the upgrade.\n"
@@ -542,13 +463,14 @@ old_11_check_for_sql_identifier_data_type_usage(ClusterInfo *cluster)
 
 	prep_status("Checking for invalid \"sql_identifier\" user columns");
 
-	snprintf(output_path, sizeof(output_path), "tables_using_sql_identifier.txt");
+	snprintf(output_path, sizeof(output_path), "%s/%s",
+			 log_opts.basedir, "tables_using_sql_identifier.txt");
 
 	if (check_for_data_type_usage(cluster, "information_schema.sql_identifier",
 								  output_path))
 	{
 		pg_log(PG_REPORT, "fatal\n");
-		pg_fatal("Your installation contains the \"sql_identifier\" data type in user tables.\n"
+		gp_fatal_log("Your installation contains the \"sql_identifier\" data type in user tables.\n"
 				 "The on-disk format for this data type has changed, so this\n"
 				 "cluster cannot currently be upgraded.  You can\n"
 				 "drop the problem columns and restart the upgrade.\n"
@@ -625,13 +547,13 @@ report_extension_updates(ClusterInfo *cluster)
 	if (found)
 	{
 		report_status(PG_REPORT, "notice");
-		pg_log(PG_REPORT, "\n"
-			   "Your installation contains extensions that should be updated\n"
-			   "with the ALTER EXTENSION command.  The file\n"
-			   "    %s\n"
-			   "when executed by psql by the database superuser will update\n"
-			   "these extensions.\n\n",
-			   output_path);
+		gp_fatal_log(
+				"| Your installation contains extensions that should be updated\n"
+				"| with the ALTER EXTENSION command.  The file\n"
+				"|     %s\n"
+				"| when executed by psql by the database superuser will update\n"
+				"| these extensions.\n\n",
+				output_path);
 	}
 	else
 		check_ok();

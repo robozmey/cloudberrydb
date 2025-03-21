@@ -3,7 +3,6 @@
  * cdbvars.h
  *	  definitions for Greenplum-specific global variables
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2003-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -219,21 +218,6 @@ extern bool verify_gpfdists_cert;
 extern int gp_command_count;
 
 /*
- * gp_safefswritesize
- *
- * should only be set to <N bytes> on file systems that the so called
- * 'torn-write' problem may occur. This guc should be set for the minimum
- * write size that is always safe on this particular file system. The side
- * effect of increasing this value for torn write protection is that single row
- * INSERTs into append only tables will use <N bytes> of space and therefore
- * also slow down SELECTs and become strongly discouraged.
- *
- * On mature file systems where torn write may not occur this GUC should be
- * set to 0 (the default).
- */
-extern int gp_safefswritesize;
-
-/*
  * Gp_write_shared_snapshot
  *
  * The value of this variable is actually meaningless. We use it simply
@@ -264,10 +248,10 @@ extern int	gp_fts_probe_retries; /* GUC var - specifies probe number of retries 
 extern int	gp_fts_probe_timeout; /* GUC var - specifies probe timeout for FTS */
 extern int	gp_fts_probe_interval; /* GUC var - specifies polling interval for FTS */
 #endif
-extern int gp_fts_mark_mirror_down_grace_period;
+extern int  gp_fts_mark_mirror_down_grace_period;
 extern int	gp_fts_replication_attempt_count; /* GUC var - specifies replication max attempt count for FTS */
-extern int  gp_dtx_recovery_interval;
-extern int  gp_dtx_recovery_prepared_period;
+extern int	gp_dtx_recovery_interval;
+extern int	gp_dtx_recovery_prepared_period;
 
 extern int gp_gang_creation_retry_count; /* How many retries ? */
 extern int gp_gang_creation_retry_timer; /* How long between retries */
@@ -559,7 +543,6 @@ extern bool gp_adjust_selectivity_for_outerjoins;
  * Target density for hash-node (HJ).
  */
 extern int gp_hashjoin_tuples_per_bucket;
-extern int gp_hashagg_groups_per_bucket;
 
 /*
  * Damping of selectivities of clauses which pertain to the same base
@@ -655,16 +638,6 @@ extern int explain_memory_verbosity;
  */
 extern bool gp_enable_sort_limit;
 
-/* May Cloudberry discard duplicate rows in sort if it is is wrapped by a
- * DISTINCT clause (unique aggregation operator)?
- *
- * The code does not currently use planner estimates for this.  If enabled,
- * the tactic is used whenever possible.
- *
- * GPDB_12_MERGE_FIXME: Resurrect this
- */
-extern bool gp_enable_sort_distinct;
-
 extern bool trace_sort;
 
 /**
@@ -685,11 +658,6 @@ extern int gp_segworker_relative_priority;
 
 /*  Max size of dispatched plans; 0 if no limit */
 extern int gp_max_plan_size;
-
-/* The default number of batches to use when the hybrid hashed aggregation
- * algorithm (re-)spills in-memory groups to disk.
- */
-extern int gp_hashagg_default_nbatches;
 
 /* Get statistics for partitioned parent from a child */
 extern bool 	gp_statistics_pullup_from_child_partition;
@@ -740,6 +708,7 @@ typedef enum
 									 * insert if no stats are present */
 } GpAutoStatsModeValue;
 
+extern bool	gp_autostats_lock_wait;
 extern int	gp_autostats_mode;
 extern int	gp_autostats_mode_in_functions;
 extern int	gp_autostats_on_change_threshold;

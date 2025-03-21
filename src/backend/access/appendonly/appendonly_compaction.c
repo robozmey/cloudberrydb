@@ -39,6 +39,7 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_appendonly.h"
+#include "catalog/pg_attribute_encoding.h"
 #include "cdb/cdbappendonlyam.h"
 #include "cdb/cdbvars.h"
 #include "commands/progress.h"
@@ -82,19 +83,19 @@ AppendOnlyCompaction_DropSegmentFile(Relation aorel, int segno, AOVacuumRelStats
 	int32		fileSegNo;
 	File		fd;
 
-	Assert(RelationIsAoRows(aorel));
+	Assert(RelationStorageIsAoRows(aorel));
 
 	if (Debug_appendonly_print_compaction)
 		elog(LOG, "Drop segment file: segno %d", segno);
 
 	/* Open and truncate the relation segfile */
-	MakeAOSegmentFileName(aorel, segno, -1, &fileSegNo, filenamepath);
+	MakeAOSegmentFileName(aorel, segno, InvalidFileNumber, &fileSegNo, filenamepath);
 
 	fd = OpenAOSegmentFile(aorel, filenamepath, 0);
 	if (fd >= 0)
 	{
 		TruncateAOSegmentFile(fd, aorel, fileSegNo, 0, vacrelstats);
-		CloseAOSegmentFile(fd);
+		CloseAOSegmentFile(fd, aorel);
 	}
 	else
 	{
@@ -142,7 +143,7 @@ AppendOnlyCompaction_ShouldCompact(Relation aoRelation,
     Oid         visimaprelid;
     Oid         visimapidxid;
 
-	Assert(RelationIsAppendOptimized(aoRelation));
+	Assert(RelationStorageIsAO(aoRelation));
     GetAppendOnlyEntryAuxOids(aoRelation,
                               NULL, NULL, NULL,
                               &visimaprelid, &visimapidxid);
@@ -239,12 +240,12 @@ AppendOnlySegmentFileTruncateToEOF(Relation aorel, int segno, int64 segeof, AOVa
 	int32		fileSegNo;
 	char		filenamepath[MAXPGPATH];
 
-	Assert(RelationIsAoRows(aorel));
+	Assert(RelationStorageIsAoRows(aorel));
 
 	relname = RelationGetRelationName(aorel);
 
 	/* Open and truncate the relation segfile to its eof */
-	MakeAOSegmentFileName(aorel, segno, -1, &fileSegNo, filenamepath);
+	MakeAOSegmentFileName(aorel, segno, InvalidFileNumber, &fileSegNo, filenamepath);
 
 	elogif(Debug_appendonly_print_compaction, LOG,
 		   "Opening AO relation \"%s.%s\", relation id %u, relfilenode %lu (physical segment file #%d, logical EOF " INT64_FORMAT ")",
@@ -259,7 +260,7 @@ AppendOnlySegmentFileTruncateToEOF(Relation aorel, int segno, int64 segeof, AOVa
 	if (fd >= 0)
 	{
 		TruncateAOSegmentFile(fd, aorel, fileSegNo, segeof, vacrelstats);
-		CloseAOSegmentFile(fd);
+		CloseAOSegmentFile(fd, aorel);
 
 		elogif(Debug_appendonly_print_compaction, LOG,
 			   "Successfully truncated AO ROW relation \"%s.%s\", relation id %u, relfilenode %lu (physical segment file #%d, logical EOF " INT64_FORMAT ")",
@@ -407,7 +408,7 @@ AppendOnlySegmentFileFullCompaction(Relation aorel,
 	int64		heap_blks_scanned = 0;
 
 	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY);
-	Assert(RelationIsAoRows(aorel));
+	Assert(RelationStorageIsAoRows(aorel));
 	Assert(insertDesc);
 
 	compact_segno = fsinfo->segno;
@@ -560,7 +561,7 @@ AppendOptimizedCollectDeadSegments(Relation aorel)
 	Oid			segrelid;
 	Bitmapset	*dead_segs = NULL;
 
-	Assert(RelationIsAppendOptimized(aorel));
+	Assert(RelationStorageIsAO(aorel));
 
 	GetAppendOnlyEntryAuxOids(aorel,
 							  &segrelid, NULL, NULL, NULL, NULL);
@@ -668,6 +669,8 @@ AppendOptimizedCollectDeadSegments(Relation aorel)
 static inline void
 AppendOptimizedDropDeadSegment(Relation aorel, int segno, AOVacuumRelStats *vacrelstats)
 {
+	Assert(RelationStorageIsAO(aorel));
+
 	if (RelationIsAoRows(aorel))
 	{
 		AppendOnlyCompaction_DropSegmentFile(aorel, segno, vacrelstats);
@@ -713,7 +716,7 @@ AppendOptimizedTruncateToEOF(Relation aorel, AOVacuumRelStats *vacrelstats)
 	Snapshot	appendOnlyMetaDataSnapshot = RegisterSnapshot(GetCatalogSnapshot(InvalidOid));
 	Oid			segrelid;
 
-	Assert(RelationIsAppendOptimized(aorel));
+	Assert(RelationStorageIsAO(aorel));
 
 	relname = RelationGetRelationName(aorel);
 
@@ -815,7 +818,7 @@ AppendOnlyCompact(Relation aorel,
 	FileSegInfo *fsinfo;
 	Snapshot	appendOnlyMetaDataSnapshot = RegisterSnapshot(GetCatalogSnapshot(InvalidOid));
 
-	Assert(RelationIsAoRows(aorel));
+	Assert(RelationStorageIsAoRows(aorel));
 	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY);
 
 	relname = RelationGetRelationName(aorel);

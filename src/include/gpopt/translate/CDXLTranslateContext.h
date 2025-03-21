@@ -1,7 +1,6 @@
 //---------------------------------------------------------------------------
 //	Greenplum Database
 //	Copyright (C) 2010 Greenplum, Inc.
-//	Portions Copyright (c) 2023, HashData Technology Limited.
 //
 //	@filename:
 //		CDXLTranslateContext.h
@@ -18,6 +17,12 @@
 #ifndef GPDXL_CDXLTranslateContext_H
 #define GPDXL_CDXLTranslateContext_H
 
+extern "C" {
+#include "postgres.h"
+
+#include "nodes/plannodes.h"
+}
+
 #include "gpos/base.h"
 #include "gpos/common/CHashMap.h"
 #include "gpos/common/CHashMapIter.h"
@@ -33,24 +38,24 @@ namespace gpdxl
 using namespace gpos;
 
 // hash maps mapping ULONG -> TargetEntry
-typedef CHashMap<ULONG, TargetEntry, gpos::HashValue<ULONG>,
-				 gpos::Equals<ULONG>, CleanupDelete<ULONG>, CleanupNULL>
-	ULongToTargetEntryMap;
+using ULongToTargetEntryMap =
+	CHashMap<ULONG, TargetEntry, gpos::HashValue<ULONG>, gpos::Equals<ULONG>,
+			 CleanupDelete<ULONG>, CleanupNULL>;
 
-typedef CHashMapIter<ULONG, TargetEntry, gpos::HashValue<ULONG>,
-				 gpos::Equals<ULONG>, CleanupDelete<ULONG>, CleanupNULL>
-	ULongToTargetEntryMapIter;
+using ULongToTargetEntryMapIter =
+	CHashMapIter<ULONG, TargetEntry, gpos::HashValue<ULONG>, gpos::Equals<ULONG>,
+				 CleanupDelete<ULONG>, CleanupNULL>;
 
 // hash maps mapping ULONG -> CMappingElementColIdParamId
-typedef CHashMap<ULONG, CMappingElementColIdParamId, gpos::HashValue<ULONG>,
-				 gpos::Equals<ULONG>, CleanupDelete<ULONG>,
-				 CleanupRelease<CMappingElementColIdParamId> >
-	ULongToColParamMap;
+using ULongToColParamMap =
+	CHashMap<ULONG, CMappingElementColIdParamId, gpos::HashValue<ULONG>,
+			 gpos::Equals<ULONG>, CleanupDelete<ULONG>,
+			 CleanupRelease<CMappingElementColIdParamId>>;
 
-typedef CHashMapIter<ULONG, CMappingElementColIdParamId, gpos::HashValue<ULONG>,
-					 gpos::Equals<ULONG>, CleanupDelete<ULONG>,
-					 CleanupRelease<CMappingElementColIdParamId> >
-	ULongToColParamMapIter;
+using ULongToColParamMapIter =
+	CHashMapIter<ULONG, CMappingElementColIdParamId, gpos::HashValue<ULONG>,
+				 gpos::Equals<ULONG>, CleanupDelete<ULONG>,
+				 CleanupRelease<CMappingElementColIdParamId>>;
 
 
 //---------------------------------------------------------------------------
@@ -80,6 +85,8 @@ private:
 	// to use OUTER instead of 0 for Var::varno in Agg target lists (MPP-12034)
 	BOOL m_is_child_agg_node;
 
+	const Query *m_query{nullptr};
+
 	// copy the params hashmap
 	void CopyParamHashmap(ULongToColParamMap *original);
 	void CopyTargetEntryHashmap(ULongToTargetEntryMap *original);
@@ -88,7 +95,8 @@ public:
 	CDXLTranslateContext(const CDXLTranslateContext &) = delete;
 
 	// ctor/dtor
-	CDXLTranslateContext(CMemoryPool *mp, BOOL is_child_agg_node);
+	CDXLTranslateContext(CMemoryPool *mp, BOOL is_child_agg_node,
+						 const Query *query);
 
 	CDXLTranslateContext(CMemoryPool *mp, BOOL is_child_agg_node,
 						 ULongToColParamMap *original);
@@ -111,6 +119,12 @@ public:
 		return m_colid_to_target_entry_map;
 	}
 
+	const Query *
+	GetQuery()
+	{
+		return m_query;
+	}
+
 	// return the target entry corresponding to the given ColId
 	const TargetEntry *GetTargetEntry(ULONG colid) const;
 
@@ -130,8 +144,8 @@ public:
 
 
 // array of dxl translation context
-typedef CDynamicPtrArray<const CDXLTranslateContext, CleanupNULL>
-	CDXLTranslationContextArray;
+using CDXLTranslationContextArray =
+	CDynamicPtrArray<const CDXLTranslateContext, CleanupNULL>;
 }  // namespace gpdxl
 
 #endif	// !GPDXL_CDXLTranslateContext_H

@@ -2,7 +2,6 @@
  *
  * pg_ctl --- start/stops/restarts the PostgreSQL server
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  *
  * src/bin/pg_ctl/pg_ctl.c
@@ -41,7 +40,7 @@ typedef long pgpid_t;
 
 
 /* postgres version ident string */
-#define PM_VERSIONSTR "postgres (Cloudberry Database) " PG_VERSION "\n"
+#define PM_VERSIONSTR "postgres (Apache Cloudberry) " PG_VERSION "\n"
 
 
 typedef enum
@@ -981,7 +980,7 @@ do_init(void)
 	char	   *cmd;
 
 	if (exec_path == NULL)
-		exec_path = find_other_exec_or_die(argv0, "initdb", "initdb (Cloudberry Database) " PG_VERSION "\n");
+		exec_path = find_other_exec_or_die(argv0, "initdb", "initdb (Apache Cloudberry) " PG_VERSION "\n");
 
 	if (pgdata_opt == NULL)
 		pgdata_opt = "";
@@ -2566,12 +2565,12 @@ main(int argc, char **argv)
 		}
 		else if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			printf("%s (Cloudberry Database) %s\n", progname, PG_VERSION);
+			printf("%s (Apache Cloudberry) %s\n", progname, PG_VERSION);
 			exit(0);
 		}
 		else if (strcmp(argv[1], "--gp-version") == 0)
 		{
-			printf("%s (Cloudberry Database) %s\n", progname, GP_VERSION);
+			printf("%s (Apache Cloudberry) %s\n", progname, GP_VERSION);
 			exit(0);
 		}
 	}

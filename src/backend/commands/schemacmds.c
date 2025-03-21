@@ -3,7 +3,6 @@
  * schemacmds.c
  *	  schema creation/manipulation commands
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -35,6 +34,7 @@
 #include "commands/tag.h"
 #include "miscadmin.h"
 #include "parser/parse_utilcmd.h"
+#include "parser/scansup.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -63,14 +63,16 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 {
 	const char *schemaName = stmt->schemaname;
 	Oid			namespaceId;
-	OverrideSearchPath *overridePath;
 	List	   *parsetree_list;
 	ListCell   *parsetree_item;
 	Oid			owner_uid;
 	Oid			saved_uid;
 	int			save_sec_context;
+	int			save_nestlevel;
+	char	   *nsp = namespace_search_path;
 	AclResult	aclresult;
 	ObjectAddress address;
+	StringInfoData pathbuf;
 	bool		shouldDispatch = (Gp_role == GP_ROLE_DISPATCH && 
 								  !IsBootstrapProcessingMode());
 
@@ -92,7 +94,7 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 		InitTempTableNamespace();
 		return InvalidOid;
 	}
-
+#if 0
 	if (stmt->pop_search_path)
 	{
 		Assert(Gp_role == GP_ROLE_EXECUTE);
@@ -102,7 +104,7 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 
 		return InvalidOid;
 	}
-
+#endif
 	GetUserIdAndSecContext(&saved_uid, &save_sec_context);
 
 	/*
@@ -141,7 +143,7 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 	check_is_member_of_role(saved_uid, owner_uid);
 
 	/* Additional check to protect reserved schema names */
-	if (!allowSystemTableMods && IsReservedName(schemaName))
+	if (!allowSystemTableMods && (IsReservedName(schemaName) || IsReservedGpName(schemaName)))
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_RESERVED_NAME),
@@ -157,14 +159,25 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 	 * the permissions checks, but since CREATE TABLE IF NOT EXISTS makes its
 	 * creation-permission check first, we do likewise.
 	 */
-	if (stmt->if_not_exists &&
-		SearchSysCacheExists1(NAMESPACENAME, PointerGetDatum(schemaName)))
+	if (stmt->if_not_exists)
 	{
-		ereport(NOTICE,
-				(errcode(ERRCODE_DUPLICATE_SCHEMA),
-				 errmsg("schema \"%s\" already exists, skipping",
-						schemaName)));
-		return InvalidOid;
+		namespaceId = get_namespace_oid(schemaName, true);
+		if (OidIsValid(namespaceId))
+		{
+			/*
+			 * If we are in an extension script, insist that the pre-existing
+			 * object be a member of the extension, to avoid security risks.
+			 */
+			ObjectAddressSet(address, NamespaceRelationId, namespaceId);
+			checkMembershipInCurrentExtension(&address);
+
+			/* OK to skip */
+			ereport(NOTICE,
+					(errcode(ERRCODE_DUPLICATE_SCHEMA),
+					 errmsg("schema \"%s\" already exists, skipping",
+							schemaName)));
+			return InvalidOid;
+		}
 	}
 
 	/* Create the schema's namespace */
@@ -233,6 +246,9 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 	 *
 	 * (The setting will be restored at the end of this routine, or in case of
 	 * error, transaction abort will clean things up.)
+	 *
+	 * Greenplum delays setting the current user until the query is dispatched
+	 * to QEs.
 	 */
 	if (saved_uid != owner_uid)
 		SetUserIdAndSecContext(owner_uid,
@@ -242,14 +258,26 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 	CommandCounterIncrement();
 
 	/*
-	 * Temporarily make the new namespace be the front of the search path, as
-	 * well as the default creation target namespace.  This will be undone at
-	 * the end of this routine, or upon error.
+	 * Prepend the new schema to the current search path.
+	 *
+	 * We use the equivalent of a function SET option to allow the setting to
+	 * persist for exactly the duration of the schema creation.  guc.c also
+	 * takes care of undoing the setting on error.
 	 */
-	overridePath = GetOverrideSearchPath(CurrentMemoryContext);
-	overridePath->schemas = lcons_oid(namespaceId, overridePath->schemas);
-	/* XXX should we clear overridePath->useTemp? */
-	PushOverrideSearchPath(overridePath);
+	save_nestlevel = NewGUCNestLevel();
+
+	initStringInfo(&pathbuf);
+	appendStringInfoString(&pathbuf, quote_identifier(schemaName));
+
+	while (scanner_isspace(*nsp))
+		nsp++;
+
+	if (*nsp != '\0')
+		appendStringInfo(&pathbuf, ", %s", nsp);
+
+	(void) set_config_option("search_path", pathbuf.data,
+							 PGC_USERSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
 
 	/*
 	 * Report the new schema to possibly interested event triggers.  Note we
@@ -303,29 +331,10 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 		CommandCounterIncrement();
 	}
 
-	if (shouldDispatch)
-	{
-		elog(DEBUG5, "shouldDispatch = true, namespaceOid = %d, pop_search_path = true", namespaceId);
-
-		/*
-		 * Final dispatch to notify QE call PopOverrideSearchPath so that side effects
-		 * are not visible for later commands.
-		 */
-		stmt->pop_search_path = true;
-		CdbDispatchUtilityStatement((Node *) stmt,
-									DF_CANCEL_ON_ERROR |
-									DF_WITH_SNAPSHOT |
-									DF_NEED_TWO_PHASE,
-									GetAssignedOidsForDispatch(),
-									NULL);
-		stmt->pop_search_path = false;
-	}
-
-	if (Gp_role != GP_ROLE_EXECUTE)
-	{
-		/* Reset search path to normal state */
-		PopOverrideSearchPath();
-	}
+	/*
+	 * Restore the GUC variable search_path we set above.
+	 */
+	AtEOXact_GUC(true, save_nestlevel);
 
 	/* Reset current user and security context */
 	SetUserIdAndSecContext(saved_uid, save_sec_context);
@@ -405,7 +414,7 @@ RemoveSchemaById(Oid schemaOid)
 
 	/*
 	 * CBDB GITHUB ISSUE:
-	 * https://github.com/cloudberrydb/cloudberrydb/issues/504
+	 * https://github.com/apache/cloudberry/issues/504
 	 */
 	if (Gp_role == GP_ROLE_DISPATCH)
 		MetaTrackDropObject(NamespaceRelationId, schemaOid);
@@ -462,7 +471,7 @@ RenameSchema(const char *oldname, const char *newname)
 		aclcheck_error(aclresult, OBJECT_DATABASE,
 					   get_database_name(MyDatabaseId));
 
-	if (!allowSystemTableMods && IsReservedName(oldname))
+	if (!allowSystemTableMods && (IsReservedName(oldname) || IsReservedGpName(oldname)))
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -470,7 +479,7 @@ RenameSchema(const char *oldname, const char *newname)
 				 errdetail("Schema %s is reserved for system use.", oldname)));
 	}
 
-	if (!allowSystemTableMods && IsReservedName(newname))
+	if (!allowSystemTableMods && (IsReservedName(newname) || IsReservedGpName(newname)))
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_RESERVED_NAME),
@@ -541,7 +550,7 @@ AlterSchemaOwner(const char *name, Oid newOwnerId)
 				(errcode(ERRCODE_UNDEFINED_SCHEMA),
 				 errmsg("schema \"%s\" does not exist", name)));
 
-	if (!allowSystemTableMods && IsReservedName(name))
+	if (!allowSystemTableMods && (IsReservedName(name) || IsReservedGpName(name)))
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),

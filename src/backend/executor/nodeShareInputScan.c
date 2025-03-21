@@ -44,7 +44,6 @@
  * underlying tuplestore open, until all the consumers have finished.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2007-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2008, PostgreSQL Global Development Group
@@ -68,6 +67,7 @@
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/faultinjector.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/tuplestore.h"
@@ -183,7 +183,7 @@ typedef struct shareinput_local_state
 } shareinput_local_state;
 
 static shareinput_Xslice_reference *get_shareinput_reference(int share_id);
-static void release_shareinput_reference(shareinput_Xslice_reference *ref);
+static void release_shareinput_reference(shareinput_Xslice_reference *ref, bool reader_squelching);
 static void shareinput_release_callback(ResourceReleasePhase phase,
 										bool isCommit,
 										bool isTopLevel,
@@ -231,7 +231,7 @@ init_tuplestore_state(ShareInputScanState *node)
 			{
 				char		rwfile_prefix[100];
 
-				elog(DEBUG1, "SISC writer (shareid=%d, slice=%d): No tuplestore yet, creating tuplestore",
+				elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC WRITER (shareid=%d, slice=%d): No tuplestore yet, creating tuplestore",
 					 sisc->share_id, currentSliceId);
 
 				ts = tuplestore_begin_heap(true, /* randomAccess */
@@ -374,7 +374,7 @@ ExecShareInputScan(PlanState *pstate)
 	 * ShareInputScan is one but not the last one of Sequence's subplans.
 	 */
 	if (sisc->discard_output)
-	  return NULL;
+		return NULL;
 
 	slot = node->ss.ps.ps_ResultTupleSlot;
 
@@ -497,7 +497,18 @@ ExecInitShareInputScan(ShareInputScan *node, EState *estate, int eflags)
 
 	/* Get a lease on the shared state */
 	if (node->cross_slice)
+	{
+#ifdef FAULT_INJECTOR
+		if (node->producer_slice_id == currentSliceId)
+		{
+			FaultInjector_InjectFaultIfSet("get_shareinput_reference_delay_writer",
+										   DDLNotSpecified,
+										   "",  // databaseName
+										   ""); // tableName
+		}
+#endif
 		sisstate->ref = get_shareinput_reference(node->share_id);
+	}
 	else
 		sisstate->ref = NULL;
 
@@ -566,7 +577,7 @@ ExecEndShareInputScan(ShareInputScanState *node)
 				}
 			}
 		}
-		release_shareinput_reference(node->ref);
+		release_shareinput_reference(node->ref, false);
 		node->ref = NULL;
 	}
 
@@ -643,7 +654,7 @@ ExecSquelchShareInputScan(ShareInputScanState *node, bool force)
 			 */
 			if (!local_state->ready)
 			{
-				elog(DEBUG1, "SISC WRITER (shareid=%d, slice=%d): initializing because squelched",
+				elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC WRITER (shareid=%d, slice=%d): initializing because squelched",
 					 sisc->share_id, currentSliceId);
 				init_tuplestore_state(node);
 			}
@@ -660,7 +671,7 @@ ExecSquelchShareInputScan(ShareInputScanState *node, bool force)
 				shareinput_reader_notifydone(node->ref, sisc->nconsumers);
 				local_state->closed = true;
 			}
-			release_shareinput_reference(node->ref);
+			release_shareinput_reference(node->ref, true);
 			node->ref = NULL;
 		}
 	}
@@ -717,7 +728,6 @@ ShareInputShmemInit(void)
 	{
 		HASHCTL		info;
 
-		/* GPDB_12_MERGE_FIXME: would be nicer to store this hash in the DSM segment or DSA */
 		info.keysize = sizeof(shareinput_tag);
 		info.entrysize = sizeof(shareinput_Xslice_state);
 
@@ -829,6 +839,8 @@ get_shareinput_reference(int share_id)
 		pg_atomic_init_u32(&xslice_state->ndone, 0);
 
 		ConditionVariableInit(&xslice_state->ready_done_cv);
+		elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC (shareid=%d, slice=%d): initialized xslice state",
+			 share_id, currentSliceId);
 	}
 
 	xslice_state->refcount++;
@@ -847,16 +859,25 @@ get_shareinput_reference(int share_id)
  * Release reference to a shared scan.
  *
  * The reference count in the shared memory slot is decreased, and if
- * it reaches zero, it is destroyed.
+ * it reaches zero, it is destroyed if not in reader squelching.
+ * The reference is also removed from the list of references tracked by
+ * the current ResourceOwner.
+ *
+ * NB: We don't want to destroy the shared state if in reader squelching,
+ * because there might be other readers or writers that are yet to reference
+ * it. So leave the work to the producer.
  */
 static void
-release_shareinput_reference(shareinput_Xslice_reference *ref)
+release_shareinput_reference(shareinput_Xslice_reference *ref, bool reader_squelching)
 {
 	shareinput_Xslice_state *state = ref->xslice_state;
 
 	LWLockAcquire(ShareInputScanLock, LW_EXCLUSIVE);
+	state->refcount--;
+	elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC (shareid=%d, slice=%d): decreased xslice state refcount to %d",
+		 state->tag.share_id, currentSliceId, state->refcount);
 
-	if (state->refcount == 1)
+	if (!reader_squelching && state->refcount == 0)
 	{
 		bool		found;
 
@@ -865,9 +886,11 @@ release_shareinput_reference(shareinput_Xslice_reference *ref)
 						   HASH_REMOVE,
 						   &found);
 		Assert(found);
+		elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC (shareid=%d, slice=%d): removed xslice state",
+			 state->tag.share_id, currentSliceId);
 	}
-	else
-		state->refcount--;
+	else if (state->refcount == 0)
+		SIMPLE_FAULT_INJECTOR("get_shareinput_reference_done");
 
 	dlist_delete(&ref->node);
 
@@ -901,7 +924,7 @@ shareinput_release_callback(ResourceReleasePhase phase,
 		{
 			if (isCommit)
 				elog(WARNING, "shareinput lease reference leak: lease %p still referenced", ref);
-			release_shareinput_reference(ref);
+			release_shareinput_reference(ref, false);
 		}
 	}
 }
@@ -919,7 +942,7 @@ shareinput_reader_waitready(shareinput_Xslice_reference *ref)
 {
 	shareinput_Xslice_state *state = ref->xslice_state;
 
-	elog(DEBUG1, "SISC READER (shareid=%d, slice=%d): Waiting for producer",
+	elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC READER (shareid=%d, slice=%d): Waiting for producer",
 		 ref->share_id, currentSliceId);
 
 	/*
@@ -941,7 +964,7 @@ shareinput_reader_waitready(shareinput_Xslice_reference *ref)
 	ConditionVariableCancelSleep();
 
 	/* it's ready now */
-	elog(DEBUG1, "SISC READER (shareid=%d, slice=%d): Wait ready got writer's handshake",
+	elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC READER (shareid=%d, slice=%d): Wait ready got writer's handshake",
 		 ref->share_id, currentSliceId);
 }
 
@@ -967,7 +990,7 @@ shareinput_writer_notifyready(shareinput_Xslice_reference *ref)
 
 	ConditionVariableBroadcast(&state->ready_done_cv);
 
-	elog(DEBUG1, "SISC WRITER (shareid=%d, slice=%d): wrote notify_ready",
+	elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC WRITER (shareid=%d, slice=%d): wrote notify_ready",
 		 ref->share_id, currentSliceId);
 }
 
@@ -989,7 +1012,7 @@ shareinput_reader_notifydone(shareinput_Xslice_reference *ref, int nconsumers)
 	if (ndone >= nconsumers)
 		ConditionVariableBroadcast(&state->ready_done_cv);
 
-	elog(DEBUG1, "SISC READER (shareid=%d, slice=%d): wrote notify_done",
+	elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC READER (shareid=%d, slice=%d): wrote notify_done",
 		 ref->share_id, currentSliceId);
 }
 
@@ -1020,7 +1043,7 @@ shareinput_writer_waitdone(shareinput_Xslice_reference *ref, int nconsumers)
 		int	ndone = pg_atomic_read_u32(&state->ndone);
 		if (ndone < nconsumers)
 		{
-			elog(DEBUG1, "SISC WRITER (shareid=%d, slice=%d): waiting for DONE message from %d / %d readers",
+			elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC WRITER (shareid=%d, slice=%d): waiting for DONE message from %d / %d readers",
 				 ref->share_id, currentSliceId, nconsumers - ndone, nconsumers);
 
 			ConditionVariableSleep(&state->ready_done_cv, WAIT_EVENT_SHAREINPUT_SCAN);
@@ -1034,7 +1057,7 @@ shareinput_writer_waitdone(shareinput_Xslice_reference *ref, int nconsumers)
 		break;
 	}
 
-	elog(DEBUG1, "SISC WRITER (shareid=%d, slice=%d): got DONE message from %d readers",
+	elog((Debug_shareinput_xslice ? LOG : DEBUG1), "SISC WRITER (shareid=%d, slice=%d): got DONE message from %d readers",
 		 ref->share_id, currentSliceId, nconsumers);
 
 	/* it's all done now */

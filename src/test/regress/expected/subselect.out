@@ -1358,16 +1358,10 @@ select * from int4_tbl o where (f1, f1) in
                            Output: i.f1, ((generate_series(1, 50)) / 10)
                            ->  ProjectSet
                                  Output: generate_series(1, 50), i.f1
-                                 ->  GroupAggregate
+                                 ->  Seq Scan on public.int4_tbl i
                                        Output: i.f1
-                                       Group Key: i.f1
-                                       ->  Sort
-                                             Output: i.f1
-                                             Sort Key: i.f1
-                                             ->  Seq Scan on public.int4_tbl i
-                                                   Output: i.f1
  Optimizer: Postgres query optimizer
-(25 rows)
+(20 rows)
 
 select * from int4_tbl o where (f1, f1) in
   (select f1, generate_series(1,50) / 10 g from int4_tbl i group by f1);
@@ -1588,16 +1582,10 @@ set optimizer to off;
 -- Test that LIMIT can be pushed to SORT through a subquery that just projects
 -- columns.  We check for that having happened by looking to see if EXPLAIN
 -- ANALYZE shows that a top-N sort was used.  We must suppress or filter away
--- all the non-invariant parts of the EXPLAIN ANALYZE output.
+-- all the non-invariant parts of the EXPLAIN ANALYZE output. Use a replicated
+-- table to genarate a plan like: Limit -> Subquery -> Sort
 --
--- GPDB_12_MERGE_FIXME: we need to revisit the following test because it is not
--- testing what it advertized in the above comment. Specificly, we don't
--- execute top-N sort for the planner plan. Orca on the other hand never honors
--- ORDER BY in a subquery, as permitted by the SQL spec.  Consider rewriting
--- the test using a replicated table so that we get the plan stucture like
--- this: Limit -> Subquery -> Sort
---
-create table sq_limit (pk int primary key, c1 int, c2 int);
+create table sq_limit (pk int primary key, c1 int, c2 int) distributed replicated;
 insert into sq_limit values
     (1, 1, 1),
     (2, 2, 2),
@@ -1623,18 +1611,17 @@ begin
 end;
 $$;
 select * from explain_sq_limit();
-                              explain_sq_limit                              
-----------------------------------------------------------------------------
- Limit (actual rows=3 loops=1)
-   ->  Gather Motion 3:1  (slice1; segments: 3) (actual rows=3 loops=1)
-         ->  Limit (actual rows=3 loops=1)
-               ->  Subquery Scan on x (actual rows=3 loops=1)
-                     ->  Sort (actual rows=3 loops=1)
-                           Sort Key: sq_limit.c1, sq_limit.pk
-                           Sort Method:  quicksort  Memory: xxx
-                           ->  Seq Scan on sq_limit (actual rows=5 loops=1)
+                           explain_sq_limit                           
+----------------------------------------------------------------------
+ Gather Motion 1:1  (slice1; segments: 1) (actual rows=3 loops=1)
+   ->  Limit (actual rows=3 loops=1)
+         ->  Subquery Scan on x (actual rows=3 loops=1)
+               ->  Sort (actual rows=3 loops=1)
+                     Sort Key: sq_limit.c1, sq_limit.pk
+                     Sort Method:  top-N heapsort  Memory: xxx
+                     ->  Seq Scan on sq_limit (actual rows=8 loops=1)
  Optimizer: Postgres query optimizer
-(9 rows)
+(8 rows)
 
 -- a subpath is sorted under a subqueryscan. however, the subqueryscan is not.
 -- whether the order of subpath can applied to the subqueryscan is up-to-implement.
@@ -1726,24 +1713,48 @@ select * from x where f1 = 1;
 (7 rows)
 
 -- Volatile functions prevent inlining
--- GPDB_12_MERGE_FIXME: inlining happens on GPDB: But the plan seems OK
--- nevertheless. Is the GPDB planner smart, and notices that this is
--- ok to inline, or is it doing something that would be unsafe in more
--- complicated queries? Investigte
+-- Prevent inlining happens on GPDB, inlining may cause wrong results.
+-- For example, nextval() function.
 explain (verbose, costs off)
 with x as (select * from (select f1, random() from subselect_tbl) ss)
 select * from x where f1 = 1;
-                 QUERY PLAN                 
---------------------------------------------
- Gather Motion 1:1  (slice1; segments: 1)
-   Output: subselect_tbl.f1, (random())
-   ->  Seq Scan on public.subselect_tbl
-         Output: subselect_tbl.f1, random()
-         Filter: (subselect_tbl.f1 = 1)
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: x.f1, x.random
+   ->  Subquery Scan on x
+         Output: x.f1, x.random
+         Filter: (x.f1 = 1)
+         ->  Shared Scan (share slice:id 1:0)
+               Output: share0_ref1.f1, share0_ref1.random
+               ->  Seq Scan on public.subselect_tbl
+                     Output: subselect_tbl.f1, random()
  Optimizer: Postgres query optimizer
- Settings: gp_cte_sharing=on, optimizer=off
-(7 rows)
+(10 rows)
 
+create temporary sequence ts;
+create table vol_test(a int, b int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+explain (verbose, costs off)
+with x as (select * from (select a, nextval('ts') from vol_test) ss)
+select * from x where a = 1;
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: x.a, x.nextval
+   ->  Subquery Scan on x
+         Output: x.a, x.nextval
+         Filter: (x.a = 1)
+         ->  Shared Scan (share slice:id 1:0)
+               Output: share0_ref1.a, share0_ref1.nextval
+               ->  Seq Scan on public.vol_test
+                     Output: vol_test.a, nextval('ts'::regclass)
+ Optimizer: Postgres query optimizer
+(10 rows)
+
+drop sequence ts;
+drop table vol_test;
 -- SELECT FOR UPDATE cannot be inlined
 -- GPDB: select statement with locking clause is not easy to fully supported
 -- in greenplum. The following case even with GDD enabled greenplum will still
@@ -1821,11 +1832,6 @@ select * from x, x x2 where x.n = x2.n;
 (19 rows)
 
 -- Multiply-referenced CTEs can't be inlined if they contain outer self-refs
--- start_ignore
--- GPDB_12_MERGE_FIXME: This currenty produces incorrect results on GPDB.
--- It's not a new issue, but it was exposed by this new upstream test case
--- with the PostgreSQL v12 merge.
--- See https://github.com/greenplum-db/gpdb/issues/10014
 explain (verbose, costs off)
 with recursive x(a) as
   ((values ('a'), ('b'))
@@ -1834,25 +1840,21 @@ with recursive x(a) as
     select z.a || z1.a as a from z cross join z as z1
     where length(z.a || z1.a) < 5))
 select * from x;
-                        QUERY PLAN                        
-----------------------------------------------------------
- CTE Scan on x
-   Output: x.a
-   CTE x
-     ->  Recursive Union
-           ->  Values Scan on "*VALUES*"
-                 Output: "*VALUES*".column1
-           ->  Nested Loop
-                 Output: (z.a || z1.a)
-                 Join Filter: (length((z.a || z1.a)) < 5)
-                 CTE z
-                   ->  WorkTable Scan on x x_1
-                         Output: x_1.a
-                 ->  CTE Scan on z
-                       Output: z.a
-                 ->  CTE Scan on z z1
-                       Output: z1.a
-(16 rows)
+                    QUERY PLAN                     
+---------------------------------------------------
+ Recursive Union
+   ->  Values Scan on "*VALUES*"
+         Output: "*VALUES*".column1
+   ->  Nested Loop
+         Output: (x.a || x_1.a)
+         Join Filter: (length((x.a || x_1.a)) < 5)
+         ->  WorkTable Scan on x
+               Output: x.a
+         ->  WorkTable Scan on x x_1
+               Output: x_1.a
+ Settings: optimizer = 'off'
+ Optimizer: Postgres query optimizer
+(12 rows)
 
 with recursive x(a) as
   ((values ('a'), ('b'))
@@ -1887,7 +1889,6 @@ select * from x;
  bbbb
 (22 rows)
 
--- end_ignore
 explain (verbose, costs off)
 with recursive x(a) as
   ((values ('a'), ('b'))
@@ -1906,8 +1907,8 @@ select * from x;
          ->  WorkTable Scan on x
                Output: x.a
                Filter: (length((x.a || x.a)) < 5)
+ Settings: optimizer = 'off'
  Optimizer: Postgres query optimizer
- Settings: gp_cte_sharing=on, optimizer=off
 (10 rows)
 
 with recursive x(a) as
@@ -1980,3 +1981,120 @@ select * from x for update;
 (5 rows)
 
 set gp_cte_sharing to off;
+-- Ensure that both planners produce valid plans for the query with the nested
+-- SubLink, which contains attributes referenced in query's GROUP BY clause.
+-- Due to presence of non-grouping columns in targetList, ORCA performs query
+-- normalization, during which ORCA establishes a correspondence between vars
+-- from targetlist entries to grouping attributes. And this process should
+-- correctly handle nested structures. The inner part of SubPlan in the test
+-- should contain only t.j.
+-- start_ignore
+drop table if exists t;
+NOTICE:  table "t" does not exist, skipping
+-- end_ignore
+create table t (i int, j int) distributed by (i);
+insert into t values (1, 2);
+explain (verbose, costs off)
+select j,
+(select j from (select j) q2)
+from t
+group by i, j;
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: t.j, ((SubPlan 1)), t.i
+   ->  HashAggregate
+         Output: t.j, (SubPlan 1), t.i
+         Group Key: t.i, t.j
+         ->  Seq Scan on public.t
+               Output: t.i, t.j
+         SubPlan 1
+           ->  Result
+                 Output: t.j
+ Optimizer: Postgres-based planner
+(11 rows)
+
+select j,
+(select j from (select j) q2)
+from t
+group by i, j;
+ j | j 
+---+---
+ 2 | 2
+(1 row)
+
+-- Ensure that both planners produce valid plans for the query with the nested
+-- SubLink when this SubLink is inside the GROUP BY clause. Attribute, which is
+-- not grouping column (1 as c), is added to query targetList to make ORCA
+-- perform query normalization. During normalization ORCA modifies the vars of
+-- the grouping elements of targetList in order to produce a new Query tree.
+-- The modification of vars inside nested part of SubLinks should be handled
+-- correctly. ORCA shouldn't fall back due to missing variable entry as a result
+-- of incorrect query normalization.
+explain (verbose, costs off)
+select j, 1 as c,
+(select j from (select j) q2) q1
+from t
+group by j, q1;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: t.j, 1, ((SubPlan 1))
+   ->  HashAggregate
+         Output: t.j, 1, ((SubPlan 1))
+         Group Key: t.j, ((SubPlan 1))
+         ->  Redistribute Motion 3:3  (slice2; segments: 3)
+               Output: t.j, ((SubPlan 1))
+               Hash Key: t.j, ((SubPlan 1))
+               ->  HashAggregate
+                     Output: t.j, ((SubPlan 1))
+                     Group Key: t.j, (SubPlan 1)
+                     ->  Seq Scan on public.t
+                           Output: t.j, (SubPlan 1)
+                           SubPlan 1
+                             ->  Result
+                                   Output: t.j
+ Optimizer: Postgres-based planner
+(17 rows)
+
+select j, 1 as c,
+(select j from (select j) q2) q1
+from t
+group by j, q1;
+ j | c | q1 
+---+---+----
+ 2 | 1 |  2
+(1 row)
+
+-- Ensure that both planners produce valid plans for the query with the nested
+-- SubLink, and this SubLink is under aggregation. ORCA shouldn't fall back due
+-- to missing variable entry as a result of incorrect query normalization. ORCA
+-- should correctly process args of the aggregation during normalization.
+explain (verbose, costs off)
+select (select max((select t.i))) from t;
+                   QUERY PLAN                   
+------------------------------------------------
+ Finalize Aggregate
+   Output: (SubPlan 2)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: (PARTIAL max((SubPlan 1)))
+         ->  Partial Aggregate
+               Output: PARTIAL max((SubPlan 1))
+               ->  Seq Scan on public.t
+                     Output: t.i, t.j
+               SubPlan 1
+                 ->  Result
+                       Output: t.i
+   SubPlan 2
+     ->  Result
+           Output: max((SubPlan 1))
+ Optimizer: Postgres-based planner
+(15 rows)
+
+select (select max((select t.i))) from t;
+ max 
+-----
+   1
+(1 row)
+
+drop table t;

@@ -46,21 +46,22 @@ CREATE TABLE tenk_aocs3 (like tenk_heap_for_aocs) with (appendonly=true, orienta
 CREATE TABLE tenk_aocs4 (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, compresslevel=1, compresstype=zlib) distributed by(unique1);
 CREATE TABLE tenk_aocs5 (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, compresslevel=6, compresstype=zlib) distributed by(unique1);
 CREATE TABLE tenk_aocs6 (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, compresslevel=6, compresstype=zlib, blocksize=1048576, checksum=true) distributed by(unique1);
+CREATE TABLE tenk_aocs7 (like tenk_heap_for_aocs) with (appendonly, orientation=column, compresslevel=6, checksum) distributed by(unique1);
 -- invalid combinations
 -- col instead of column
-CREATE TABLE tenk_aocs7 (like tenk_heap_for_aocs) with (appendonly=true, orientation=col) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (appendonly=true, orientation=col) distributed by(unique1);
 -- no parentheses surrounding storage options
-CREATE TABLE tenk_aocs8 (like tenk_heap_for_aocs) with appendonly=true, orientation=column distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with appendonly=true, orientation=column distributed by(unique1);
 -- no comma separating storage options
-CREATE TABLE tenk_aocs9 (like tenk_heap_for_aocs) with (appendonly=true orientation=column) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (appendonly=true orientation=column) distributed by(unique1);
 -- appendonly=false with orientation=column should not work
-CREATE TABLE tenk_aocs10 (like tenk_heap_for_aocs) with (appendonly=false, orientation=column, compresslevel=6, checksum=true) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (appendonly=false, orientation=column, compresslevel=6, checksum=true) distributed by(unique1);
 -- block size must be between 8KB and 2MB w/ 8KB multiple
-CREATE TABLE tenk_aocs11 (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, blocksize=100) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, blocksize=100) distributed by(unique1);
 -- cannot have compresslevel 0
-CREATE TABLE tenk_aocs12 (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, compresslevel=0, compresstype=zlib) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, compresslevel=0, compresstype=zlib) distributed by(unique1);
 -- orientation=column must be combined with appendonly=true
-CREATE TABLE tenk_aocs13 (like tenk_heap_for_aocs) with (orientation=column) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (orientation=column) distributed by(unique1);
 
 
 --------------------
@@ -69,6 +70,7 @@ CREATE TABLE tenk_aocs13 (like tenk_heap_for_aocs) with (orientation=column) dis
 
 -- check pg_appendonly
 SELECT c.relname, a.blocksize, a.compresstype, a.compresslevel, a.checksum FROM pg_class c, pg_appendonly a WHERE c.relname LIKE 'tenk_aocs%' AND c.oid=a.relid ORDER BY c.relname;
+SELECT c.relname, count(a.attnum) FROM pg_attribute_encoding a, pg_class c WHERE a.attrelid=c.oid AND c.relname LIKE 'tenk_aocs%' GROUP BY c.relname;
 
 --------------------
 -- supported sql
@@ -243,7 +245,7 @@ CREATE TABLE aocs_inh_child3 (COLUMN parent_t ENCODING (compresstype=zlib))
 INHERITS (aocs_inh_parent)
 WITH (appendonly=true, orientation=column);
 
-SELECT c.relname, ae.attnum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh%' AND c.oid=ae.attrelid ORDER BY 1,2;
+SELECT c.relname, ae.attnum, ae.filenum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh%' AND c.oid=ae.attrelid ORDER BY 1,2;
 
 -- Multiple inheritance
 -- The ENCODING of parent_t_8k column doesn't match that of the other parent table.
@@ -256,7 +258,7 @@ CREATE TABLE aocs_inh_multichild ()
 INHERITS (aocs_inh_parent, aocs_inh_parent2)
 WITH (appendonly=true, orientation=column);
 
-SELECT c.relname, ae.attnum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh_multi%' AND c.oid=ae.attrelid ORDER BY 1,2;
+SELECT c.relname, ae.attnum, ae.filenum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh_multi%' AND c.oid=ae.attrelid ORDER BY 1,2;
 
 -- AOCO table inherits a heap table.
 CREATE TABLE aocs_inh2_parent_heap (parent_t text, parent_t2 text);
@@ -265,7 +267,7 @@ WITH (appendonly=true, orientation=column);
 CREATE TABLE aocs_inh2_child2 (COLUMN parent_t ENCODING (compresstype=zlib)) INHERITS (aocs_inh2_parent_heap)
 WITH (appendonly=true, orientation=column);
 
-SELECT c.relname, ae.attnum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh2_%' AND c.oid=ae.attrelid ORDER BY 1,2;
+SELECT c.relname, ae.attnum, ae.filenum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh2_%' AND c.oid=ae.attrelid ORDER BY 1,2;
 
 -- don't drop the tables, to also test pg_dump & restore of them.
 
@@ -289,6 +291,13 @@ SELECT count(*) FROM tenk_aocs2;
 SELECT count(*) FROM tenk_aocs3;
 SELECT count(*) FROM tenk_aocs4;
 
+-- Issue #15904
+set optimizer = off;
+EXPLAIN (verbose, costs off) SELECT max(unique1) FROM tenk_aocs1;
+CREATE TABLE tenk_aorow WITH(appendonly=true, orientation=row) AS SELECT * FROM tenk_heap_for_aocs;
+ANALYZE tenk_aorow;
+EXPLAIN (verbose, costs off) SELECT max(unique1) FROM tenk_aorow;
+reset optimizer;
 -- LIKE
 -- Should not copy storage options if not specified
 CREATE TABLE tenk_like_nocopy_storage (LIKE tenk_aocs1);
@@ -513,6 +522,7 @@ DROP TABLE tenk_aocs2;
 DROP TABLE tenk_aocs3;
 DROP TABLE tenk_aocs4;
 DROP TABLE tenk_aocs5;
+DROP TABLE tenk_aorow;
 
 set client_min_messages='WARNING';
 
@@ -692,3 +702,17 @@ truncate table fix_aoco_truncate_last_sequence;
 insert into fix_aoco_truncate_last_sequence select 1, 1 from generate_series(1, 5); 
 select count(*) from fix_aoco_truncate_last_sequence;
 abort;
+
+-- Types by reference but the storage is plain
+CREATE TABLE test_ao_tsquery(c1 TSVECTOR, c2 TSQUERY, c3 INT) USING ao_column DISTRIBUTED BY (c3);
+INSERT INTO test_ao_tsquery(c1, c2, c3) VALUES('a fat cat sat on a mat and ate a fat rat'::TSVECTOR, 'fat & rat'::TSQUERY, 1);
+ANALYZE test_ao_tsquery;
+SELECT * FROM test_ao_tsquery;
+DROP TABLE test_ao_tsquery;
+
+-- Test user defined types working with the convert-to-short-varlena
+-- optimization
+CREATE TYPE type_to_shorten AS (f1 int, f2 text);
+CREATE TABLE shorten_udt(c1 type_to_shorten) USING ao_column;
+INSERT INTO shorten_udt SELECT '(1,foo)';
+SELECT * FROM shorten_udt;

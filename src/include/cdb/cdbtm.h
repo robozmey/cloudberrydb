@@ -1,7 +1,5 @@
 /*-------------------------------------------------------------------------
  * cdbtm.h
- *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * 
  * DENTIFICATION
  * 	src/include/cdb/cdbtm.h
@@ -296,6 +294,8 @@ extern slock_t *shmGxidGenLock;
 extern DistributedTransactionId *shmCommittedGxidArray;
 extern volatile int *shmNumCommittedGxacts;
 
+extern bool IsDtxRecoveryProcess(void);
+
 extern const char *DtxStateToString(DtxState state);
 extern const char *DtxProtocolCommandToString(DtxProtocolCommand command);
 extern const char *DtxContextToString(DtxContext context);
@@ -304,6 +304,8 @@ extern void dtxDeformGid(const char	*gid,
 extern void dtxFormGid(char *gid, DistributedTransactionId gxid);
 extern DistributedTransactionId getDistributedTransactionId(void);
 extern bool getDistributedTransactionIdentifier(char *id);
+
+extern void setDistributedTransactionContext(DtxContext context);
 
 extern void resetTmGxact(void);
 extern void	prepareDtxTransaction(void);

@@ -8,7 +8,6 @@
  * exit-time cleanup for either a postmaster or a backend.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -105,6 +104,9 @@ void
 proc_exit(int code)
 {
 	pqsignal(SIGALRM, SIG_IGN);
+	/* not safe if forked by system(), etc. */
+	if (MyProcPid != (int) getpid())
+		elog(PANIC, "proc_exit() called in child process");
 
 	/* Clean up everything that must be cleaned up */
 	proc_exit_prepare(code);

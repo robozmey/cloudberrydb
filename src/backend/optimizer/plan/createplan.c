@@ -5,7 +5,6 @@
  *	  Planning is complete, we just need to convert the selected
  *	  Path into a Plan.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -299,9 +298,6 @@ static MergeJoin *make_mergejoin(List *tlist,
 								 Plan *lefttree, Plan *righttree,
 								 JoinType jointype, bool inner_unique,
 								 bool skip_mark_restore);
-static Sort *make_sort(Plan *lefttree, int numCols,
-					   AttrNumber *sortColIdx, Oid *sortOperators,
-					   Oid *collations, bool *nullsFirst);
 static IncrementalSort *make_incrementalsort(Plan *lefttree,
 											 int numCols, int nPresortedCols,
 											 AttrNumber *sortColIdx, Oid *sortOperators,
@@ -1073,6 +1069,16 @@ use_physical_tlist(PlannerInfo *root, Path *path, int flags)
 			i++;
 		}
 	}
+
+	/* 
+	 * Greenplum specific code: when generating scan plan in create_scan_plan(),
+	 * the upstream code prefer to generate a tlist containing all Vars in
+	 * order. For the AO-type storage, it would result into unnecessary
+	 * overhead and impact performance, so in this case we let the tlist apply
+	 * to the projection to avoid unnecessory column fetches.
+	 */
+	if (AMHandlerIsAO(rel->amhandler))
+		return false;
 
 	return true;
 }
@@ -2273,13 +2279,6 @@ create_projection_plan(PlannerInfo *root, ProjectionPath *best_path, int flags)
 		{
 			List	   *all_clauses = best_path->cdb_restrict_clauses;
 
-			/* Replace any outer-relation variables with nestloop params */
-			if (best_path->path.param_info)
-			{
-				all_clauses = (List *)
-					replace_nestloop_params(root, (Node *) all_clauses);
-			}
-
 			/* Sort clauses into best execution order */
 			all_clauses = order_qual_clauses(root, all_clauses);
 
@@ -2288,6 +2287,13 @@ create_projection_plan(PlannerInfo *root, ProjectionPath *best_path, int flags)
 
 			/* but we actually also want the pseudoconstants */
 			pseudoconstants = extract_actual_clauses(all_clauses, true);
+
+			/* Replace any outer-relation variables with nestloop params */
+			if (best_path->path.param_info)
+			{
+				scan_clauses = (List *)
+					replace_nestloop_params(root, (Node *) scan_clauses);
+			}
 		}
 
 		/* We need a Result node */
@@ -2298,7 +2304,7 @@ create_projection_plan(PlannerInfo *root, ProjectionPath *best_path, int flags)
 	}
 
 	/*
-	 * CloudberryDB specific behavior:
+	 * Cloudberry specific behavior:
 	 * We may use the Result plan with resconstantqual to be
 	 * One-Time Filter: (gp_execution_segment() = <some segid>).
 	 * We should re-consider direct dispatch info in this case.
@@ -7270,7 +7276,7 @@ make_mergejoin(List *tlist,
  * Caller must have built the sortColIdx, sortOperators, collations, and
  * nullsFirst arrays already.
  */
-static Sort *
+Sort *
 make_sort(Plan *lefttree, int numCols,
 		  AttrNumber *sortColIdx, Oid *sortOperators,
 		  Oid *collations, bool *nullsFirst)
@@ -7295,8 +7301,6 @@ make_sort(Plan *lefttree, int numCols,
 	plan->parallel = lefttree->parallel;
 
 	Assert(sortColIdx[0] != 0);
-
-	node->noduplicates = false; /* CDB */
 
 	return node;
 }
@@ -8057,14 +8061,6 @@ make_unique_from_sortclauses(Plan *lefttree, List *distinctList)
 	node->uniqOperators = uniqOperators;
 	node->uniqCollations = uniqCollations;
 
-	/* CDB */	/* pass DISTINCT to sort */
-	if (IsA(lefttree, Sort) && gp_enable_sort_distinct)
-	{
-		Sort	   *pSort = (Sort *) lefttree;
-
-		pSort->noduplicates = true;
-	}
-
 	return node;
 }
 
@@ -8450,6 +8446,7 @@ make_modifytable(PlannerInfo *root, Plan *subplan,
 	node->returningLists = returningLists;
 	node->rowMarks = rowMarks;
 	node->epqParam = epqParam;
+	node->forceTupleRouting = false;
 
 	/*
 	 * For each result relation that is a foreign table, allow the FDW to
@@ -8745,13 +8742,9 @@ cdbpathtoplan_create_motion_plan(PlannerInfo *root,
 									hashOpfamilies,
 									numHashSegments);
 	}
-	else if (CdbPathLocus_IsOuterQuery(path->path.locus))
-	{
-		motion = make_union_motion(subplan);
-		motion->motionType = MOTIONTYPE_OUTER_QUERY;
-	}
 	/* Send all tuples to a single process? */
-	else if (CdbPathLocus_IsBottleneck(path->path.locus))
+	else if (CdbPathLocus_IsBottleneck(path->path.locus)
+			|| CdbPathLocus_IsOuterQuery(path->path.locus))
 	{
 		if (path->path.pathkeys)
 		{
@@ -8806,6 +8799,13 @@ cdbpathtoplan_create_motion_plan(PlannerInfo *root,
 		{
 			motion = make_union_motion(subplan);
 		}
+		/*
+		 * When path.locus is CdbLocusType_OuterQuery, We will miss the pathkeys
+		 * if use make_union_motion. So use make_sorted_union_motion instead of
+		 * make_union_motion if path has pathkeys.
+		 */
+		if (CdbPathLocus_IsOuterQuery(path->path.locus))
+			motion->motionType = MOTIONTYPE_OUTER_QUERY;
 	}
 
 	/* Send all of the tuples to all of the QEs in gang above... */
@@ -8901,8 +8901,12 @@ append_initplan_for_function_scan(PlannerInfo *root, Path *best_path, Plan *plan
 	if (Gp_role != GP_ROLE_DISPATCH)
 		return;
 
+	/* Current function scan is already in an initplan, do nothing. */
+	if (!get_allow_append_initplan_for_function_scan())
+		return;
+
 	/*
-	 * If INITPLAN function is executed on QD, there is no 
+	 * If INITPLAN function is executed on QD, there is no
 	 * need to add additional initplan to run this function.
 	 * Recall that the reason to introduce INITPLAN function
 	 * is that function runing on QE can not do dispatch.

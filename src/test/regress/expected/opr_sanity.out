@@ -128,13 +128,14 @@ WHERE p1.oid < p2.oid AND
      p1.proretset != p2.proretset OR
      p1.provolatile != p2.provolatile OR
      p1.pronargs != p2.pronargs);
- oid  |      proname      | oid  |       proname       
-------+-------------------+------+---------------------
- 6212 | int2_matrix_accum | 6215 | float8_matrix_accum
- 6212 | int2_matrix_accum | 6214 | int8_matrix_accum
- 6213 | int4_matrix_accum | 6215 | float8_matrix_accum
- 6213 | int4_matrix_accum | 6214 | int8_matrix_accum
-(4 rows)
+ oid  |            proname             | oid  |            proname             
+------+--------------------------------+------+--------------------------------
+ 7203 | gp_log_backend_memory_contexts | 7204 | gp_log_backend_memory_contexts
+ 6212 | int2_matrix_accum              | 6215 | float8_matrix_accum
+ 6212 | int2_matrix_accum              | 6214 | int8_matrix_accum
+ 6213 | int4_matrix_accum              | 6215 | float8_matrix_accum
+ 6213 | int4_matrix_accum              | 6214 | int8_matrix_accum
+(5 rows)
 
 -- Look for uses of different type OIDs in the argument/result type fields
 -- for different aliases of the same built-in function.
@@ -1498,9 +1499,14 @@ WHERE a.aggfnoid = p.oid AND
      -- we could carry the check further, but 3 args is enough for now
      OR (p.pronargs > 3)
     );
- aggfnoid | proname | oid | proname 
-----------+---------+-----+---------
-(0 rows)
+ aggfnoid |      proname       | oid  |                  proname                  
+----------+--------------------+------+-------------------------------------------
+     9189 | gp_percentile_cont | 9184 | gp_percentile_cont_float8_transition
+     9190 | gp_percentile_cont | 9185 | gp_percentile_cont_interval_transition
+     9191 | gp_percentile_cont | 9186 | gp_percentile_cont_timestamp_transition
+     9192 | gp_percentile_cont | 9187 | gp_percentile_cont_timestamptz_transition
+     9194 | gp_percentile_disc | 9193 | gp_percentile_disc_transition
+(5 rows)
 
 -- Cross-check finalfn (if present) against its entry in pg_proc.
 SELECT a.aggfnoid::oid, p.proname, pfn.oid, pfn.proname
@@ -1521,9 +1527,13 @@ WHERE a.aggfnoid = p.oid AND
      -- we could carry the check further, but 4 args is enough for now
      OR (pfn.pronargs > 4)
     );
- aggfnoid | proname | oid | proname 
-----------+---------+-----+---------
-(0 rows)
+ aggfnoid |      proname       | oid  |       proname       
+----------+--------------------+------+---------------------
+     9189 | gp_percentile_cont | 9188 | gp_percentile_final
+     9190 | gp_percentile_cont | 9188 | gp_percentile_final
+     9191 | gp_percentile_cont | 9188 | gp_percentile_final
+     9192 | gp_percentile_cont | 9188 | gp_percentile_final
+(4 rows)
 
 -- If transfn is strict then either initval should be non-NULL, or
 -- input type should match transtype so that the first non-null input

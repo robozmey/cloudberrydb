@@ -72,8 +72,10 @@ CLogicalInnerJoin::PxfsCandidates(CMemoryPool *mp) const
 	(void) xform_set->ExchangeSet(CXform::ExfSubqJoin2Apply);
 	(void) xform_set->ExchangeSet(CXform::ExfJoin2BitmapIndexGetApply);
 	(void) xform_set->ExchangeSet(CXform::ExfJoin2IndexGetApply);
+	(void) xform_set->ExchangeSet(CXform::ExfPushJoinBelowLeftUnionAll);
+	(void) xform_set->ExchangeSet(CXform::ExfPushJoinBelowRightUnionAll);
 
-	(void) xform_set->ExchangeSet(CXform::ExfJoinCommutativity);
+	(void) xform_set->ExchangeSet(CXform::ExfInnerJoinCommutativity);
 	(void) xform_set->ExchangeSet(CXform::ExfJoinAssociativity);
 	(void) xform_set->ExchangeSet(CXform::ExfInnerJoinSemiJoinSwap);
 	(void) xform_set->ExchangeSet(CXform::ExfInnerJoinAntiSemiJoinSwap);

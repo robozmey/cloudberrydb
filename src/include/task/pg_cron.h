@@ -3,7 +3,6 @@
  * pg_cron.h
  *	  definition of pg_cron data types
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Copyright (c) 2010-2015, Citus Data, Inc.
  *
  *-------------------------------------------------------------------------
@@ -33,5 +32,7 @@ extern void CronBackgroundWorker(Datum arg);
 extern pid_t PgCronLauncherPID(void);
 extern Size PgCronLauncherShmemSize(void);
 extern void PgCronLauncherShmemInit(void);
+extern void assign_task_timezone(const char *newval, void *extra);
+extern const char *show_task_timezone(void);
 
 #endif      /* PG_CRON_H */

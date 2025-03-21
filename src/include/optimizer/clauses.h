@@ -4,7 +4,6 @@
  *	  prototypes for clauses.c.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -72,8 +71,6 @@ extern Query *inline_set_returning_function(PlannerInfo *root,
 
 extern Expr *evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
 			  Oid result_collation);
-
-extern bool is_builtin_true_equality_between_same_type(int opno);
 
 extern bool subexpression_match(Expr *expr1, Expr *expr2);
 

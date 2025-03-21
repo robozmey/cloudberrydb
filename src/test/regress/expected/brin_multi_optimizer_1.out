@@ -349,7 +349,7 @@ WARNING:  did not get bitmap indexscan plan for (timestampcol,<=,timestamp,"1984
 WARNING:  did not get bitmap indexscan plan for (timestampcol,<,timestamp,"1984-01-20 22:42:21",100)
 WARNING:  did not get bitmap indexscan plan for (timestampcol,>,timestamptz,"1942-07-23 03:05:09",100)
 WARNING:  did not get bitmap indexscan plan for (timestampcol,>=,timestamptz,"1942-07-23 03:05:09",100)
-WARNING:  did not get bitmap indexscan plan for (timestampcol,=,timestamptz,"1964-03-24 19:26:45",1)
+WARNING:  did not get seqscan plan for (timestampcol,=,timestamptz,"1964-03-24 19:26:45",1)
 WARNING:  did not get bitmap indexscan plan for (timestampcol,<=,timestamptz,"1984-01-20 22:42:21",100)
 WARNING:  did not get bitmap indexscan plan for (timestampcol,<,timestamptz,"1984-01-20 22:42:21",100)
 WARNING:  did not get bitmap indexscan plan for (numericcol,>,numeric,0.00,100)
@@ -558,19 +558,30 @@ END;
 $$;
 -- summarize one range
 SELECT brin_summarize_range('brin_summarize_multi_idx', 0);
-ERROR:  Cloudberry could not summarize indicated page range
+ brin_summarize_range 
+----------------------
+                    0
+(1 row)
+
 -- nothing: already summarized
 SELECT brin_summarize_range('brin_summarize_multi_idx', 1);
-ERROR:  Cloudberry could not summarize indicated page range
+ brin_summarize_range 
+----------------------
+                    0
+(1 row)
+
 -- summarize one range
 SELECT brin_summarize_range('brin_summarize_multi_idx', 2);
-ERROR:  Cloudberry could not summarize indicated page range
-CONTEXT:  SQL function "brin_summarize_range" statement 1
+ brin_summarize_range 
+----------------------
+                    1
+(1 row)
+
 -- nothing: page doesn't exist in table
 SELECT brin_summarize_range('brin_summarize_multi_idx', 4294967295);
  brin_summarize_range 
 ----------------------
-                    1
+                    0
 (1 row)
 
 -- invalid block number values

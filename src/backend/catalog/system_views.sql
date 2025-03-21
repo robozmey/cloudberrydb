@@ -1,7 +1,6 @@
 /*
  * PostgreSQL System Views
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2010, Greenplum inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -165,6 +164,19 @@ CREATE VIEW pg_matviews AS
     FROM pg_class C LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
          LEFT JOIN pg_tablespace T ON (T.oid = C.reltablespace)
     WHERE C.relkind = 'm';
+
+CREATE VIEW pg_dynamic_tables AS
+    SELECT
+        N.nspname AS schemaname,
+        C.relname AS dynamictablename,
+        pg_get_userbyid(C.relowner) AS dynamictableowner,
+        T.spcname AS tablespace,
+        C.relhasindex AS hasindexes,
+        C.relispopulated AS ispopulated,
+        pg_get_viewdef(C.oid) AS definition
+    FROM pg_class C LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
+         LEFT JOIN pg_tablespace T ON (T.oid = C.reltablespace)
+    WHERE C.relkind = 'm' and C.relisdynamic = true;
 
 CREATE VIEW pg_indexes AS
     SELECT
@@ -677,7 +689,7 @@ CREATE VIEW pg_stat_all_tables_internal AS
     FROM pg_class C LEFT JOIN
          pg_index I ON C.oid = I.indrelid
          LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
-    WHERE C.relkind IN ('r', 't', 'm', 'p')
+    WHERE C.relkind IN ('r', 't', 'm', 'o', 'b', 'M', 'p')
     GROUP BY C.oid, N.nspname, C.relname;
 
 -- Gather data from segments on user tables, and use data on coordinator on system tables.
@@ -709,9 +721,9 @@ SELECT
     s.autoanalyze_count
 FROM
     (SELECT
-         relid,
-         schemaname,
-         relname,
+         allt.relid,
+         allt.schemaname,
+         allt.relname,
          case when d.policytype = 'r' then (sum(seq_scan)/d.numsegments)::bigint else sum(seq_scan) end seq_scan,
          case when d.policytype = 'r' then (sum(seq_tup_read)/d.numsegments)::bigint else sum(seq_tup_read) end seq_tup_read,
          case when d.policytype = 'r' then (sum(idx_scan)/d.numsegments)::bigint else sum(idx_scan) end idx_scan,
@@ -733,10 +745,18 @@ FROM
          max(analyze_count) as analyze_count,
          max(autoanalyze_count) as autoanalyze_count
      FROM
-         gp_dist_random('pg_stat_all_tables_internal'), gp_distribution_policy as d
+         gp_dist_random('pg_stat_all_tables_internal') allt
+         inner join pg_class c
+               on allt.relid = c.oid
+         left outer join gp_distribution_policy d
+              on allt.relid = d.localoid
      WHERE
-             relid >= 16384 and relid = d.localoid
-     GROUP BY relid, schemaname, relname, d.policytype, d.numsegments
+        relid >= 16384
+        and (
+            d.localoid is not null
+            or c.relkind in ('o', 'b', 'M')
+            )
+     GROUP BY allt.relid, allt.schemaname, allt.relname, d.policytype, d.numsegments
 
      UNION ALL
 
@@ -765,12 +785,12 @@ CREATE VIEW pg_stat_xact_all_tables AS
     FROM pg_class C LEFT JOIN
          pg_index I ON C.oid = I.indrelid
          LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
-    WHERE C.relkind IN ('r', 't', 'm', 'p')
+    WHERE C.relkind IN ('r', 't', 'm', 'o', 'b', 'M', 'p')
     GROUP BY C.oid, N.nspname, C.relname;
 
 CREATE VIEW pg_stat_sys_tables AS
     SELECT * FROM pg_stat_all_tables
-    WHERE schemaname IN ('pg_catalog', 'information_schema') OR
+    WHERE schemaname IN ('pg_catalog', 'information_schema', 'pg_aoseg') OR
           schemaname ~ '^pg_toast';
 
 -- In singlenode mode, the result of pg_stat_sys_tables will be messed up,
@@ -783,7 +803,7 @@ CREATE VIEW pg_stat_sys_tables_single_node AS
 
 CREATE VIEW pg_stat_xact_sys_tables AS
     SELECT * FROM pg_stat_xact_all_tables
-    WHERE schemaname IN ('pg_catalog', 'information_schema') OR
+    WHERE schemaname IN ('pg_catalog', 'information_schema', 'pg_aoseg') OR
           schemaname ~ '^pg_toast';
 
 CREATE VIEW pg_stat_user_tables AS
@@ -826,12 +846,12 @@ CREATE VIEW pg_statio_all_tables AS
             pg_class T ON C.reltoastrelid = T.oid LEFT JOIN
             pg_index X ON T.oid = X.indrelid
             LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
-    WHERE C.relkind IN ('r', 't', 'm')
+    WHERE C.relkind IN ('r', 't', 'm', 'o', 'b', 'M')
     GROUP BY C.oid, N.nspname, C.relname, T.oid, X.indexrelid;
 
 CREATE VIEW pg_statio_sys_tables AS
     SELECT * FROM pg_statio_all_tables
-    WHERE schemaname IN ('pg_catalog', 'information_schema') OR
+    WHERE schemaname IN ('pg_catalog', 'information_schema', 'pg_aoseg') OR
           schemaname ~ '^pg_toast';
 
 CREATE VIEW pg_statio_user_tables AS
@@ -853,7 +873,7 @@ CREATE VIEW pg_stat_all_indexes_internal AS
             pg_index X ON C.oid = X.indrelid JOIN
             pg_class I ON I.oid = X.indexrelid
             LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
-    WHERE C.relkind IN ('r', 't', 'm');
+    WHERE C.relkind IN ('r', 't', 'm', 'o', 'b', 'M');
 
 -- Gather data from segments on user tables, and use data on coordinator on system tables.
 
@@ -891,11 +911,11 @@ FROM
          pg_stat_all_indexes_internal
      WHERE
              relid < 16384) m, pg_stat_all_indexes_internal s
-WHERE m.relid = s.relid;
+WHERE m.indexrelid = s.indexrelid;
 
 CREATE VIEW pg_stat_sys_indexes AS
     SELECT * FROM pg_stat_all_indexes
-    WHERE schemaname IN ('pg_catalog', 'information_schema') OR
+    WHERE schemaname IN ('pg_catalog', 'information_schema', 'pg_aoseg') OR
           schemaname ~ '^pg_toast';
 
 CREATE VIEW pg_stat_user_indexes AS
@@ -917,11 +937,11 @@ CREATE VIEW pg_statio_all_indexes AS
             pg_index X ON C.oid = X.indrelid JOIN
             pg_class I ON I.oid = X.indexrelid
             LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
-    WHERE C.relkind IN ('r', 't', 'm');
+    WHERE C.relkind IN ('r', 't', 'm', 'o', 'b', 'M');
 
 CREATE VIEW pg_statio_sys_indexes AS
     SELECT * FROM pg_statio_all_indexes
-    WHERE schemaname IN ('pg_catalog', 'information_schema') OR
+    WHERE schemaname IN ('pg_catalog', 'information_schema', 'pg_aoseg') OR
           schemaname ~ '^pg_toast';
 
 CREATE VIEW pg_statio_user_indexes AS
@@ -1524,19 +1544,41 @@ CREATE VIEW pg_stat_archiver AS
         s.stats_reset
     FROM pg_stat_get_archiver() s;
 
-CREATE VIEW pg_stat_bgwriter AS
+-- Internal function for pg_stat_bgwriter. It needs to be VOLATILE in order
+-- for pg_stat_bgwriter to work correctly with gp_dist_random.
+CREATE OR REPLACE FUNCTION pg_stat_bgwriter_func()
+RETURNS TABLE (
+    checkpoints_timed BIGINT,
+    checkpoints_req BIGINT,
+    checkpoint_write_time FLOAT,
+    checkpoint_sync_time FLOAT,
+    buffers_checkpoint BIGINT,
+    buffers_clean BIGINT,
+    maxwritten_clean BIGINT,
+    buffers_backend BIGINT,
+    buffers_backend_fsync BIGINT,
+    buffers_alloc BIGINT,
+    stats_reset TIMESTAMPTZ
+)
+AS
+$$
     SELECT
-        pg_stat_get_bgwriter_timed_checkpoints() AS checkpoints_timed,
-        pg_stat_get_bgwriter_requested_checkpoints() AS checkpoints_req,
-        pg_stat_get_checkpoint_write_time() AS checkpoint_write_time,
-        pg_stat_get_checkpoint_sync_time() AS checkpoint_sync_time,
-        pg_stat_get_bgwriter_buf_written_checkpoints() AS buffers_checkpoint,
-        pg_stat_get_bgwriter_buf_written_clean() AS buffers_clean,
-        pg_stat_get_bgwriter_maxwritten_clean() AS maxwritten_clean,
-        pg_stat_get_buf_written_backend() AS buffers_backend,
-        pg_stat_get_buf_fsync_backend() AS buffers_backend_fsync,
-        pg_stat_get_buf_alloc() AS buffers_alloc,
-        pg_stat_get_bgwriter_stat_reset_time() AS stats_reset;
+        pg_stat_get_bgwriter_timed_checkpoints(),
+        pg_stat_get_bgwriter_requested_checkpoints(),
+        pg_stat_get_checkpoint_write_time(),
+        pg_stat_get_checkpoint_sync_time(),
+        pg_stat_get_bgwriter_buf_written_checkpoints(),
+        pg_stat_get_bgwriter_buf_written_clean(),
+        pg_stat_get_bgwriter_maxwritten_clean(),
+        pg_stat_get_buf_written_backend(),
+        pg_stat_get_buf_fsync_backend(),
+        pg_stat_get_buf_alloc(),
+        pg_stat_get_bgwriter_stat_reset_time();
+$$
+LANGUAGE SQL;
+
+CREATE VIEW pg_stat_bgwriter AS
+    SELECT * FROM pg_stat_bgwriter_func();
 
 CREATE VIEW pg_stat_wal AS
     SELECT
@@ -1697,6 +1739,22 @@ CREATE VIEW pg_stat_progress_copy AS
         S.param4 AS tuples_excluded
     FROM pg_stat_get_progress_info('COPY') AS S
         LEFT JOIN pg_database D ON S.datid = D.oid;
+
+CREATE VIEW gp_stat_progress_dtx_recovery AS
+    SELECT
+        CASE S.param1 WHEN 0 THEN 'initializing'
+                      WHEN 1 THEN 'recovering commited distributed transactions'
+                      WHEN 2 THEN 'gathering in-doubt transactions'
+                      WHEN 3 THEN 'aborting in-doubt transactions'
+                      WHEN 4 THEN 'gathering in-doubt orphaned transactions'
+                      WHEN 5 THEN 'managing in-doubt orphaned transactions'
+                      END AS phase,
+        S.param2 AS recover_commited_dtx_total, -- total commited transactions found to recover
+        S.param3 AS recover_commited_dtx_completed, -- recover completed, this is always 0 after startup.
+        S.param4 AS in_doubt_tx_total,  -- total in doubt tx found, used in startup and non-startup phase
+        S.param5 AS in_doubt_tx_in_progress, -- in-progress in-doubt tx, this is always 0 for startup
+        S.param6 AS in_doubt_tx_aborted -- aborted in-doubt tx, this can be >0 for both
+    FROM pg_stat_get_progress_info('DTX RECOVERY') AS S;
 
 CREATE VIEW pg_user_mappings AS
     SELECT

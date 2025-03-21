@@ -3,7 +3,6 @@
  * copy.c
  *		Implements the COPY utility command
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -131,16 +130,6 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("COPY single row error handling only available using COPY FROM")));
-
-	/* GPDB_91_MERGE_FIXME: this should probably be done earlier, e.g. in parser */
-	/* Transfer any SREH options to the options list, so that BeginCopy can see them. */
-	if (stmt->sreh)
-	{
-		SingleRowErrorDesc *sreh = (SingleRowErrorDesc *) stmt->sreh;
-
-		options = list_copy(options);
-		options = lappend(options, makeDefElem("sreh", (Node *) sreh, -1));
-	}
 
 	lockmode = is_from ? RowExclusiveLock : AccessShareLock;
 	if (stmt->relation)
@@ -453,7 +442,9 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 			 */
 			if (IS_QD_OR_SINGLENODE() && *processed > 0)
 			{
-				SetRelativeMatviewAuxStatus(relid, MV_DATA_STATUS_EXPIRED_INSERT_ONLY);
+				SetRelativeMatviewAuxStatus(relid,
+											MV_DATA_STATUS_EXPIRED_INSERT_ONLY,
+											MV_DATA_STATUS_TRANSFER_DIRECTION_ALL);
 			}
 		}
 		PG_CATCH();

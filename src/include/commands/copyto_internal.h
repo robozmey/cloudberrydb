@@ -4,7 +4,6 @@
  *	  Internal definitions for COPY TO command.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -68,7 +67,7 @@ typedef struct CopyToStateData
 	MemoryContext rowcontext;	/* per-row evaluation context */
 	uint64		bytes_processed;	/* number of bytes processed so far */
 
-	/* Cloudberry Database specific variables */
+	/* Apache Cloudberry specific variables */
 	Oid			conversion_proc;    /* encoding conversion function */
 	FmgrInfo   *enc_conversion_proc;	  /* conv proc from exttbl encoding to
 											 server or the other way around */
@@ -78,7 +77,7 @@ typedef struct CopyToStateData
 	ProgramPipes    *program_pipes; /* COPY PROGRAM pipes for data and stderr */
 
 	CdbCopy		*cdbCopy;
-	/* end Cloudberry Database specific variables */
+	/* end Apache Cloudberry specific variables */
 } CopyToStateData;
 
 #endif							/* COPYTO_INTERNAL_H */

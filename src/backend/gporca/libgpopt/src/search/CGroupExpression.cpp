@@ -71,9 +71,9 @@ CGroupExpression::CGroupExpression(CMemoryPool *mp, COperator *pop,
 	{
 		m_pdrgpgroupSorted = GPOS_NEW(mp) CGroupArray(mp, pdrgpgroup->Size());
 		m_pdrgpgroupSorted->AppendArray(pdrgpgroup);
-		m_pdrgpgroupSorted->Sort();
+		m_pdrgpgroupSorted->Sort(CGroup::Compare);
 
-		GPOS_ASSERT(m_pdrgpgroupSorted->IsSorted());
+		GPOS_ASSERT(m_pdrgpgroupSorted->IsSorted(CGroup::Compare));
 	}
 
 	m_ppartialplancostmap = GPOS_NEW(mp) PartialPlanToCostMap(mp);
@@ -204,12 +204,10 @@ CGroupExpression::SetOptimizationLevel()
 			return;
 		}
 
-		// if we only want plans with multi-stage agg, we generate multi-stage agg
-		// first to avoid later optimization of one stage agg if possible
 		BOOL fMultiStage = CPhysicalAgg::PopConvert(m_pop)->FMultiStage();
 		if (fPreferMultiStageAgg && fMultiStage)
 		{
-			// optimize multi-stage agg first to allow avoiding one-stage agg if possible
+			// optimize multi-stage agg plans first and then one-stage agg plans
 			m_eol = EolHigh;
 		}
 	}
@@ -1117,7 +1115,9 @@ CGroupExpression::ContainsCircularDependencies()
 	{
 		CGroup *child_group = (*child_groups)[ul];
 		if (child_group->FScalar())
+		{
 			continue;
+		}
 		CGroup *child_duplicate_group = child_group->PgroupDuplicate();
 		if (child_duplicate_group != nullptr)
 		{

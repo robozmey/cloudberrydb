@@ -2,7 +2,6 @@
  *
  * datumstreamblock.h
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 201, EMC Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -985,6 +984,7 @@ typedef struct DatumStreamTypeInfo
 	/* Info determined by schema */
 	int32		datumlen;		/* Datum length */
 	int32		typid;			/* type id */
+	char		typstorage;		/* plain or normal varlena types*/
 	char		align;			/* Align */
 	bool		byval;			/* if it is a by value type */
 }	DatumStreamTypeInfo;

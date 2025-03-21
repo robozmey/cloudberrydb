@@ -58,6 +58,7 @@ CREATE INDEX grect2ind ON fast_emp4000 USING gist (home_base);
 CREATE INDEX gpolygonind ON polygon_tbl USING gist (f1);
 CREATE INDEX gcircleind ON circle_tbl USING gist (f1);
 INSERT INTO POINT_TBL(f1) VALUES (NULL);
+ANALYZE POINT_TBL;
 CREATE INDEX gpointind ON point_tbl USING gist (f1);
 CREATE TEMP TABLE gpolygon_tbl AS
     SELECT polygon(home_base) AS f1 FROM slow_emp4000;
@@ -348,16 +349,16 @@ SELECT * FROM polygon_tbl WHERE f1 @> '((1,1),(2,2),(2,1))'::polygon
 EXPLAIN (COSTS OFF)
 SELECT * FROM circle_tbl WHERE f1 && circle(point(1,-2), 1)
     ORDER BY area(f1);
-                             QUERY PLAN                             
---------------------------------------------------------------------
+                          QUERY PLAN                          
+--------------------------------------------------------------
  Result
-   ->  Sort
-         Sort Key: (area(f1))
-         ->  Result
-               ->  Gather Motion 3:1  (slice1; segments: 3)
-                     ->  Index Scan using gcircleind on circle_tbl
-                           Index Cond: (f1 && '<(1,-2),1>'::circle)
-                           Filter: (f1 && '<(1,-2),1>'::circle)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Merge Key: (area(f1))
+         ->  Sort
+               Sort Key: (area(f1))
+               ->  Index Scan using gcircleind on circle_tbl
+                     Index Cond: (f1 && '<(1,-2),1>'::circle)
+                     Filter: (f1 && '<(1,-2),1>'::circle)
  Optimizer: Pivotal Optimizer (GPORCA)
 (9 rows)
 
@@ -487,7 +488,7 @@ SELECT count(*) FROM point_tbl p WHERE p.f1 << '(0.0, 0.0)';
 -----------------------------------------------------
  Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Index Scan using gpointind on point_tbl
+         ->  Index Scan using gpointind on point_tbl p
                Index Cond: (f1 << '(0,0)'::point)
                Filter: (f1 << '(0,0)'::point)
  Optimizer: Pivotal Optimizer (GPORCA)
@@ -505,7 +506,7 @@ SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
 -----------------------------------------------------
  Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Index Scan using gpointind on point_tbl
+         ->  Index Scan using gpointind on point_tbl p
                Index Cond: (f1 >> '(0,0)'::point)
                Filter: (f1 >> '(0,0)'::point)
  Optimizer: Pivotal Optimizer (GPORCA)
@@ -519,14 +520,14 @@ SELECT count(*) FROM point_tbl p WHERE p.f1 >> '(0.0, 0.0)';
 
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 <<| '(0.0, 0.0)';
-                     QUERY PLAN                      
------------------------------------------------------
+                      QUERY PLAN                       
+-------------------------------------------------------
  Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Index Scan using gpointind on point_tbl
+         ->  Index Scan using gpointind on point_tbl p
                Index Cond: (f1 <<| '(0,0)'::point)
                Filter: (f1 <<| '(0,0)'::point)
- Optimizer: Pivotal Optimizer (GPORCA)
+ Optimizer: GPORCA
 (6 rows)
 
 SELECT count(*) FROM point_tbl p WHERE p.f1 <<| '(0.0, 0.0)';
@@ -537,14 +538,14 @@ SELECT count(*) FROM point_tbl p WHERE p.f1 <<| '(0.0, 0.0)';
 
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM point_tbl p WHERE p.f1 |>> '(0.0, 0.0)';
-                     QUERY PLAN                      
------------------------------------------------------
+                      QUERY PLAN                       
+-------------------------------------------------------
  Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Index Scan using gpointind on point_tbl
+         ->  Index Scan using gpointind on point_tbl p
                Index Cond: (f1 |>> '(0,0)'::point)
                Filter: (f1 |>> '(0,0)'::point)
- Optimizer: Pivotal Optimizer (GPORCA)
+ Optimizer: GPORCA
 (6 rows)
 
 SELECT count(*) FROM point_tbl p WHERE p.f1 |>> '(0.0, 0.0)';
@@ -559,7 +560,7 @@ SELECT count(*) FROM point_tbl p WHERE p.f1 ~= '(-5, -12)';
 -----------------------------------------------------
  Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Index Scan using gpointind on point_tbl
+         ->  Index Scan using gpointind on point_tbl p
                Index Cond: (f1 ~= '(-5,-12)'::point)
                Filter: (f1 ~= '(-5,-12)'::point)
  Optimizer: Pivotal Optimizer (GPORCA)
@@ -651,7 +652,7 @@ SELECT * FROM point_tblv WHERE f1 IS NOT NULL ORDER BY f1 <-> '0,1';
 --SELECT * FROM point_tbl WHERE f1 IS NOT NULL ORDER BY f1 <-> '0,1';
 EXPLAIN (COSTS OFF)
 SELECT * FROM point_tblv WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
-                                                                                QUERY PLAN
+                                                                                QUERY PLAN                                                                                
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Result
    ->  Sort
@@ -766,7 +767,7 @@ SET enable_indexscan = OFF;
 SET enable_bitmapscan = ON;
 EXPLAIN (COSTS OFF)
 SELECT * FROM point_tblv WHERE f1 <@ '(-10,-10),(10,10)':: box ORDER BY f1 <-> '0,1';
-                                                                                QUERY PLAN
+                                                                                QUERY PLAN                                                                                
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Result
    ->  Sort
@@ -1383,12 +1384,10 @@ SELECT count(*) FROM tenk1 WHERE stringu1 = 'TVAAAA';
  Finalize Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Partial Aggregate
-               ->  Bitmap Heap Scan on tenk1
-                     Recheck Cond: (stringu1 = 'TVAAAA'::name)
-                     ->  Bitmap Index Scan on hash_tuplesort_idx
-                           Index Cond: (stringu1 = 'TVAAAA'::name)
- Optimizer: Postgres query optimizer
-(8 rows)
+               ->  Index Scan using hash_tuplesort_idx on tenk1
+                     Index Cond: (stringu1 = 'TVAAAA'::name)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(6 rows)
 
 SELECT count(*) FROM tenk1 WHERE stringu1 = 'TVAAAA';
  count 
@@ -1587,7 +1586,7 @@ Distributed by: (dk)
 -- PRESERVE ROWS, the default.
 CREATE TEMP TABLE concur_temp (f1 int, f2 text)
   ON COMMIT PRESERVE ROWS;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO concur_temp VALUES (1, 'foo'), (2, 'bar');
 CREATE INDEX concur_temp_ind ON concur_temp(f1);
@@ -1597,7 +1596,7 @@ DROP TABLE concur_temp;
 BEGIN;
 CREATE TEMP TABLE concur_temp (f1 int, f2 text)
   ON COMMIT DROP;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO concur_temp VALUES (1, 'foo'), (2, 'bar');
 -- Fails when running in a transaction.
@@ -1606,7 +1605,7 @@ COMMIT;
 -- ON COMMIT DELETE ROWS
 CREATE TEMP TABLE concur_temp (f1 int, f2 text)
   ON COMMIT DELETE ROWS;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO concur_temp VALUES (1, 'foo'), (2, 'bar');
 CREATE INDEX concur_temp_ind ON concur_temp(f1);
@@ -2030,18 +2029,14 @@ explain (costs off)
 SELECT unique1 FROM tenk1
 WHERE unique1 IN (1,42,7)
 ORDER BY unique1;
-                               QUERY PLAN
--------------------------------------------------------------------------
+                         QUERY PLAN                          
+-------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Merge Key: unique1
-   ->  Sort
-         Sort Key: unique1
-         ->  Bitmap Heap Scan on tenk1
-               Recheck Cond: (unique1 = ANY ('{1,42,7}'::integer[]))
-               ->  Bitmap Index Scan on tenk1_unique1
-                     Index Cond: (unique1 = ANY ('{1,42,7}'::integer[]))
+   ->  Index Only Scan using tenk1_unique1 on tenk1
+         Index Cond: (unique1 = ANY ('{1,42,7}'::integer[]))
  Optimizer: Pivotal Optimizer (GPORCA)
-(9 rows)
+(5 rows)
 
 SELECT unique1 FROM tenk1
 WHERE unique1 IN (1,42,7)
@@ -2129,9 +2124,8 @@ explain (costs off)
  Limit
    ->  Gather Motion 3:1  (slice1; segments: 3)
          Merge Key: b, i
-         ->  Limit
-               ->  Index Scan using boolindex_b_i_key on boolindex
- Optimizer: Postgres query optimizer
+         ->  Index Scan using boolindex_b_i_key on boolindex
+ Optimizer: Pivotal Optimizer (GPORCA)
 (6 rows)
 
 -- In PostgreSQL, this uses an Index Scan. In GPDB, the logic to deduce
@@ -2373,7 +2367,7 @@ SELECT indexrelid::regclass, indisclustered FROM pg_index
 DROP TABLE concur_clustered;
 -- Check that indisreplident updates are preserved.
 CREATE TABLE concur_replident(i int NOT NULL);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE UNIQUE INDEX concur_replident_i_idx ON concur_replident(i);
 ALTER TABLE concur_replident REPLICA IDENTITY
@@ -2615,7 +2609,7 @@ CREATE OR REPLACE FUNCTION compare_relfilenode_part(tabname text)
   $func$ LANGUAGE plpgsql;
 --  Check that expected relfilenodes are changed, non-concurrent case.
 SELECT create_relfilenode_part('reindex_index_status', 'concur_reindex_part_index');
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'oid' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'oid' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
  create_relfilenode_part 
 -------------------------
@@ -2636,7 +2630,7 @@ SELECT * FROM compare_relfilenode_part('reindex_index_status');
 DROP TABLE reindex_index_status;
 -- concurrent case.
 SELECT create_relfilenode_part('reindex_index_status', 'concur_reindex_part_index');
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'oid' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'oid' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
  create_relfilenode_part 
 -------------------------
@@ -2676,7 +2670,7 @@ ROLLBACK;
 -- Check that expected relfilenodes are changed, non-concurrent case.
 -- Note that the partition tree changes of the *indexes* need to be checked.
 SELECT create_relfilenode_part('reindex_index_status', 'concur_reindex_part_index');
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'oid' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'oid' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
  create_relfilenode_part 
 -------------------------
@@ -2697,7 +2691,7 @@ SELECT * FROM compare_relfilenode_part('reindex_index_status');
 DROP TABLE reindex_index_status;
 -- concurrent case.
 SELECT create_relfilenode_part('reindex_index_status', 'concur_reindex_part_index');
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'oid' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'oid' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
  create_relfilenode_part 
 -------------------------
@@ -2918,7 +2912,7 @@ DROP TABLE concur_exprs_tab;
 -- ON COMMIT PRESERVE ROWS, the default.
 CREATE TEMP TABLE concur_temp_tab_1 (c1 int, c2 text)
   ON COMMIT PRESERVE ROWS;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO concur_temp_tab_1 VALUES (1, 'foo'), (2, 'bar');
 CREATE INDEX concur_temp_ind_1 ON concur_temp_tab_1(c2);
@@ -2931,7 +2925,7 @@ COMMIT;
 -- ON COMMIT DELETE ROWS
 CREATE TEMP TABLE concur_temp_tab_2 (c1 int, c2 text)
   ON COMMIT DELETE ROWS;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE INDEX concur_temp_ind_2 ON concur_temp_tab_2(c2);
 REINDEX TABLE concur_temp_tab_2;
@@ -2940,7 +2934,7 @@ REINDEX INDEX concur_temp_ind_2;
 BEGIN;
 CREATE TEMP TABLE concur_temp_tab_3 (c1 int, c2 text)
   ON COMMIT PRESERVE ROWS;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO concur_temp_tab_3 VALUES (1, 'foo'), (2, 'bar');
 CREATE INDEX concur_temp_ind_3 ON concur_temp_tab_3(c2);
@@ -2952,7 +2946,7 @@ CREATE TABLE reindex_temp_before AS
 SELECT oid, relname, relfilenode, relkind, reltoastrelid
   FROM pg_class
   WHERE relname IN ('concur_temp_ind_1', 'concur_temp_ind_2');
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'oid' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'oid' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 SELECT pg_my_temp_schema()::regnamespace as temp_schema_name \gset
 REINDEX SCHEMA :temp_schema_name;

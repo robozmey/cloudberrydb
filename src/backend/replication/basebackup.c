@@ -3,7 +3,6 @@
  * basebackup.c
  *	  code for taking a base backup and streaming it to a standby
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -1074,6 +1073,12 @@ void
 SendBaseBackup(BaseBackupCmd *cmd)
 {
 	basebackup_options opt;
+	SessionBackupState status = get_backup_status();
+
+	if (status == SESSION_BACKUP_NON_EXCLUSIVE)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("a backup is already in progress in this session")));
 
 	parse_basebackup_options(cmd->options, &opt);
 

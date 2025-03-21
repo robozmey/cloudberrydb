@@ -1,12 +1,5 @@
 src/backend/optimizer/README.cbdb.aqumv
 
-Portions Copyright (c) 2023, HashData Technology Limited.
-
-Author
-============
-Zhang Mingli   avamingli@gmail.com
-
-
 Answer Query Using Materialized Views
 =====================================
 
@@ -220,7 +213,6 @@ AQUMV_MVP
 ---------
 Support SELECT FROM a single relation both for view_query and the origin_query.
 Below are not supported now:
-      Aggregation (on view_query)
       Subquery
       Join
       Sublink

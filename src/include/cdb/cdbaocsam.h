@@ -3,7 +3,6 @@
  * cdbaocsam.h
  *	  append-only columnar relation access method definitions.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2009, Greenplum Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -120,7 +119,7 @@ typedef struct AOCSScanDescData
 	/* synthetic system attributes */
 	ItemPointerData cdb_fake_ctid;
 	int64 total_row;
-	int64 cur_seg_row;
+	int64 segrowsprocessed;
 
 	/*
 	 * Only used by `analyze`
@@ -313,19 +312,9 @@ typedef struct IndexFetchAOCOData
 	bool                *proj;
 } IndexFetchAOCOData;
 
-/*
- * GPDB_12_MERGE_FIXME:
- * Descriptor for fetches from table via bitmap. In upstream the code goes
- * through table_beginscan() and it should be the same struct in all cases.
- * However in GPDB extra info is needed which should not be initialized or
- * computed for all scan calls. A new method has been added (with a MERGE_FIXME)
- * which is only used for bitmap scans. Take advantage of it and create a new
- * struct to contain only the information needed. 
- */
-
-
 typedef struct AOCSHeaderScanDescData
 {
+	Oid   relid;  /* relid of the relation */
 	int32 colno;  /* chosen column number to read headers from */
 
 	AppendOnlyStorageRead ao_read;
@@ -433,5 +422,6 @@ AOCSScanDesc_UpdateTotalBytesRead(AOCSScanDesc scan, AttrNumber attno)
 	else
 		scan->totalBytesRead += scan->columnScanInfo.ds[attno]->ao_read.current.uncompressedLen;
 }
+
 
 #endif   /* AOCSAM_H */

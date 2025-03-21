@@ -3,7 +3,6 @@
  * proc.c
  *	  routines to manage per-process shared memory data structure
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -906,7 +905,10 @@ LockErrorCleanup(void)
 	/* Don't try to cancel resource locks.*/
 	if ((Gp_role == GP_ROLE_DISPATCH || IS_SINGLENODE()) && IsResQueueEnabled() &&
 		LOCALLOCK_LOCKMETHOD(*lockAwaited) == RESOURCE_LOCKMETHOD)
+	{
+		RESUME_INTERRUPTS();
 		return;
+	}
 
 	/*
 	 * Turn off the deadlock and lock timeout timers, if they are still
@@ -1024,6 +1026,9 @@ ProcKill(int code, Datum arg)
 	Assert(MyProc != NULL);
 
 	SIMPLE_FAULT_INJECTOR("proc_kill");
+	/* not safe if forked by system(), etc. */
+	if (MyProc->pid != (int) getpid())
+		elog(PANIC, "ProcKill() called in child process");
 
 	/* Make sure we're out of the sync rep lists */
 	SyncRepCleanupAtProcExit();
@@ -1196,6 +1201,10 @@ AuxiliaryProcKill(int code, Datum arg)
 	PGPROC	   *proc;
 
 	Assert(proctype >= 0 && proctype < NUM_AUXILIARY_PROCS);
+
+	/* not safe if forked by system(), etc. */
+	if (MyProc->pid != (int) getpid())
+		elog(PANIC, "AuxiliaryProcKill() called in child process");
 
 	auxproc = &AuxiliaryProcs[proctype];
 
@@ -2246,8 +2255,6 @@ ResProcSleep(LOCKMODE lockmode, LOCALLOCK *locallock, void *incrementSet)
 	uint32		hashcode = locallock->hashcode;
 	LWLockId	partitionLock = LockHashPartitionLock(hashcode);
 
-	bool		selflock = true;		/* initialize result for error. */
-
 	/*
 	 * Don't check my held locks, as we just add at the end of the queue.
 	 */
@@ -2265,16 +2272,6 @@ ResProcSleep(LOCKMODE lockmode, LOCALLOCK *locallock, void *incrementSet)
 	MyProc->waitLockMode = lockmode;
 
 	MyProc->waitStatus = PROC_WAIT_STATUS_WAITING;	/* initialize result for error */
-
-	/* Now check the status of the self lock footgun. */
-	selflock = ResCheckSelfDeadLock(lock, proclock, incrementSet);
-	if (selflock)
-	{
-		LWLockRelease(partitionLock);
-		ereport(ERROR,
-				(errcode(ERRCODE_T_R_DEADLOCK_DETECTED),
-				 errmsg("deadlock detected, locking against self")));
-	}
 
 	/* Mark that we are waiting for a lock */
 	lockAwaited = locallock;
@@ -2540,6 +2537,8 @@ ResLockWaitCancel(void)
 	timeouts[1].id = LOCK_TIMEOUT;
 	timeouts[1].keep_indicator = true;
 	disable_timeouts(timeouts, 2);
+
+	SIMPLE_FAULT_INJECTOR("res_lock_wait_cancel_before_partition_lock");
 
 	/* Unlink myself from the wait queue, if on it  */
 	partitionLock = LockHashPartitionLock(lockAwaited->hashcode);

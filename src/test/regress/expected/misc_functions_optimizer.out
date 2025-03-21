@@ -140,14 +140,44 @@ HINT:  No function matches the given name and argument types. You might need to 
 --
 -- Memory contexts are logged and they are not returned to the function.
 -- Furthermore, their contents can vary depending on the timing. However,
--- we can at least verify that the code doesn't fail.
+-- we can at least verify that the code doesn't fail, and that the
+-- permissions are set properly.
 --
-SELECT * FROM pg_log_backend_memory_contexts(pg_backend_pid());
+SELECT pg_log_backend_memory_contexts(pg_backend_pid());
  pg_log_backend_memory_contexts 
 --------------------------------
  t
 (1 row)
 
+CREATE ROLE regress_log_memory;
+NOTICE:  resource queue required -- using default resource queue "pg_default"
+SELECT has_function_privilege('regress_log_memory',
+  'pg_log_backend_memory_contexts(integer)', 'EXECUTE'); -- no
+ has_function_privilege 
+------------------------
+ f
+(1 row)
+
+GRANT EXECUTE ON FUNCTION pg_log_backend_memory_contexts(integer)
+  TO regress_log_memory;
+SELECT has_function_privilege('regress_log_memory',
+  'pg_log_backend_memory_contexts(integer)', 'EXECUTE'); -- yes
+ has_function_privilege 
+------------------------
+ t
+(1 row)
+
+SET ROLE regress_log_memory;
+SELECT pg_log_backend_memory_contexts(pg_backend_pid());
+ pg_log_backend_memory_contexts 
+--------------------------------
+ t
+(1 row)
+
+RESET ROLE;
+REVOKE EXECUTE ON FUNCTION pg_log_backend_memory_contexts(integer)
+  FROM regress_log_memory;
+DROP ROLE regress_log_memory;
 --
 -- Test some built-in SRFs
 --
@@ -230,10 +260,10 @@ WHERE my_int_eq(a.unique2, 42);
 ------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
-         Hash Cond: (tenk1.unique1 = tenk1_1.unique1)
-         ->  Seq Scan on tenk1
+         Hash Cond: (b.unique1 = a.unique1)
+         ->  Seq Scan on tenk1 b
          ->  Hash
-               ->  Seq Scan on tenk1 tenk1_1
+               ->  Seq Scan on tenk1 a
                      Filter: my_int_eq(unique2, 42)
  Optimizer: Pivotal Optimizer (GPORCA)
 (8 rows)
@@ -247,10 +277,10 @@ WHERE my_int_eq(a.unique2, 42);
 ------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
-         Hash Cond: (tenk1.unique1 = tenk1_1.unique1)
-         ->  Seq Scan on tenk1
+         Hash Cond: (b.unique1 = a.unique1)
+         ->  Seq Scan on tenk1 b
          ->  Hash
-               ->  Seq Scan on tenk1 tenk1_1
+               ->  Seq Scan on tenk1 a
                      Filter: my_int_eq(unique2, 42)
  Optimizer: Pivotal Optimizer (GPORCA)
 (8 rows)
@@ -262,27 +292,27 @@ CREATE FUNCTION my_gen_series(int, int) RETURNS SETOF integer
   SUPPORT test_support_func;
 EXPLAIN (COSTS OFF)
 SELECT * FROM tenk1 a JOIN my_gen_series(1,1000) g ON a.unique1 = g;
-                         QUERY PLAN                         
-------------------------------------------------------------
- Hash Join
-   Hash Cond: (tenk1.unique1 = my_gen_series.my_gen_series)
-   ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Seq Scan on tenk1
-   ->  Hash
-         ->  Function Scan on my_gen_series
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (a.unique1 = my_gen_series.my_gen_series)
+         ->  Seq Scan on tenk1 a
+         ->  Hash
+               ->  Function Scan on my_gen_series
  Optimizer: Pivotal Optimizer (GPORCA)
 (7 rows)
 
 EXPLAIN (COSTS OFF)
 SELECT * FROM tenk1 a JOIN my_gen_series(1,10) g ON a.unique1 = g;
-                         QUERY PLAN                         
-------------------------------------------------------------
- Hash Join
-   Hash Cond: (tenk1.unique1 = my_gen_series.my_gen_series)
-   ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Seq Scan on tenk1
-   ->  Hash
-         ->  Function Scan on my_gen_series
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Join
+         Hash Cond: (a.unique1 = my_gen_series.my_gen_series)
+         ->  Seq Scan on tenk1 a
+         ->  Hash
+               ->  Function Scan on my_gen_series
  Optimizer: Pivotal Optimizer (GPORCA)
 (7 rows)
 

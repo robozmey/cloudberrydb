@@ -43,7 +43,6 @@
  * overflow.)
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2009, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -232,8 +231,6 @@ static void send_message_to_frontend(ErrorData *edata);
 static const char *error_severity(int elevel);
 static void append_with_tabs(StringInfo buf, const char *str);
 static bool is_log_level_output(int elevel, int log_min_level);
-static void write_pipe_chunks(char *data, int len, int dest);
-static void write_csvlog(ErrorData *edata);
 static void elog_debug_linger(ErrorData *edata);
 
 /* GPDB: wrapper function to silence unused result warning */
@@ -838,8 +835,6 @@ errfinish_and_return(const char *filename, int lineno, const char *funcname)
 {
 	ErrorData  *edata = &errordata[errordata_stack_depth];
 	ErrorData  *edata_copy;
-	ErrorContextCallback *econtext;
-	MemoryContext oldcontext;
 	int			saved_errno;            /*CDB*/
 
 	recursion_depth++;
@@ -860,24 +855,6 @@ errfinish_and_return(const char *filename, int lineno, const char *funcname)
 	edata->filename = filename;
 	edata->lineno = lineno;
 	edata->funcname = funcname;
-
-	/*
-	 * Do processing in ErrorContext, which we hope has enough reserved space
-	 * to report an error.
-	 */
-	oldcontext = MemoryContextSwitchTo(ErrorContext);
-
-	/*
-	 * Call any context callback functions.  Errors occurring in callback
-	 * functions will be treated as recursive errors --- this ensures we will
-	 * avoid infinite recursion (see errstart).
-	 */
-	for (econtext = error_context_stack;
-		 econtext != NULL;
-		 econtext = econtext->previous)
-		(*econtext->callback) (econtext->arg);
-
-	MemoryContextSwitchTo(oldcontext);
 
 	edata_copy = CopyErrorData();
 
@@ -5078,7 +5055,6 @@ write_stderr(const char *fmt,...)
 #endif
 	va_end(ap);
 }
-
 
 /*
  * Adjust the level of a recovery-related message per trace_recovery_messages.

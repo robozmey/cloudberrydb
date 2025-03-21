@@ -26,7 +26,6 @@
  *	before ExecutorEnd.  This can be omitted only in case of EXPLAIN,
  *	which should also omit ExecutorRun.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -49,6 +48,7 @@
 #include "access/xact.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_publication.h"
+#include "catalog/storage_directory_table.h"
 #include "commands/matview.h"
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
@@ -247,7 +247,7 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	GpExecIdentity exec_identity;
 	bool		shouldDispatch;
 	bool		needDtx;
-	List 		*toplevelOidCache = NIL;
+	List 		*volatile toplevelOidCache = NIL;
 
 	/* sanity checks: queryDesc must not be started already */
 	Assert(queryDesc != NULL);
@@ -323,7 +323,20 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	 */
 	if ((XactReadOnly || IsInParallelMode() || Gp_role == GP_ROLE_DISPATCH) &&
 		!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
-		ExecCheckXactReadOnly(queryDesc->plannedstmt);
+	{
+		PG_TRY();
+		{
+			ExecCheckXactReadOnly(queryDesc->plannedstmt);
+		}
+		PG_CATCH();
+		{
+			/* GPDB hook for collecting query info */
+			if (query_info_collect_hook)
+				(*query_info_collect_hook)(QueryCancelCleanup ? METRICS_QUERY_CANCELED : METRICS_QUERY_ERROR, queryDesc);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
 
 	/*
 	 * Build EState, switch into per-query memory context for startup.
@@ -538,7 +551,7 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	 *
 	 * TODO: eliminate aliens even on master, if not EXPLAIN ANALYZE
 	 */
-	estate->eliminateAliens = execute_pruned_plan && estate->es_sliceTable && estate->es_sliceTable->hasMotions && !IS_QUERY_DISPATCHER();
+	estate->eliminateAliens = execute_pruned_plan && estate->es_sliceTable && estate->es_sliceTable->hasMotions && (Gp_role == GP_ROLE_EXECUTE);
 
 	/*
 	 * Set up an AFTER-trigger statement context, unless told not to, or
@@ -1052,9 +1065,13 @@ standard_ExecutorRun(QueryDesc *queryDesc,
 			List		*rtable = queryDesc->plannedstmt->rtable;
 			int			length = list_length(rtable);
 			ListCell	*lc;
-			foreach(lc, queryDesc->plannedstmt->resultRelations)
+			List		*unique_result_relations = list_concat_unique_int(NIL, queryDesc->plannedstmt->resultRelations);
+
+			foreach(lc, unique_result_relations)
 			{
+
 				int varno = lfirst_int(lc);
+				RangeTblEntry *rte = rt_fetch(varno, rtable);
 
 				/* Avoid crash in case we don't find a rte. */
 				if (varno > length + 1)
@@ -1062,24 +1079,26 @@ standard_ExecutorRun(QueryDesc *queryDesc,
 					ereport(WARNING, (errmsg("could not find rte of varno: %u ", varno)));
 					continue;
 				}
-
-				RangeTblEntry *rte = rt_fetch(varno, rtable);
+					
 				switch (operation)
 				{
 					case CMD_INSERT:
-						SetRelativeMatviewAuxStatus(rte->relid, MV_DATA_STATUS_EXPIRED_INSERT_ONLY);
+						SetRelativeMatviewAuxStatus(rte->relid,
+													MV_DATA_STATUS_EXPIRED_INSERT_ONLY,
+													MV_DATA_STATUS_TRANSFER_DIRECTION_ALL);
 						break;
 					case CMD_UPDATE:
 					case CMD_DELETE:
-						SetRelativeMatviewAuxStatus(rte->relid, MV_DATA_STATUS_EXPIRED);
+						SetRelativeMatviewAuxStatus(rte->relid,
+													MV_DATA_STATUS_EXPIRED,
+													MV_DATA_STATUS_TRANSFER_DIRECTION_ALL);
 						break;
 					default:
-					{
 						/* If there were writable CTE, just mark it as expired. */
 						if (queryDesc->plannedstmt->hasModifyingCTE)
-							SetRelativeMatviewAuxStatus(rte->relid, MV_DATA_STATUS_EXPIRED);
+							SetRelativeMatviewAuxStatus(rte->relid, MV_DATA_STATUS_EXPIRED,
+														MV_DATA_STATUS_TRANSFER_DIRECTION_ALL);
 						break;
-					}
 				}
 			}
 		}
@@ -1839,7 +1858,7 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 				 * (for update | no key update | share | key share) in postgres
 				 * is to hold RowShareLock on tables during parsing stage, and
 				 * generate a LockRows plan node for executor to lock the tuples.
-				 * It is not easy to lock tuples in Cloudberry database, since
+				 * It is not easy to lock tuples in Apache Cloudberry, since
 				 * tuples may be fetched through motion nodes.
 				 *
 				 * But when Global Deadlock Detector is enabled, and the select
@@ -2083,6 +2102,8 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 						break;
 				}
 			}
+
+	SIMPLE_FAULT_INJECTOR("func_init_plan_end");
 }
 
 /*
@@ -2266,10 +2287,11 @@ CheckValidResultRel(ResultRelInfo *resultRelInfo, CmdType operation, ModifyTable
 			{
 				case CMD_INSERT:
 				case CMD_DELETE:
-					ereport(ERROR,
-								(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-								 errmsg("cannot change directory table \"%s\"",
-										RelationGetRelationName(resultRel))));
+					if (!allow_dml_directory_table)
+						ereport(ERROR,
+									(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+								 	 errmsg("cannot change directory table \"%s\"",
+											RelationGetRelationName(resultRel))));
 					break;
 				case CMD_UPDATE:
 					if (mtstate)
@@ -2283,7 +2305,7 @@ CheckValidResultRel(ResultRelInfo *resultRelInfo, CmdType operation, ModifyTable
 						{
 							AttrNumber targetattnum = lfirst_int(lc);
 
-							if (targetattnum != DIRECTORY_TABLE_TAG_COLUMN_ATTNUM)
+							if (targetattnum != DIRECTORY_TABLE_TAG_COLUMN_ATTNUM && !allow_dml_directory_table)
 								ereport(ERROR,
 											(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 											 errmsg("Only allow to update directory \"tag\" column.")));

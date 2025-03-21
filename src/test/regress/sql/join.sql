@@ -534,6 +534,12 @@ select * from t1 left join t2 on (t1.a = t2.a);
 
 select t1.x from t1 join t3 on (t1.a = t3.x);
 
+-- Test matching of locking clause with wrong alias
+
+select t1.*, t2.*, unnamed_join.* from
+  t1 join t2 on (t1.a = t2.a), t3 as unnamed_join
+  for update of unnamed_join;
+
 --
 -- regression test for 8.1 merge right join bug
 --
@@ -722,6 +728,7 @@ create type mycomptype as (id int, v bigint);
 
 create temp table tidv (idv mycomptype);
 create index on tidv (idv);
+analyze tidv;
 
 explain (costs off)
 select a.idv, b.idv from tidv a, tidv b where a.idv = b.idv;
@@ -1781,11 +1788,13 @@ where q2 = 456;
 create temp table parttbl (a integer primary key) partition by range (a);
 create temp table parttbl1 partition of parttbl for values from (1) to (100);
 insert into parttbl values (11), (12);
+set optimizer_enable_dynamicindexonlyscan=off;
 explain (costs off)
 select * from
   (select *, 12 as phv from parttbl) as ss
   right join int4_tbl on true
 where ss.a = ss.phv and f1 = 0;
+reset optimizer_enable_dynamicindexonlyscan;
 
 select * from
   (select *, 12 as phv from parttbl) as ss

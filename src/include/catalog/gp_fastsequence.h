@@ -4,7 +4,6 @@
  *    a table maintaining a light-weight fast sequence number for a unique
  *    object.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2009-2011, Greenplum Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -44,6 +43,16 @@ typedef FormData_gp_fastsequence *Form_gp_fastsequence;
 #define NUM_FAST_SEQUENCES					 100
 extern void InsertInitialFastSequenceEntries(Oid objid);
 
+/*
+ * Populate the number of logical heap blocks provided a lastSequence value from
+ * the gp_fastsequence catalog table.
+ */
+#define FastSequenceGetNumHeapBlocks(lastSequence, nblocks) \
+do { \
+	*(nblocks) = (lastSequence) / AO_MAX_TUPLES_PER_HEAP_BLOCK; \
+	if (lastSequence % AO_MAX_TUPLES_PER_HEAP_BLOCK > 0) \
+		*(nblocks) += 1; \
+} while (0)
 /*
  * GetFastSequences
  *

@@ -25,7 +25,13 @@ also be larger than 1 GB, and are not expanded in BLCKSZ-sized blocks,
 like heap segments are. Segment zero is empty unless data has been
 inserted during utility mode, in which case it's inserted into segment
 zero. Extending the table by adding attributes via ALTER TABLE will also
-push data to segment zero. Each table can have at most 127 segment files.
+push data to segment zero. Each table can have at most 128 segment files.
+
+AOCS tables can similarly have at most 128 segment files for each column.
+The range of segno is dependent on the filenum value in pg_attribute_encoding.
+`segno 0,1-127 (filenum = 1), segno 128,129-255 (filenum = 2),...`
+To find the file range for an AOCS table column, find the attnum of that column
+and then find the corresponding filenum for that attnum from pg_attribute_encoding.
 
 An append-only segfile consists of a number of variable-sized blocks
 ("varblocks"), one after another. The varblocks are aligned to 4 bytes.
@@ -242,3 +248,22 @@ index entries will still point to the segment being compacted. This will be the
 case up until the index entries are bulk deleted, but by then the new index
 entries along with new block directory rows would already have been written and
 would be able to answer uniqueness checks.
+
+Transaction isolation: Since uniqueness checks utilize the special dirty
+snapshot, these checks can cross transaction isolation boundaries. For instance,
+let us consider what will happen if we are in a repeatable read transaction and
+we insert a key that was inserted by a concurrent transaction. Further let's say
+that the repeatable read transaction's snapshot was taken before the concurrent
+transaction started. This means that the repeatable read transaction won't be
+able to see the conflicting key (for eg. with a SELECT). In spite of that
+conflicts will still be detected. Depending on whether the concurrent
+transaction committed or is still in progress, the repeatable read transaction
+will raise a conflict or enter into xwait respectively. This behavior is table
+AM agnostic.
+
+Partial unique indexes: We don't have to do anything special for partial indexes.
+Keys not satisfying the partial index predicate are never inserted into the
+index, and hence there are no uniqueness checks triggered (see
+ExecInsertIndexTuples()). Also during partial unique index builds, keys that
+don't satisfy the partial index predicate are never inserted into the index
+(see *_index_build_range_scan()).

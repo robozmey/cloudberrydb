@@ -3,7 +3,6 @@
  * functions.c
  *	  Execution of SQL-language functions
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -222,7 +221,8 @@ querytree_safe_for_qe_walker(Node *expr, void *context)
 						if (!(IsCatalogNamespace(namespaceId) ||
 									IsToastNamespace(namespaceId) ||
 									IsAoSegmentNamespace(namespaceId) ||
-									IsReplicatedTable(rte->relid)))
+									(IsReplicatedTable(rte->relid) &&
+									 !IS_QUERY_DISPATCHER())))
 						{
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

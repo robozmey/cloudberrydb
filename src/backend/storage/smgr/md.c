@@ -10,7 +10,6 @@
  * It doesn't matter whether the bits are on spinning rust or some other
  * storage technology.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -245,7 +244,6 @@ void
 mdcreate_ao(RelFileNodeBackend rnode, int32 segmentFileNum, bool isRedo)
 {
 	char	   *path;
-	char		buf[MAXPGPATH];
 	File		fd;
 
 	path = aorelpath(rnode, segmentFileNum);
@@ -274,8 +272,7 @@ mdcreate_ao(RelFileNodeBackend rnode, int32 segmentFileNum, bool isRedo)
 		}
 	}
 
-	if (path != buf)
-		pfree(path);
+	pfree(path);
 }
 
 /*
@@ -1479,6 +1476,8 @@ aosyncfiletag(const FileTag *ftag, char *path)
 {
 	SMgrRelation reln = smgropen(ftag->rnode, InvalidBackendId, 1, NULL);
 	char	   *p;
+	int			result,
+				save_errno;
 
 	/* Provide the path for informational messages. */
 	p = _mdfd_segpath(reln, ftag->forknum, ftag->segno);
@@ -1490,7 +1489,13 @@ aosyncfiletag(const FileTag *ftag, char *path)
 		elog(ERROR, "could not open file %s: %m", path);
 
 	/* Try to fsync the file. */
-	return FileSync(fd, WAIT_EVENT_DATA_FILE_SYNC);
+	result = FileSync(fd, WAIT_EVENT_DATA_FILE_SYNC);
+	save_errno = errno;
+
+	FileClose(fd);
+
+	errno = save_errno;
+	return result;
 }
 
 /*

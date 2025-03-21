@@ -24,8 +24,7 @@
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2008-2009, Greenplum Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Portions Copyright (c) 2023, HashData Technology Limited.
- * 
+ *
  *
  * IDENTIFICATION
  *	  src/backend/executor/nodeBitmapHeapscan.c
@@ -762,8 +761,37 @@ ExecEndBitmapHeapScan(BitmapHeapScanState *node)
 BitmapHeapScanState *
 ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 {
-	BitmapHeapScanState *scanstate;
 	Relation	currentRelation;
+	BitmapHeapScanState *bhsState;
+
+	/* check for unsupported flags */
+	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
+
+	/*
+	 * open the scan relation
+	 */
+	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
+
+	bhsState =  ExecInitBitmapHeapScanForPartition(node, estate, eflags,
+												   currentRelation);
+
+	/*
+	 * initialize child nodes
+	 *
+	 * We do this last because the child nodes will open indexscans on our
+	 * relation's indexes, and we want to be sure we have acquired a lock on
+	 * the relation first.
+	 */
+	outerPlanState(bhsState) = ExecInitNode(outerPlan(node), estate, eflags);
+
+	return bhsState;
+}
+
+BitmapHeapScanState *
+ExecInitBitmapHeapScanForPartition(BitmapHeapScan *node, EState *estate, int eflags,
+								   Relation currentRelation)
+{
+	BitmapHeapScanState *scanstate;
 
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
@@ -820,16 +848,6 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 	ExecAssignExprContext(estate, &scanstate->ss.ps);
 
 	/*
-	 * open the scan relation
-	 */
-	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
-
-	/*
-	 * initialize child nodes
-	 */
-	outerPlanState(scanstate) = ExecInitNode(outerPlan(node), estate, eflags);
-
-	/*
 	 * get the scan type from the relation descriptor.
 	 */
 	ExecInitScanTupleSlot(estate, &scanstate->ss,
@@ -858,7 +876,7 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 		get_tablespace_io_concurrency(currentRelation->rd_rel->reltablespace);
 
 	/* Prefetching hasn't been implemented for AO tables */
-	if (RelationIsAppendOptimized(currentRelation))
+	if (RelationStorageIsAO(currentRelation))
 		scanstate->prefetch_maximum = 0;
 
 	scanstate->ss.ss_currentRelation = currentRelation;

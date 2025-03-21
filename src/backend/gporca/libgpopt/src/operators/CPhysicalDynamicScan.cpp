@@ -20,7 +20,6 @@
 #include "gpopt/base/CDrvdPropCtxtPlan.h"
 #include "gpopt/base/CUtils.h"
 #include "gpopt/metadata/CName.h"
-#include "gpopt/metadata/CPartConstraint.h"
 #include "gpopt/metadata/CTableDescriptor.h"
 #include "gpopt/operators/CExpressionHandle.h"
 
@@ -124,6 +123,7 @@ CPhysicalDynamicScan::OsPrint(IOstream &os) const
 	os << "), Columns: [";
 	CUtils::OsPrintDrgPcr(os, m_pdrgpcrOutput);
 	os << "] Scan Id: " << m_scan_id;
+	os << " Parts to scan: " << m_partition_mdids->Size();
 
 
 	return os;

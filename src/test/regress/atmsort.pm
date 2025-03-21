@@ -347,7 +347,7 @@ m/^NOTICE:  dropping a column that is part of the distribution policy/
 
 m/^NOTICE:  table has parent\, setting distribution columns to match parent table/
 
-m/^WARNING:  referential integrity \(.*\) constraints are not supported in Cloudberry Database/
+m/^WARNING:  referential integrity \(.*\) constraints are not supported in Apache Cloudberry/
 
         # ignore notices for DROP sqlobject IF EXISTS "objectname"
         # eg NOTICE:  table "foo" does not exist, skipping
@@ -1198,9 +1198,7 @@ sub atmsort_bigloop
             }
 
             # EXPLAIN (COSTS OFF/FALSE/0) ...
-            if (($ini =~ m/explain\s*\(.*costs\s+off.*\)/i) ||
-                ($ini =~ m/explain\s*\(.*costs\s+false.*\)/i) ||
-                ($ini =~ m/explain\s*\(.*costs\s+0.*\)/i))
+            if ($ini =~ m/explain\s*\(.*costs\s+(?:off|false|0).*\)/i)
             {
                 $directive->{explain} = "costs_off";
             }

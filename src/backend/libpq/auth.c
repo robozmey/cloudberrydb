@@ -3,7 +3,6 @@
  * auth.c
  *	  Routines to handle network authentication
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -368,6 +367,18 @@ auth_failed(Port *port, int status, char *logdetail)
 
 	cdetail = psprintf(_("Connection matched pg_hba.conf line %d: \"%s\""),
 					   port->hba->linenumber, port->hba->rawline);
+
+    /*
+     * Avoid leak user infomations when failed to connect database using LDAP,
+     * and we need hide failed details return by LDAP.
+     * */
+    if (port->hba->auth_method == uaLDAP)
+    {
+        pfree(cdetail);
+        cdetail = NULL;
+        logdetail = NULL;
+    }
+
 	if (logdetail)
 		logdetail = psprintf("%s\n%s", logdetail, cdetail);
 	else
@@ -395,7 +406,7 @@ auth_failed(Port *port, int status, char *logdetail)
 	account_status = DatumGetInt16(SysCacheGetAttr(AUTHNAME, auth_tuple,
 						Anum_pg_authid_rolaccountstatus, &account_status_isnull));
 	if (enable_password_profile && !authform->rolsuper && authform->rolenableprofile &&
-		(account_status != ROLE_ACCOUNT_STATUS_LOCKED ||
+		(account_status != ROLE_ACCOUNT_STATUS_LOCKED &&
 		 account_status != ROLE_ACCOUNT_STATUS_LOCKED_TIMED))
 		SendLoginFailedSignal(port->user_name);
 
@@ -574,11 +585,11 @@ internal_client_authentication(Port *port)
 		 * The entry-DB (or QE at the master) case.
 		 *
 		 * The goal here is to block network connection from out of
-		 * master to master db with magic bit packet.
-		 * So, only when it comes from the same host, the connection
-		 * is authenticated, if this connection is TCP/UDP.
+		 * coordinator to coordinator db with magic bit packet.
 		 *
-		 * If unix domain socket comes, just authenticate it.
+		 * Internal connections originating from the same host (be it TCP/IP or
+		 * Unix domain socket) are considered already authenticated, and receive
+		 * a free pass.
 		 */
 		if (port->raddr.addr.ss_family == AF_INET
 #ifdef HAVE_IPV6
@@ -588,18 +599,18 @@ internal_client_authentication(Port *port)
 		{
 			if (check_same_host_or_net(&port->raddr, ipCmpSameHost))
 			{
-				if (gp_reject_internal_tcp_conn)
-				{
-					elog(DEBUG1, "rejecting TCP connection to master using internal"
-						 "connection protocol, because the GUC gp_reject_internal_tcp_conn is true");
-					return false;
-				}
-				else
-				{
-					elog(DEBUG1, "received same host internal TCP connection");
-					FakeClientAuthentication(port);
-					return true;
-				}
+				/*
+				 * Note: We do take steps to prevent TCP/IP connections from the
+				 * coordinator to entry DB QEs (see cdbconn_doConnectStart()),
+				 * in favor of Unix domain socket communication. However, if
+				 * PGHOST is set in the coordinator's environment to a hostname,
+				 * then the connection will still be TCP/IP.
+				 */
+				ereport(DEBUG1,
+						(errmsg("received same host internal connection over TCP/IP"),
+						 errdetail("check if PGHOST or PGHOSTADDR is set in the coordinator environment")));
+				FakeClientAuthentication(port);
+				return true;
 			}
 
 			/* Security violation? */
@@ -3254,8 +3265,7 @@ CheckLDAPAuth(Port *port)
 	if (r != LDAP_SUCCESS)
 	{
 		ereport(LOG,
-				(errmsg("LDAP login failed for user \"%s\" on server \"%s\": %s",
-						fulluser, server_name, ldap_err2string(r)),
+				(errmsg("LDAP login failed for user on server."),
 				 errdetail_for_ldap(ldap)));
 		ldap_unbind(ldap);
 		pfree(passwd);

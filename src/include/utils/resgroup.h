@@ -74,14 +74,14 @@ typedef struct ResGroupCaps
 	ResGroupCap		concurrency;
 	ResGroupCap		cpuMaxPercent;
 	ResGroupCap		cpuWeight;
-	ResGroupCap		memory_limit;
+	ResGroupCap		memory_quota;
 	volatile ResGroupCap	min_cost;
 
 	/*
-	 * io_limit are local pointers,
-	 * do not use it for cross MemoryContext.
+	 * io_limit is a pointer in TopMemoryContext,
+	 * This cell of list should be converted to TblSpcIOLimit when use.
 	 */
-	char			*io_limit;
+	List			*io_limit;
 
 	char			cpuset[MaxCpuSetLength];
 } ResGroupCaps;

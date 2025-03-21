@@ -6,7 +6,6 @@
  * gram.y
  *	  POSTGRESQL BISON rules/actions
  *
- * Portions Copyright (c) 2023, HashData Technology Limited
  * Portions Copyright (c) 2006-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -215,6 +214,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 static Node *makeIsNotDistinctFromNode(Node *expr, int position);
 
+static bool isSetWithReorganize(List **options);
 static char *greenplumLegacyAOoptions(const char *accessMethod, List **options);
 static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_t yyscanner);
 
@@ -298,7 +298,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 		CreateAssertionStmt CreateTransformStmt CreateTrigStmt CreateEventTrigStmt
 		CreateUserStmt CreateUserMappingStmt CreateRoleStmt CreatePolicyStmt
 		CreatedbStmt CreateWarehouseStmt DeclareCursorStmt DefineStmt DeleteStmt DiscardStmt DoStmt
-		DropOpClassStmt DropOpFamilyStmt DropStmt DropWarehouseStmt
+		DropDirectoryTableStmt DropOpClassStmt DropOpFamilyStmt DropStmt DropWarehouseStmt
 		DropCastStmt DropRoleStmt
 		DropdbStmt DropTableSpaceStmt
 		DropTransformStmt
@@ -325,7 +325,9 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 		CreateExternalStmt
 		CreateProfileStmt CreateQueueStmt CreateResourceGroupStmt CreateTagStmt
 		DropProfileStmt DropQueueStmt DropResourceGroupStmt DropTagStmt
-		ExtTypedesc OptSingleRowErrorHandling ExtSingleRowErrorHandling
+		ExtTypedesc ExtSingleRowErrorHandling
+
+%type<list> 	OptSingleRowErrorHandling
 
 %type <node>    deny_login_role deny_interval deny_point deny_day_specifier
 
@@ -348,6 +350,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 %type <ival>	opt_table_partition_exchange_validate
 
 %type <dbehavior>	opt_drop_behavior
+%type <dbehavior>	opt_drop_directory_table_behavior
 
 %type <list>	createdb_opt_list createdb_opt_items copy_opt_list
 				transaction_mode_list
@@ -415,6 +418,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 				access_method_clause attr_name
 				table_access_method_clause name cursor_name file_name
 				opt_index_name cluster_index_specification opt_file_name
+%type <str>		OptWithLocation
 
 %type <list>	func_name handler_name qual_Op qual_all_Op subquery_Op
 				opt_class opt_inline_handler opt_validator validator_clause
@@ -462,7 +466,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 				sort_clause opt_sort_clause sortby_list index_params stats_params
 				opt_include opt_c_include index_including_params
 				name_list role_list from_clause from_list opt_array_bounds
-				qualified_name_list any_name any_name_list type_name_list
+				qualified_name_list qualified_name_list_with_only any_name any_name_list type_name_list
 				any_operator expr_list attrs
 				distinct_clause opt_distinct_clause
 				target_list opt_target_list insert_column_list set_target_list
@@ -764,7 +768,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 	DATA_P DATABASE DAY_P DEALLOCATE DEC DECIMAL_P DECLARE DEFAULT DEFAULTS
 	DEFERRABLE DEFERRED DEFINER DELETE_P DELIMITER DELIMITERS DEPENDS DEPTH DESC
 	DETACH DICTIONARY DIRECTORY DISABLE_P DISCARD DISTINCT DO DOCUMENT_P DOMAIN_P
-	DOUBLE_P DROP
+	DOUBLE_P DROP DYNAMIC
 
 	EACH ELSE ENABLE_P ENCODING ENCRYPTED END_P ENDPOINT ENUM_P ESCAPE EVENT EXCEPT
 	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN EXPRESSION
@@ -790,7 +794,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 	LEADING LEAKPROOF LEAST LEFT LEVEL LIKE LIMIT LISTEN LOAD LOCAL
 	LOCALTIME LOCALTIMESTAMP LOCATION LOCK_P LOCKED LOCUS LOGGED
 
-	MAPPING MATCH MATERIALIZED MAXVALUE MEMORY_LIMIT
+	MAPPING MATCH MATERIALIZED MAXVALUE MEMORY_QUOTA
 	METHOD MINUTE_P MINVALUE MIN_COST MODE MONTH_P MOVE
 
 	NAME_P NAMES NATIONAL NATURAL NCHAR NEW NEXT NFC NFD NFKC NFKD NO NONE
@@ -983,14 +987,16 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc AGGREGATE
 			%nonassoc ALSO
 			%nonassoc ALTER
-            %nonassoc AO_AUX_ONLY
+			%nonassoc AO_AUX_ONLY
 			%nonassoc ASSERTION
 			%nonassoc ASSIGNMENT
+			%nonassoc ATTACH
 			%nonassoc BACKWARD
 			%nonassoc BEFORE
 			%nonassoc BEGIN_P
 			%nonassoc BY
 			%nonassoc CACHE
+			%nonassoc CALL
 			%nonassoc CALLED
 			%nonassoc CASCADE
 			%nonassoc CASCADED
@@ -1000,6 +1006,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc CLASS
 			%nonassoc CLOSE
 			%nonassoc CLUSTER
+			%nonassoc COLUMNS
 			%nonassoc COMMENT
 			%nonassoc COMMIT
 			%nonassoc COMMITTED
@@ -1011,6 +1018,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc CONTENT_P
 			%nonassoc CONTINUE_P
 			%nonassoc CONVERSION_P
+			%nonassoc COORDINATOR
 			%nonassoc COPY
 			%nonassoc COST
 			%nonassoc CPUSET
@@ -1032,6 +1040,8 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc DELETE_P
 			%nonassoc DELIMITER
 			%nonassoc DELIMITERS
+			%nonassoc DEPENDS
+			%nonassoc DETACH
 			%nonassoc DISABLE_P
 			%nonassoc DOMAIN_P
 			%nonassoc DOUBLE_P
@@ -1061,6 +1071,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc FUNCTION
 			%nonassoc GLOBAL
 			%nonassoc GRANTED
+			%nonassoc GROUPING
 			%nonassoc HANDLER
 			%nonassoc HASH
 			%nonassoc HEADER_P
@@ -1071,6 +1082,8 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc IMMEDIATE
 			%nonassoc IMMUTABLE
 			%nonassoc IMPLICIT_P
+			%nonassoc IMPORT_P
+			%nonassoc INCLUDE
 			%nonassoc INCLUDING
 			%nonassoc INCLUSIVE
 			%nonassoc INCREMENT
@@ -1094,11 +1107,14 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc LOAD
 			%nonassoc LOCAL
 			%nonassoc LOCATION
+			%nonassoc LOCKED
 			%nonassoc LOCK_P
+			%nonassoc LOGGED
 			%nonassoc MASTER
 			%nonassoc MATCH
 			%nonassoc MAXVALUE
-			%nonassoc MEMORY_LIMIT
+			%nonassoc MEMORY_QUOTA
+			%nonassoc METHOD
 			%nonassoc MIN_COST
 			%nonassoc MINUTE_P
 			%nonassoc MINVALUE
@@ -1109,6 +1125,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc MOVE
 			%nonassoc NAME_P
 			%nonassoc NAMES
+			%nonassoc NEW
 			%nonassoc NEWLINE
 			%nonassoc NEXT
 			%nonassoc NO
@@ -1121,11 +1138,13 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc OBJECT_P
 			%nonassoc OF
 			%nonassoc OIDS
+			%nonassoc OLD
 			%nonassoc OPTION
 			%nonassoc OPTIONS
 			%nonassoc OTHERS
 			%nonassoc OVER
 			%nonassoc OVERCOMMIT
+			%nonassoc OVERRIDING
 			%nonassoc OWNED
 			%nonassoc OWNER
 			%nonassoc PARALLEL
@@ -1134,13 +1153,16 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc PASSWORD
 			%nonassoc PERCENT
 			%nonassoc PERSISTENTLY
+			%nonassoc POLICY
 			%nonassoc PREPARE
 			%nonassoc PREPARED
 			%nonassoc PRIOR
 			%nonassoc PRIVILEGES
 			%nonassoc PROCEDURAL
 			%nonassoc PROCEDURE
+			%nonassoc PROCEDURES
 			%nonassoc PROTOCOL
+			%nonassoc PUBLICATION
 			%nonassoc QUEUE
 			%nonassoc QUOTE
 			%nonassoc RANDOMLY
@@ -1150,6 +1172,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc REASSIGN
 			%nonassoc RECHECK
 			%nonassoc RECURSIVE
+			%nonassoc REFERENCING
 			%nonassoc REINDEX
 			%nonassoc REJECT_P
 			%nonassoc RELATIVE_P
@@ -1166,10 +1189,13 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc REVOKE
 			%nonassoc ROLE
 			%nonassoc ROLLBACK
+			%nonassoc ROUTINE
+			%nonassoc ROUTINES
 			%nonassoc RULE
 			%nonassoc SAVEPOINT
 			%nonassoc SCHEDULE
 			%nonassoc SCHEMA
+			%nonassoc SCHEMAS
 			%nonassoc SCROLL
 			%nonassoc SEARCH
 			%nonassoc SECOND_P
@@ -1182,6 +1208,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc SHARE
 			%nonassoc SHOW
 			%nonassoc SIMPLE
+			%nonassoc SQL_P
 			%nonassoc SPLIT
 			%nonassoc STABLE
 			%nonassoc START
@@ -1190,10 +1217,13 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc STDIN
 			%nonassoc STDOUT
 			%nonassoc STORAGE
+			%nonassoc STORED
 			%nonassoc SUBPARTITION
+			%nonassoc SUPPORT
 			%nonassoc SYSID
 			%nonassoc SYSTEM_P
 			%nonassoc STRICT_P
+			%nonassoc TABLESAMPLE
 			%nonassoc TABLESPACE
 			%nonassoc TAG
 			%nonassoc TASK
@@ -1203,6 +1233,7 @@ static void check_expressions_in_partition_key(PartitionSpec *spec, core_yyscan_
 			%nonassoc THRESHOLD
 			%nonassoc TIES
 			%nonassoc TRANSACTION
+			%nonassoc TRANSFORM
 			%nonassoc TRIGGER
 			%nonassoc TRUNCATE
 			%nonassoc TRUSTED
@@ -1485,6 +1516,7 @@ stmt:
 			| DiscardStmt
 			| DoStmt
 			| DropCastStmt
+			| DropDirectoryTableStmt
 			| DropOpClassStmt
 			| DropOpFamilyStmt
 			| DropOwnedStmt
@@ -1751,9 +1783,9 @@ OptResourceGroupElem:
 				{
 					$$ = makeDefElem("cpuset", (Node *) makeString($2), @1);
 				}
-			| MEMORY_LIMIT SignedIconst
+			| MEMORY_QUOTA SignedIconst
 				{
-					$$ = makeDefElem("memory_limit", (Node *) makeInteger($2), @1);
+					$$ = makeDefElem("memory_quota", (Node *) makeInteger($2), @1);
 				}
 			| MIN_COST SignedIconst
 				{
@@ -3730,12 +3762,26 @@ alter_table_cmd:
 					n->def = (Node *) list_make2($3, $4);
 					$$ = (Node *)n;
 				}
-			/* storage only */
+			/* table storage type  or reorganize only */
 			| SET WITH definition
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
-					n->subtype = AT_SetDistributedBy;
-					n->def = (Node *) list_make2($3, NULL);
+					if (isSetWithReorganize(&$3))
+					{
+						n->subtype = AT_SetDistributedBy;
+						n->def = (Node *) list_make2($3, NULL);
+					}
+					else
+					{
+						n->subtype = AT_SetAccessMethod;
+						n->name = greenplumLegacyAOoptions(n->name, &$3);
+						if (!n->name)
+							ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("invalid storage type"),
+								 parser_errposition(@3)));
+						n->def = (Node *) $3;
+					}
 					$$ = (Node *)n;
 				}
 			| alter_table_partition_cmd
@@ -3787,6 +3833,38 @@ alter_table_cmd:
 					AlterTableCmd *n = makeNode(AlterTableCmd);
 					n->subtype = AT_ChangeOwner;
 					n->newowner = $3;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> SET ACCESS METHOD <amname> WITH (<reloptions>) */
+			| SET ACCESS METHOD name OptWith
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					char *witham = greenplumLegacyAOoptions(n->name, &$5);
+					n->subtype = AT_SetAccessMethod;
+					n->name = $4;
+					/*
+					 * If there's any legacy AO options specified in the WITH
+					 * clause such as 'appendonly' or 'appendoptimized', it has
+					 * to match with the AM name.
+					 */
+					if (witham) 
+					{
+						if (strlen(witham) != strlen(n->name) || 
+							strncmp(n->name, witham, strlen(n->name) != 0))
+							ereport(ERROR,
+									(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+									 errmsg("ACCESS METHOD is specified as \"%s\" but "
+										"the WITH option indicates it to be \"%s\"",
+										n->name, witham),
+									 parser_errposition(@5)));
+						else
+							ereport(NOTICE,
+									(errcode(ERRCODE_SYNTAX_ERROR),
+									 errmsg("Redundant clauses are used to indicate the access method."),
+									 errhint("Only one of these is needed to indicate access method: the "
+										"SET ACCESS METHOD clause or the options in the WITH clause.")));
+					}
+					n->def = (Node *) $5;
 					$$ = (Node *)n;
 				}
 			/* ALTER TABLE <name> SET TABLESPACE <tablespacename> */
@@ -3882,6 +3960,11 @@ opt_drop_behavior:
 			CASCADE						{ $$ = DROP_CASCADE; }
 			| RESTRICT					{ $$ = DROP_RESTRICT; }
 			| /* EMPTY */				{ $$ = DROP_RESTRICT; /* default */ }
+		;
+
+opt_drop_directory_table_behavior:
+			WITH CONTENT_P				{ $$ = true; }
+			| /* EMPTY */				{ $$ = false; }
 		;
 
 opt_collate_clause:
@@ -4142,8 +4225,8 @@ opt_table_partition_exchange_validate:
 			{
 				$$ = +1;
 				ereport(NOTICE,
-						(errmsg("specifying \"WITH VALIDATION\" acts as no operation. "
-								"If the new partition is a regular table, validation is performed "
+						(errmsg("specifying \"WITH VALIDATION\" acts as no operation"),
+						 errdetail("If the new partition is a regular table, validation is performed "
 								"to make sure all the rows obey partition constraint. "
 								"If the new partition is external or foreign table, no validation is performed.")));
 			}
@@ -4151,8 +4234,8 @@ opt_table_partition_exchange_validate:
 			{
 				$$ = +0;
 				ereport(NOTICE,
-						(errmsg("specifying \"WITHOUT VALIDATION\" acts as no operation. "
-								"If the new partition is a regular table, validation is performed "
+						(errmsg("specifying \"WITHOUT VALIDATION\" acts as no operation"),
+						 errdetail("If the new partition is a regular table, validation is performed "
 								"to make sure all the rows obey partition constraint. "
 								"If the new partition is external or foreign table, no validation is performed.")));
 			}
@@ -4753,6 +4836,9 @@ CopyStmt:	COPY opt_binary qualified_name opt_column_list
 						n->options = lappend(n->options, $9);
 					if ($11)
 						n->options = list_concat(n->options, $11);
+					if ($13)
+						n->options = list_concat(n->options, $13);
+
 					$$ = (Node *)n;
 				}
 			| COPY '(' PreparableStmt ')' TO opt_program copy_file_name opt_with copy_options
@@ -5017,6 +5103,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->oncommit = $12;
 					n->tablespacename = $13;
 					n->if_not_exists = false;
+					n->origin = ORIGIN_NO_GEN;
 					n->distributedBy = (DistributedBy *) $14;
 					n->tags = $16;
 					n->relKind = RELKIND_RELATION;
@@ -5048,6 +5135,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->oncommit = $15;
 					n->tablespacename = $16;
 					n->if_not_exists = true;
+					n->origin = ORIGIN_NO_GEN;
 					n->distributedBy = (DistributedBy *) $17;
 					n->tags = $19;
 					n->relKind = RELKIND_RELATION;
@@ -5080,6 +5168,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->oncommit = $11;
 					n->tablespacename = $12;
 					n->if_not_exists = false;
+					n->origin = ORIGIN_NO_GEN;
 					n->distributedBy = (DistributedBy *) $13;
 					n->tags = $15;
 					n->relKind = RELKIND_RELATION;
@@ -5112,6 +5201,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->oncommit = $14;
 					n->tablespacename = $15;
 					n->if_not_exists = true;
+					n->origin = ORIGIN_NO_GEN;
 					n->distributedBy = (DistributedBy *) $16;
 					n->tags = $18;
 					n->relKind = RELKIND_RELATION;
@@ -5144,6 +5234,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->oncommit = $13;
 					n->tablespacename = $14;
 					n->if_not_exists = false;
+					n->origin = ORIGIN_NO_GEN;
 					n->distributedBy = NULL;
 					n->tags = $16;
 					n->relKind = RELKIND_RELATION;
@@ -5176,6 +5267,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->oncommit = $16;
 					n->tablespacename = $17;
 					n->if_not_exists = true;
+					n->origin = ORIGIN_NO_GEN;
 					n->distributedBy = NULL;
 					n->tags = $19;
 					n->relKind = RELKIND_RELATION;
@@ -5904,6 +5996,10 @@ OptFirstPartitionSpec: PartitionSpec opt_list_subparts OptTabPartitionSpec
 					if ($1->gpPartDef)
 						check_expressions_in_partition_key($1, yyscanner);
 					$$ = $1;
+					/* Do not allow SUBPARTITION BY clause for empty partition hierarchy */
+					if (!$1->gpPartDef && $1->subPartSpec)
+						ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							errmsg("SUBPARTITION BY clause is not allowed when no partitions specified at depth 1")));
 
 					pg_yyget_extra(yyscanner)->tail_partition_magic = true;
 				}
@@ -5931,6 +6027,12 @@ OptSecondPartitionSpec:
 					 */
 					if (n->gpPartDef)
 						check_expressions_in_partition_key(n, yyscanner);
+
+					/* Do not allow SUBPARTITION BY clause for empty partition hierarchy */
+					if (!n->gpPartDef && n->subPartSpec)
+						ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							errmsg("SUBPARTITION BY clause is not allowed when no partitions specified at depth 1")));
+
 					$$ = n;
 
 					pg_yyget_extra(yyscanner)->tail_partition_magic = false;
@@ -6004,6 +6106,11 @@ OptWith:
 			WITH reloptions				{ $$ = $2; }
 			| WITHOUT OIDS				{ $$ = NIL; }
 			| /*EMPTY*/					{ $$ = NIL; }
+		;
+
+OptWithLocation:
+			WITH LOCATION Sconst		{ $$ = $3; }
+			| /*EMPTY*/					{ $$ = NULL; }
 		;
 
 OnCommitOption:  ON COMMIT DROP				{ $$ = ONCOMMIT_DROP; }
@@ -7014,7 +7121,7 @@ OptSingleRowErrorHandling:
 					   (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg("invalid (ROWS) reject limit. Should be 2 or larger")));
 
-			$$ = (Node *)n;
+			$$ = lappend(NULL, makeDefElem("sreh", (Node *) n, @1));
 		}
 		| /*EMPTY*/		{ $$ = NULL; }
 		;
@@ -7139,6 +7246,74 @@ CreateMatViewStmt:
 					ctas->into->distributedBy = $13;
 					$$ = (Node *) ctas;
 				}
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				CREATE DYNAMIC TABLE relname AS SelectStmt
+ *
+ *****************************************************************************/
+		| CREATE OptNoLog DYNAMIC TABLE create_mv_target SCHEDULE task_schedule AS SelectStmt opt_with_data OptDistributedBy
+				{
+					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
+					ctas->query = $9;
+					ctas->into = $5;
+					ctas->objtype = OBJECT_MATVIEW;
+					ctas->is_select_into = false;
+					ctas->if_not_exists = false;
+					/* cram additional flags into the IntoClause */
+					$5->rel->relpersistence = $2;
+					$5->skipData = !($10);
+					$5->dynamicTbl = true;
+					$5->schedule = $7;
+					ctas->into->distributedBy = $11;
+					$$ = (Node *) ctas;
+				}
+		| CREATE OptNoLog DYNAMIC TABLE create_mv_target AS SelectStmt opt_with_data OptDistributedBy
+				{
+					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
+					ctas->query = $7;
+					ctas->into = $5;
+					ctas->objtype = OBJECT_MATVIEW;
+					ctas->is_select_into = false;
+					ctas->if_not_exists = false;
+					/* cram additional flags into the IntoClause */
+					$5->rel->relpersistence = $2;
+					$5->skipData = !($8);
+					$5->dynamicTbl = true;
+					ctas->into->distributedBy = $9;
+					$$ = (Node *) ctas;
+				}
+		| CREATE OptNoLog DYNAMIC TABLE create_mv_target IF_P NOT EXISTS SCHEDULE task_schedule AS SelectStmt opt_with_data OptDistributedBy
+				{
+					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
+					ctas->query = $12;
+					ctas->into = $5;
+					ctas->objtype = OBJECT_MATVIEW;
+					ctas->is_select_into = false;
+					ctas->if_not_exists = true;
+					/* cram additional flags into the IntoClause */
+					$5->rel->relpersistence = $2;
+					$5->skipData = !($13);
+					$5->dynamicTbl = true;
+					$5->schedule = $10;
+					ctas->into->distributedBy = $14;
+					$$ = (Node *) ctas;
+				}
+		| CREATE OptNoLog DYNAMIC TABLE create_mv_target IF_P NOT EXISTS AS SelectStmt opt_with_data OptDistributedBy
+				{
+					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
+					ctas->query = $10;
+					ctas->into = $5;
+					ctas->objtype = OBJECT_MATVIEW;
+					ctas->is_select_into = false;
+					ctas->if_not_exists = true;
+					/* cram additional flags into the IntoClause */
+					$5->rel->relpersistence = $2;
+					$5->skipData = !($11);
+					$5->dynamicTbl = true;
+					ctas->into->distributedBy = $12;
+					$$ = (Node *) ctas;
+				}
 		;
 
 create_mv_target:
@@ -7154,6 +7329,8 @@ create_mv_target:
 					$$->viewQuery = NULL;		/* filled at analysis time */
 					$$->skipData = false;		/* might get changed later */
 					$$->ivm = false;
+					$$->dynamicTbl = false;
+					$$->schedule = NULL;
 
 					$$->accessMethod = greenplumLegacyAOoptions($$->accessMethod, &$$->options);
 				}
@@ -7167,11 +7344,11 @@ OptNoLog:	UNLOGGED					{ $$ = RELPERSISTENCE_UNLOGGED; }
 			| /*EMPTY*/					{ $$ = RELPERSISTENCE_PERMANENT; }
 		;
 
-
 /*****************************************************************************
  *
  *		QUERY :
  *				REFRESH MATERIALIZED VIEW qualified_name
+ *				REFRESH DYNAMIC TABLE qualified_name
  *
  *****************************************************************************/
 
@@ -7182,6 +7359,16 @@ RefreshMatViewStmt:
 					n->concurrent = $4;
 					n->relation = $5;
 					n->skipData = !($6);
+					n->isdynamic = false;
+					$$ = (Node *) n;
+				}
+			| REFRESH DYNAMIC TABLE opt_concurrently qualified_name opt_with_data
+				{
+					RefreshMatViewStmt *n = makeNode(RefreshMatViewStmt);
+					n->concurrent = $4;
+					n->relation = $5;
+					n->skipData = !($6);
+					n->isdynamic = true;
 					$$ = (Node *) n;
 				}
 		;
@@ -8443,7 +8630,7 @@ AlterStorageUserMappingStmt:
 
 CreateDirectoryTableStmt:
             CREATE DIRECTORY TABLE qualified_name
-            table_access_method_clause OptTableSpace OptTagOptList
+            table_access_method_clause OptTableSpace OptWithLocation OptTagOptList
                 {
                     CreateDirectoryTableStmt *n = makeNode(CreateDirectoryTableStmt);
                     $4->relpersistence = RELPERSISTENCE_PERMANENT;
@@ -8458,13 +8645,14 @@ CreateDirectoryTableStmt:
                     n->base.if_not_exists = false;
                     n->base.distributedBy = GetDirectoryTableDistributedBy();
                     n->base.relKind = RELKIND_DIRECTORY_TABLE;
-                    n->base.tags = $7;
                     n->tablespacename = $6;
+                    n->location = $7;
+                    n->base.tags = $8;
 
                     $$ = (Node *) n;
                 }
             | CREATE DIRECTORY TABLE IF_P NOT EXISTS qualified_name
-            table_access_method_clause OptTableSpace OptTagOptList
+            table_access_method_clause OptTableSpace OptWithLocation OptTagOptList
                 {
                     CreateDirectoryTableStmt *n = makeNode(CreateDirectoryTableStmt);
                     $7->relpersistence = RELPERSISTENCE_PERMANENT;
@@ -8479,8 +8667,9 @@ CreateDirectoryTableStmt:
                     n->base.if_not_exists = true;
                     n->base.distributedBy = GetDirectoryTableDistributedBy();
                     n->base.relKind = RELKIND_DIRECTORY_TABLE;
-                    n->base.tags = $10;
                     n->tablespacename = $9;
+                    n->location = $10;
+                    n->base.tags = $11;
 
                     $$ = (Node *) n;
                 }
@@ -8513,7 +8702,41 @@ AlterDirectoryTableStmt:
 					$$ = (Node *)n;
 				}
 			;
-			
+
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *
+ *		DROP DIRECTORY TABLE [ IF EXISTS ] tablename [, tablename ...]
+ *           [ RESTRICT | CASCADE ] [WITH CONTENT]
+ *
+ *****************************************************************************/
+
+DropDirectoryTableStmt:
+			DROP DIRECTORY TABLE IF_P EXISTS any_name_list opt_drop_behavior opt_drop_directory_table_behavior
+				{
+					DropDirectoryTableStmt *n = makeNode(DropDirectoryTableStmt);
+					n->base.removeType = OBJECT_DIRECTORY_TABLE;
+					n->base.missing_ok = true;
+					n->base.objects = $6;
+					n->base.behavior = $7;
+					n->base.concurrent = false;
+					n->with_content = $8;
+					$$ = (Node *)n;
+				}
+			| DROP DIRECTORY TABLE any_name_list opt_drop_behavior opt_drop_directory_table_behavior
+				{
+					DropDirectoryTableStmt *n = makeNode(DropDirectoryTableStmt);
+					n->base.removeType = OBJECT_DIRECTORY_TABLE;
+					n->base.missing_ok = true;
+					n->base.objects = $4;
+					n->base.behavior = $5;
+					n->base.concurrent = false;
+					n->with_content = $6;
+					$$ = (Node *)n;
+				}
+		;
 
 /*****************************************************************************
  *
@@ -8785,9 +9008,14 @@ TriggerForSpec:
 				}
 			| /* EMPTY */
 				{
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("Triggers for statements are not yet supported")));
+					/* let creation of triggers go through for pg_restore when upgrading from GP6 to GP7 */
+					if (!gp_enable_statement_trigger)
+					{
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("Triggers for statements are not yet supported")));
+					}
+					$$ = false;
 				}
 		;
 
@@ -8800,9 +9028,14 @@ TriggerForType:
 			ROW										{ $$ = true; }
 			| STATEMENT
 			{
+				/* let creation of triggers go through for pg_restore when upgrading from GP6 to GP7 */
+				if (!gp_enable_statement_trigger)
+				{
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("Triggers for statements are not yet supported")));
+				}
+				$$ = false;
 			}
 		;
 
@@ -9440,6 +9673,7 @@ DropOpClassStmt:
 					n->behavior = $7;
 					n->missing_ok = false;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *) n;
 				}
 			| DROP OPERATOR CLASS IF_P EXISTS any_name USING name opt_drop_behavior
@@ -9450,6 +9684,7 @@ DropOpClassStmt:
 					n->behavior = $9;
 					n->missing_ok = true;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *) n;
 				}
 		;
@@ -9463,6 +9698,7 @@ DropOpFamilyStmt:
 					n->behavior = $7;
 					n->missing_ok = false;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *) n;
 				}
 			| DROP OPERATOR FAMILY IF_P EXISTS any_name USING name opt_drop_behavior
@@ -9473,6 +9709,7 @@ DropOpFamilyStmt:
 					n->behavior = $9;
 					n->missing_ok = true;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *) n;
 				}
 		;
@@ -9523,6 +9760,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $5;
 					n->behavior = $6;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *)n;
 				}
 			| DROP object_type_any_name any_name_list opt_drop_behavior
@@ -9533,6 +9771,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $3;
 					n->behavior = $4;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *)n;
 				}
 			| DROP drop_type_name IF_P EXISTS name_list opt_drop_behavior
@@ -9543,6 +9782,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $5;
 					n->behavior = $6;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *)n;
 				}
 			| DROP drop_type_name name_list opt_drop_behavior
@@ -9553,6 +9793,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $3;
 					n->behavior = $4;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *)n;
 				}
 			| DROP object_type_name_on_any_name name ON any_name opt_drop_behavior
@@ -9563,6 +9804,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->behavior = $6;
 					n->missing_ok = false;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *) n;
 				}
 			| DROP object_type_name_on_any_name IF_P EXISTS name ON any_name opt_drop_behavior
@@ -9573,6 +9815,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->behavior = $8;
 					n->missing_ok = true;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *) n;
 				}
 			| DROP TYPE_P type_name_list opt_drop_behavior
@@ -9583,6 +9826,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $3;
 					n->behavior = $4;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *) n;
 				}
 			| DROP TYPE_P IF_P EXISTS type_name_list opt_drop_behavior
@@ -9593,6 +9837,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $5;
 					n->behavior = $6;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *) n;
 				}
 			| DROP DOMAIN_P type_name_list opt_drop_behavior
@@ -9603,6 +9848,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $3;
 					n->behavior = $4;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *) n;
 				}
 			| DROP DOMAIN_P IF_P EXISTS type_name_list opt_drop_behavior
@@ -9613,6 +9859,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $5;
 					n->behavior = $6;
 					n->concurrent = false;
+					n->isdynamic = false;
 					$$ = (Node *) n;
 				}
 			| DROP INDEX CONCURRENTLY any_name_list opt_drop_behavior
@@ -9623,6 +9870,7 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $4;
 					n->behavior = $5;
 					n->concurrent = true;
+					n->isdynamic = false;
 					$$ = (Node *)n;
 				}
 			| DROP INDEX CONCURRENTLY IF_P EXISTS any_name_list opt_drop_behavior
@@ -9633,6 +9881,30 @@ DropStmt:	DROP object_type_any_name IF_P EXISTS any_name_list opt_drop_behavior
 					n->objects = $6;
 					n->behavior = $7;
 					n->concurrent = true;
+					n->isdynamic = false;
+					$$ = (Node *)n;
+				}
+/* DROP DYNAMIC TABLE */
+			| DROP DYNAMIC TABLE IF_P EXISTS any_name_list opt_drop_behavior
+				{
+					DropStmt *n = makeNode(DropStmt);
+					n->removeType = OBJECT_MATVIEW;
+					n->missing_ok = true;
+					n->objects = $6;
+					n->behavior = $7;
+					n->concurrent = false;
+					n->isdynamic = true;
+					$$ = (Node *)n;
+				}
+			| DROP DYNAMIC TABLE any_name_list opt_drop_behavior
+				{
+					DropStmt *n = makeNode(DropStmt);
+					n->removeType = OBJECT_MATVIEW;
+					n->missing_ok = false;
+					n->objects = $4;
+					n->behavior = $5;
+					n->concurrent = false;
+					n->isdynamic = true;
 					$$ = (Node *)n;
 				}
 		;
@@ -9647,7 +9919,6 @@ object_type_any_name:
 			| FOREIGN TABLE							{ $$ = OBJECT_FOREIGN_TABLE; }
 			| EXTERNAL TABLE						{ $$ = OBJECT_FOREIGN_TABLE; }
 			| EXTERNAL WEB TABLE					{ $$ = OBJECT_FOREIGN_TABLE; }
-			| DIRECTORY TABLE					{ $$ = OBJECT_DIRECTORY_TABLE; }
 			| COLLATION								{ $$ = OBJECT_COLLATION; }
 			| CONVERSION_P							{ $$ = OBJECT_CONVERSION; }
 			| STATISTICS							{ $$ = OBJECT_STATISTIC_EXT; }
@@ -10315,7 +10586,7 @@ privilege:	SELECT opt_column_list
  * opt_table.  You're going to get conflicts.
  */
 privilege_target:
-			qualified_name_list
+			qualified_name_list_with_only
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
@@ -10323,7 +10594,7 @@ privilege_target:
 					n->objs = $1;
 					$$ = n;
 				}
-			| TABLE qualified_name_list
+			| TABLE qualified_name_list_with_only
 				{
 					PrivTarget *n = (PrivTarget *) palloc(sizeof(PrivTarget));
 					n->targtype = ACL_TARGET_OBJECT;
@@ -18903,6 +19174,27 @@ qualified_name_list:
 			| qualified_name_list ',' qualified_name { $$ = lappend($1, $3); }
 		;
 
+qualified_name_list_with_only:
+			qualified_name
+				{
+					$$ = list_make1($1);
+				}
+			| ONLY qualified_name
+				{ 
+					$2->inh = false; 
+					$$ = list_make1($2);
+				}
+			| qualified_name_list_with_only ',' qualified_name
+				{
+					$$ = lappend($1, $3);
+				}
+			| qualified_name_list_with_only ',' ONLY qualified_name
+				{
+					$4->inh = false; 
+					$$ = lappend($1, $4);
+				}
+		;
+
 /*
  * The production for a qualified relation name has to exactly match the
  * production for a qualified func_name, because in a FROM clause we cannot
@@ -19384,6 +19676,7 @@ unreserved_keyword:
 			| DOUBLE_P
 			| DROP
 			| DXL
+			| DYNAMIC
 			| EACH
 			| ENABLE_P
 			| ENCODING
@@ -19466,13 +19759,14 @@ unreserved_keyword:
 			| LOCK_P
 			| LOCKED
 			| LOCUS
+			| LOG_P
 			| LOGGED
 			| MAPPING
 			| MASTER
 			| MATCH
 			| MATERIALIZED
 			| MAXVALUE
-			| MEMORY_LIMIT
+			| MEMORY_QUOTA
 			| METHOD
 			| MINUTE_P
 			| MINVALUE
@@ -19693,6 +19987,7 @@ PartitionIdentKeyword: ABORT_P
 			| AFTER
 			| AGGREGATE
 			| ALSO
+			| AO_AUX_ONLY
 			| ALWAYS
 			| ASENSITIVE
 			| ASSERTION
@@ -19707,6 +20002,7 @@ PartitionIdentKeyword: ABORT_P
 			| BREADTH
 			| BY
 			| CACHE
+			| CALL
 			| CALLED
 			| CASCADE
 			| CASCADED
@@ -19716,6 +20012,7 @@ PartitionIdentKeyword: ABORT_P
 			| CLASS
 			| CLOSE
 			| CLUSTER
+			| COLUMNS
 			| COMMENT
 			| COMMIT
 			| COMMITTED
@@ -19728,6 +20025,7 @@ PartitionIdentKeyword: ABORT_P
 			| CONTAINS
 			| CONTENT_P
 			| CONVERSION_P
+			| COORDINATOR
 			| COPY
 			| COST
 			| CPUSET
@@ -19781,8 +20079,11 @@ PartitionIdentKeyword: ABORT_P
 			| FORMAT
 			| FORWARD
 			| FUNCTION
+			| GENERATED
 			| GLOBAL
 			| GRANTED
+			| GROUPING
+			| GROUPS
 			| HANDLER
 			| HASH
 			| HEADER_P
@@ -19792,6 +20093,8 @@ PartitionIdentKeyword: ABORT_P
 			| IMMEDIATE
 			| IMMUTABLE
 			| IMPLICIT_P
+			| IMPORT_P
+			| INCLUDE
 			| INCLUDING
 			| INCLUSIVE
 			| INCREMENT
@@ -19815,11 +20118,14 @@ PartitionIdentKeyword: ABORT_P
 			| LOAD
 			| LOCAL
 			| LOCATION
+			| LOCKED
 			| LOCK_P
+			| LOGGED
 			| MASTER
 			| MATCH
 			| MAXVALUE
-			| MEMORY_LIMIT
+			| MEMORY_QUOTA
+			| METHOD
 			| MINVALUE
 			| MISSING
 			| MODE
@@ -19827,6 +20133,7 @@ PartitionIdentKeyword: ABORT_P
 			| MOVE
 			| NAME_P
 			| NAMES
+			| NEW
 			| NEWLINE
 			| NEXT
 			| NO
@@ -19838,11 +20145,13 @@ PartitionIdentKeyword: ABORT_P
 			| OBJECT_P
 			| OF
 			| OIDS
+			| OLD
 			| OPERATOR
 			| OPTION
 			| OPTIONS
 			| OTHERS
 			| OVERCOMMIT
+			| OVERRIDING
 			| OWNED
 			| OWNER
 			| PARALLEL
@@ -19851,6 +20160,7 @@ PartitionIdentKeyword: ABORT_P
 			| PASSWORD
 			| PERCENT
 			| PERSISTENTLY
+			| POLICY
 			| PREPARE
 			| PREPARED
 			| PRESERVE
@@ -19858,13 +20168,16 @@ PartitionIdentKeyword: ABORT_P
 			| PRIVILEGES
 			| PROCEDURAL
 			| PROCEDURE
+			| PROCEDURES
 			| PROTOCOL
+			| PUBLICATION
 			| QUEUE
 			| QUOTE
 			| RANGE
 			| READ
 			| REASSIGN
 			| RECHECK
+			| REFERENCING
 			| REINDEX
 			| RELATIVE_P
 			| RELEASE
@@ -19876,15 +20189,19 @@ PartitionIdentKeyword: ABORT_P
 			| RESTART
 			| RESTRICT
 			| RETURN
+			| RETRIEVE
 			| RETURNS
 			| REVOKE
 			| ROLE
 			| ROLLBACK
 			| ROLLUP
+			| ROUTINE
+			| ROUTINES
 			| ROWS
 			| RULE
 			| SAVEPOINT
 			| SCHEMA
+			| SCHEMAS
 			| SCROLL
 			| SEARCH
 			| SECURITY
@@ -19898,6 +20215,7 @@ PartitionIdentKeyword: ABORT_P
 			| SHOW
 			| SIMPLE
 			| SPLIT
+			| SQL_P
 			| STABLE
 			| START
 			| STATEMENT
@@ -19905,16 +20223,20 @@ PartitionIdentKeyword: ABORT_P
 			| STDIN
 			| STDOUT
 			| STORAGE
+			| STORED
 			| STRICT_P
 			| SUBPARTITION
+			| SUPPORT
 			| SYSID
 			| SYSTEM_P
+			| TABLESAMPLE
 			| TEMP
 			| TEMPLATE
 			| TEMPORARY
 			| THRESHOLD
 			| TIES
 			| TRANSACTION
+			| TRANSFORM
 			| TRIGGER
 			| TRUNCATE
 			| TRUSTED
@@ -20073,7 +20395,6 @@ type_func_name_keyword:
 			| JOIN
 			| LEFT
 			| LIKE
-			| LOG_P
 			| NATURAL
 			| NOTNULL
 			| OUTER_P
@@ -20317,6 +20638,7 @@ bare_label_keyword:
 			| DOUBLE_P
 			| DROP
 			| DXL
+			| DYNAMIC
 			| EACH
 			| ELSE
 			| ENABLE_P
@@ -20436,7 +20758,7 @@ bare_label_keyword:
 			| MATERIALIZED
 			| MAXVALUE
 			| MEDIAN
-			| MEMORY_LIMIT
+			| MEMORY_QUOTA
 			| METHOD
 			| MINVALUE
 			| MIN_COST
@@ -21580,6 +21902,28 @@ makeRecursiveViewSelect(char *relname, List *aliases, Node *query)
 
 	return (Node *) s;
 }
+
+static bool
+isSetWithReorganize(List **options)
+{
+	ListCell *lc;
+	foreach (lc, *options)
+	{
+		DefElem *elem = lfirst(lc);
+
+		if (strcmp(elem->defname, "reorganize") == 0)
+		{
+			if (list_length(*options) == 1)
+				return true;
+			else
+				ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					errmsg("reorganize isn't supported with other options in SET WITH")));
+		}
+	}
+	return false;
+}
+
 
 /*
  * Cloudberry: a thin wax off layer to keep compatibility with the legacy syntax

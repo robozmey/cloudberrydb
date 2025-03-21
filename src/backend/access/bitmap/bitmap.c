@@ -145,7 +145,7 @@ bmbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	_bitmap_init_buildstate(index, &bmstate);
 
 	/* do the heap scan */
-	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
+	reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
 									   bmbuildCallback, (void *) &bmstate,
 									   NULL);
 	/* clean up the build state */
@@ -890,6 +890,9 @@ copy_scan_desc(IndexScanDesc scan)
  *
  * If newentry is false, we're calling the function with a partially filled
  * page table entry. Otherwise, the entry is empty.
+ *
+ * This function is only used in stream bitmap scan, more specifically, it's
+ * BitmapIndexScan + BitmapHeapScan.
  */
 
 static bool
@@ -960,7 +963,7 @@ restart:
 	 */
 	if (words->firstTid < result->nextTid)
 	{
-		Assert(words->nwords < 1);
+		Assert(words->nwords == 0);
 		return false;
 	}
 

@@ -11,7 +11,6 @@
  * Also have a look at vacuum_ao.c, which contains VACUUM related code for
  * Append-Optimized tables.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
@@ -258,6 +257,10 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel, bool auto_s
 					 errmsg("unrecognized VACUUM option \"%s\"", opt->defname),
 					 parser_errposition(pstate, opt->location)));
 	}
+
+	/* GPDB: autotstats related modifications */
+	if (!gp_autostats_lock_wait)
+		skip_locked |= auto_stats;
 
 	/* Set vacuum options */
 	params.options =
@@ -1087,7 +1090,7 @@ expand_vacuum_rel(VacuumRelation *vrel, int options)
 		 * If current table is skipped, no need to merge stats for it's parent
 		 * since current table's stats is not get updated.
 		 */
-		if (optimizer_analyze_root_partition && !skip_this)
+		if ((options & VACOPT_ANALYZE) && optimizer_analyze_root_partition && !skip_this)
 		{
 			Oid			child_relid = relid;
 
@@ -1097,6 +1100,7 @@ expand_vacuum_rel(VacuumRelation *vrel, int options)
 				int			elevel = ((options & VACOPT_VERBOSE) ? LOG : DEBUG2);
 
 				parent_relid = get_partition_parent(child_relid, false);
+				ispartition = get_rel_relispartition(parent_relid);
 
 				/*
 				 * Only ANALYZE the parent if the stats can be updated by merging
@@ -1105,14 +1109,20 @@ expand_vacuum_rel(VacuumRelation *vrel, int options)
 				if (!leaf_parts_analyzed(parent_relid, child_relid, vrel->va_cols, elevel))
 					break;
 
-				oldcontext = MemoryContextSwitchTo(vac_context);
-				vacrels = lappend(vacrels, makeVacuumRelation(vrel->relation,
-															  parent_relid,
-															  vrel->va_cols));
-				MemoryContextSwitchTo(oldcontext);
+				/*
+				 * Do not add midlevel partition unless optimizer_analyze_midlevel_partition
+				 * is enabled. But always add root table.
+				 * ispartition is set with relispartition flag of the parent_relid.
+				 */
+				if(!ispartition || optimizer_analyze_midlevel_partition)
+				{
+					oldcontext = MemoryContextSwitchTo(vac_context);
+					vacrels = lappend(vacrels, makeVacuumRelation(vrel->relation,
+											  parent_relid,
+											  vrel->va_cols));
+					MemoryContextSwitchTo(oldcontext);
+				}
 
-				/* If the parent is also a partition, update its parent too. */
-				ispartition = get_rel_relispartition(parent_relid);
 				child_relid = parent_relid;
 			}
 		}
@@ -1138,6 +1148,13 @@ expand_vacuum_rel(VacuumRelation *vrel, int options)
 				classForm = (Form_pg_class) GETSTRUCT(tuple);
 				if (IsAccessMethodAO(classForm->relam))
 				{
+					/* no aux tables for a parent AO table */
+					if (classForm->relkind == RELKIND_PARTITIONED_TABLE)
+					{
+						ReleaseSysCache(tuple);
+						continue;
+					}
+
 					Relation aorel = table_open(classForm->oid, AccessShareLock);
 					oldcontext = MemoryContextSwitchTo(vac_context);
 
@@ -1568,6 +1585,25 @@ vac_estimate_reltuples(Relation relation,
 		return old_rel_tuples;
 
 	/*
+	 * When successive VACUUM commands scan the same few pages again and
+	 * again, without anything from the table really changing, there is a risk
+	 * that our beliefs about tuple density will gradually become distorted.
+	 * It's particularly important to avoid becoming confused in this way due
+	 * to vacuumlazy.c implementation details.  For example, the tendency for
+	 * our caller to always scan the last heap page should not ever cause us
+	 * to believe that every page in the table must be just like the last
+	 * page.
+	 *
+	 * We apply a heuristic to avoid these problems: if the relation is
+	 * exactly the same size as it was at the end of the last VACUUM, and only
+	 * a few of its pages (less than a quasi-arbitrary threshold of 2%) were
+	 * scanned by this VACUUM, assume that reltuples has not changed at all.
+	 */
+	if (old_rel_pages == total_pages &&
+		scanned_pages < (double) total_pages * 0.02)
+		return old_rel_tuples;
+
+	/*
 	 * If old density is unknown, we can't do much except scale up
 	 * scanned_tuples to match total_pages.
 	 */
@@ -1701,6 +1737,7 @@ vac_update_relstats(Relation relation,
 		{
 			Assert(Gp_role == GP_ROLE_UTILITY);
 			Assert(!IsSystemRelation(relation));
+			Assert(RelationStorageIsAO(relation));
 			num_tuples = 0;
 		}
 
@@ -2002,7 +2039,16 @@ vac_update_datfrozenxid(void)
 
 	/* chicken out if bogus data found */
 	if (bogus)
+	{
+		/*
+		 * Cherry-pick from GPDB FIXME: is it right for PG14?
+		 * Ignore this for error.
+		 */
+#if 0
+		 UnLockDatabaseFrozenIds(ExclusiveLock);
+#endif
 		return;
+	}
 
 	Assert(TransactionIdIsNormal(newFrozenXid));
 	Assert(MultiXactIdIsValid(newMinMulti));
@@ -2505,7 +2551,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	else
 		toast_relid = InvalidOid;
 
-	if (RelationIsAppendOptimized(rel))
+	if (RelationStorageIsAO(rel))
 	{
 		/*
 		 * GPDB: AO tables should never be passed into vacuum_rel if the
@@ -2601,7 +2647,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 		return false;
 	}
 
-	is_appendoptimized = RelationIsAppendOptimized(rel);
+	is_appendoptimized = RelationStorageIsAO(rel);
 	is_toast = (rel->rd_rel->relkind == RELKIND_TOASTVALUE);
 
 	if (ao_vacuum_phase && !(is_appendoptimized || is_toast))
@@ -2688,7 +2734,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 		 * FIXME: for auto vacuum process on segments, it's in utility mode,
 		 * we can't handle it yet. But it's not a problem for SERVERLESS.
 		 */
-		SetRelativeMatviewAuxStatus(relid, MV_DATA_STATUS_UP_REORGANIZED);
+		SetRelativeMatviewAuxStatus(relid,
+									MV_DATA_STATUS_UP_REORGANIZED,
+									MV_DATA_STATUS_TRANSFER_DIRECTION_ALL);
 	}
 
 	/* Roll back any GUC changes executed by index functions */
@@ -3223,8 +3271,8 @@ vacuum_combine_stats(VacuumStatsContext *stats_context, CdbPgResults *cdb_pgresu
 	 * indexes. We parse this information, and compute the final stats
 	 * for the QD.
 	 *
-	 * For pg_class stats, we compute the maximum number of tuples and
-	 * maximum number of pages after processing the stats from each QE.
+	 * For pg_class stats, we compute the sum of tuples, number of pages and
+	 * allvisible pages after processing the stats from each QE.
 	 *
 	 */
 	for(result_no = 0; result_no < cdb_pgresults->numResults; result_no++)

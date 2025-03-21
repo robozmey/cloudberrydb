@@ -207,6 +207,33 @@ Feature: expand the cluster by adding more segments
         When the user runs gpexpand to redistribute
         Then the tablespace is valid after gpexpand
 
+    @gpexpand_no_mirrors
+    Scenario: expand a cluster with tablespace when there is no tablespace configuration file
+        Given the database is not running
+        And a working directory of the test as '/data/gpdata/gpexpand'
+        And the user runs command "rm -rf /data/gpdata/gpexpand/*"
+        And a temporary directory under "/data/gpdata/gpexpand/expandedData" to expand into
+        And a cluster is created with no mirrors on "cdw" and "sdw1"
+        And database "gptest" exists
+        And a tablespace is created with data
+        And another tablespace is created with data
+        And there are no gpexpand_inputfiles
+        And the cluster is setup for an expansion on hosts "cdw"
+        And the user runs gpexpand interview to add 1 new segment and 0 new host "ignore.host"
+        And the number of segments have been saved
+        And there are no gpexpand tablespace input configuration files
+        When the user runs gpexpand with the latest gpexpand_inputfile without ret code check
+        Then gpexpand should return a return code of 1
+        And gpexpand should print "[WARNING]:-Could not locate tablespace input configuration file" escaped to stdout
+        And gpexpand should print "A new tablespace input configuration file is written to" escaped to stdout
+        And gpexpand should print "Please review the file and re-run with: gpexpand -i" escaped to stdout
+        And verify if a gpexpand tablespace input configuration file is created
+        When the user runs gpexpand with the latest gpexpand_inputfile with additional parameters "--silent"
+        And verify that the cluster has 1 new segments
+        And all the segments are running
+        When the user runs gpexpand to redistribute
+        Then the tablespace is valid after gpexpand
+
     @gpexpand_verify_redistribution
     Scenario: Verify data is correctly redistributed after expansion
         Given the database is not running
@@ -474,3 +501,42 @@ Feature: expand the cluster by adding more segments
         Then the number of segments have been saved
         When the user runs gpexpand with the latest gpexpand_inputfile with additional parameters "--silent"
         Then verify that pg_hba.conf file has "replication" entries in each segment data directories
+
+    @gpexpand_segment
+    Scenario: on expand check if one or more cluster is down
+        Given the database is not running
+        And a working directory of the test as '/data/gpdata/gpexpand'
+        And a temporary directory under "/data/gpdata/gpexpand/expandedData" to expand into
+        And a cluster is created with mirrors on "mdw" and "sdw1"
+        And the user runs gpinitstandby with options " "
+        And database "gptest" exists
+        And there are no gpexpand_inputfiles
+        And the cluster is setup for an expansion on hosts "mdw,sdw1"
+        And the primary on content 0 is stopped
+        And user can start transactions
+        And an FTS probe is triggered
+        And the status of the primary on content 0 should be "d"
+        When the user runs gpexpand with a static inputfile for a single-node cluster with mirrors without ret code check
+        Then gpexpand should return a return code of 0
+        Then gpexpand should print "One or more segments are either down or not in preferred role." to stdout
+
+    Scenario: on expand check if one or more cluster is not in their preferred role
+        Given the database is not running
+        And a working directory of the test as '/data/gpdata/gpexpand'
+        And a temporary directory under "/data/gpdata/gpexpand/expandedData" to expand into
+        And a cluster is created with mirrors on "mdw" and "sdw1"
+        And the user runs gpinitstandby with options " "
+        And database "gptest" exists
+        And there are no gpexpand_inputfiles
+        And the cluster is setup for an expansion on hosts "mdw,sdw1"
+        And the primary on content 0 is stopped
+        And user can start transactions
+        And an FTS probe is triggered
+        And the status of the primary on content 0 should be "d"
+        When the user runs "gprecoverseg -a"
+        Then gprecoverseg should return a return code of 0
+        And all the segments are running
+        And the segments are synchronized
+        When the user runs gpexpand with a static inputfile for a single-node cluster with mirrors without ret code check
+        Then gpexpand should return a return code of 0
+        And gpexpand should print "One or more segments are either down or not in preferred role." to stdout

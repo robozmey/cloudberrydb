@@ -2,7 +2,6 @@
  *
  * datumstream.h
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2008, Greenplum Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -177,7 +176,7 @@ typedef struct DatumStreamFetchDescData
 {
 	DatumStreamRead *datumStream;
 
-	CurrentSegmentFile currentSegmentFile;
+	AOFetchSegmentFile currentSegmentFile;
 
 	int64		scanNextFileOffset;
 	int64		scanNextRowNum;
@@ -185,7 +184,7 @@ typedef struct DatumStreamFetchDescData
 	int64		scanAfterFileOffset;
 	int64		scanLastRowNum;
 
-	CurrentBlock currentBlock;
+	AOFetchBlockMetadata currentBlock;
 
 }	DatumStreamFetchDescData;
 
@@ -257,24 +256,26 @@ extern DatumStreamWrite *create_datumstreamwrite(
 						char *compName,
 						int32 compLevel,
 						bool checksum,
-						int32 safeFSWriteSize,
 						int32 maxsz,
 						Form_pg_attribute attr,
 						char *relname,
+						Oid reloid,
 						char *title,
 						bool needsWAL,
-						RelFileNodeBackend *rnode);
+						RelFileNodeBackend *rnode,
+						const struct f_smgr_ao *smgrAO);
 
 extern DatumStreamRead *create_datumstreamread(
 					   char *compName,
 					   int32 compLevel,
 					   bool checksum,
-					   int32 safeFSWriteSize,
 					   int32 maxsz,
 					   Form_pg_attribute attr,
 					   char *relname,
+					   Oid reloid,
 					   char *title,
-					   RelFileNode *relFileNode);
+					   RelFileNode *relFileNode,
+					   const struct f_smgr_ao *smgrAO);
 
 extern void datumstreamwrite_open_file(
 						   DatumStreamWrite * ds,

@@ -7,10 +7,10 @@ CREATE
 CREATE FUNCTION gp_workfile_mgr_test(testname text, numfiles int) RETURNS SETOF BOOL AS $$ SELECT C.* FROM gp_workfile_mgr_test_on_master($1, $2) as C UNION ALL SELECT C.* FROM gp_workfile_mgr_test_on_segments($1, $2) as C $$ LANGUAGE SQL;
 CREATE
 
-CREATE OR REPLACE FUNCTION gp_workfile_mgr_create_workset(worksetname text, interXact bool, holdPin bool, closeFile bool) RETURNS void LANGUAGE C VOLATILE EXECUTE ON ALL SEGMENTS AS '@abs_builddir@/isolation2_regress@DLSUFFIX@', 'gp_workfile_mgr_create_workset';
+CREATE OR REPLACE FUNCTION gp_workfile_mgr_create_workset(worksetname text, interXact bool, holdPin bool, closeFile bool) RETURNS setof void LANGUAGE C VOLATILE EXECUTE ON ALL SEGMENTS AS '@abs_builddir@/isolation2_regress@DLSUFFIX@', 'gp_workfile_mgr_create_workset';
 CREATE
 
-CREATE OR REPLACE FUNCTION gp_workfile_mgr_create_empty_workset(worksetname text) RETURNS void LANGUAGE C VOLATILE EXECUTE ON ALL SEGMENTS AS '@abs_builddir@/isolation2_regress@DLSUFFIX@', 'gp_workfile_mgr_create_workset';
+CREATE OR REPLACE FUNCTION gp_workfile_mgr_create_empty_workset(worksetname text) RETURNS setof void LANGUAGE C VOLATILE EXECUTE ON ALL SEGMENTS AS '@abs_builddir@/isolation2_regress@DLSUFFIX@', 'gp_workfile_mgr_create_workset';
 CREATE
 
 CREATE FUNCTION gp_workfile_mgr_cache_entries() RETURNS TABLE(segid int4, prefix text, size int8, operation text, slice int4, sessionid int4, commandid int4, numfiles int4) AS '$libdir/gp_workfile_mgr', 'gp_workfile_mgr_cache_entries' LANGUAGE C VOLATILE EXECUTE ON ALL SEGMENTS;
@@ -36,7 +36,7 @@ CREATE
 20200923:12:05:57:014232 gpstop:mdw:gpadmin-[INFO]:-Gathering information and validating the environment...
 20200923:12:05:57:014232 gpstop:mdw:gpadmin-[INFO]:-Obtaining Cloudberry Master catalog information
 20200923:12:05:57:014232 gpstop:mdw:gpadmin-[INFO]:-Obtaining Segment details from master...
-20200923:12:05:58:014232 gpstop:mdw:gpadmin-[INFO]:-Cloudberry Version: 'postgres (Cloudberry Database) 7.0.0-alpha.0+dev.7339.g02578435d1 build dev'
+20200923:12:05:58:014232 gpstop:mdw:gpadmin-[INFO]:-Cloudberry Version: 'postgres (Apache Cloudberry) 7.0.0-alpha.0+dev.7339.g02578435d1 build dev'
 20200923:12:05:58:014232 gpstop:mdw:gpadmin-[INFO]:-Commencing Master instance shutdown with mode='immediate'
 20200923:12:05:58:014232 gpstop:mdw:gpadmin-[INFO]:-Master segment instance directory=/home/gpadmin/Documents/workspace/gpdb/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
 20200923:12:05:58:014232 gpstop:mdw:gpadmin-[INFO]:-Attempting forceful termination of any leftover master process
@@ -138,7 +138,7 @@ DROP
 20200923:12:08:05:016154 gpstop:mdw:gpadmin-[INFO]:-Gathering information and validating the environment...
 20200923:12:08:05:016154 gpstop:mdw:gpadmin-[INFO]:-Obtaining Cloudberry Master catalog information
 20200923:12:08:05:016154 gpstop:mdw:gpadmin-[INFO]:-Obtaining Segment details from master...
-20200923:12:08:05:016154 gpstop:mdw:gpadmin-[INFO]:-Cloudberry Version: 'postgres (Cloudberry Database) 7.0.0-alpha.0+dev.7339.g02578435d1 build dev'
+20200923:12:08:05:016154 gpstop:mdw:gpadmin-[INFO]:-Cloudberry Version: 'postgres (Apache Cloudberry) 7.0.0-alpha.0+dev.7339.g02578435d1 build dev'
 20200923:12:08:05:016154 gpstop:mdw:gpadmin-[INFO]:-Commencing Master instance shutdown with mode='immediate'
 20200923:12:08:05:016154 gpstop:mdw:gpadmin-[INFO]:-Master segment instance directory=/home/gpadmin/Documents/workspace/gpdb/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
 20200923:12:08:05:016154 gpstop:mdw:gpadmin-[INFO]:-Attempting forceful termination of any leftover master process

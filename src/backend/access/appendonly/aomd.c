@@ -35,6 +35,7 @@
 #include "access/table.h"
 #include "catalog/catalog.h"
 #include "catalog/pg_appendonly.h"
+#include "catalog/pg_attribute_encoding.h"
 #include "cdb/cdbappendonlystorage.h"
 #include "cdb/cdbappendonlyxlog.h"
 #include "crypto/bufenc.h"
@@ -52,7 +53,7 @@ static void mdunlink_ao_base_relfile(void *ctx);
 static bool mdunlink_ao_perFile(const int segno, void *ctx);
 static bool copy_append_only_data_perFile(const int segno, void *ctx);
 static bool truncate_ao_perFile(const int segno, void *ctx);
-static uint64 ao_segfile_get_physical_size(Relation aorel, int segno, int col);
+static uint64 ao_segfile_get_physical_size(Relation aorel, int segno, FileNumber filenum);
 
 int
 AOSegmentFilePathNameLen(Relation rel)
@@ -82,7 +83,7 @@ AOSegmentFilePathNameLen(Relation rel)
 void
 FormatAOSegmentFileName(char *basepath,
 						int segno,
-						int col,
+						int filenum,
 						int32 *fileSegNo,
 						char *filepathname)
 {
@@ -91,7 +92,7 @@ FormatAOSegmentFileName(char *basepath,
 	Assert(segno >= 0);
 	Assert(segno <= AOTupleId_MaxSegmentFileNum);
 
-	if (col < 0)
+	if (filenum == InvalidFileNumber)
 	{
 		/*
 		 * Row oriented Append-Only.
@@ -103,7 +104,7 @@ FormatAOSegmentFileName(char *basepath,
 		/*
 		 * Column oriented Append-only.
 		 */
-		pseudoSegNo = (col*AOTupleId_MultiplierSegmentFileNum) + segno;
+		pseudoSegNo = ((filenum - 1) * AOTupleId_MultiplierSegmentFileNum) + segno;
 	}
 	
 	*fileSegNo = pseudoSegNo;
@@ -124,17 +125,17 @@ FormatAOSegmentFileName(char *basepath,
 void
 MakeAOSegmentFileName(Relation rel,
 					  int segno,
-					  int col,
+					  int filenum,
 					  int32 *fileSegNo,
 					  char *filepathname)
 {
 	char	*basepath;
 	int32   fileSegNoLocal;
-	
+
 	/* Get base path for this relation file */
 	basepath = relpathbackend(rel->rd_node, rel->rd_backend, MAIN_FORKNUM);
 
-	FormatAOSegmentFileName(basepath, segno, col, &fileSegNoLocal, filepathname);
+	FormatAOSegmentFileName(basepath, segno, filenum, &fileSegNoLocal, filepathname);
 	
 	*fileSegNo = fileSegNoLocal;
 	
@@ -156,7 +157,10 @@ OpenAOSegmentFile(Relation rel,
 	File		fd;
 
 	errno = 0;
-	fd = PathNameOpenFile(filepathname, fileFlags);
+
+	RelationOpenSmgr(rel);
+
+	fd = rel->rd_smgr->smgr_ao->smgr_AORelOpenSegFile(RelationGetRelid(rel), filepathname, fileFlags);
 	if (fd < 0)
 	{
 		if (logicalEof == 0 && errno == ENOENT)
@@ -165,7 +169,8 @@ OpenAOSegmentFile(Relation rel,
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not open Append-Only segment file \"%s\": %m",
-						filepathname)));
+						filepathname),
+				 errdetail("logicalEof for open operation: %ld", logicalEof)));
 	}
 	return fd;
 }
@@ -175,9 +180,12 @@ OpenAOSegmentFile(Relation rel,
  * Close an Append Only relation file segment
  */
 void
-CloseAOSegmentFile(File fd)
+CloseAOSegmentFile(File fd, Relation rel)
 {
-	FileClose(fd);
+	Assert(fd > 0);
+	RelationOpenSmgr(rel);
+
+	rel->rd_smgr->smgr_ao->smgr_FileClose(fd);
 }
 
 /*
@@ -192,7 +200,9 @@ TruncateAOSegmentFile(File fd, Relation rel, int32 segFileNum, int64 offset, AOV
 	Assert(fd > 0);
 	Assert(offset >= 0);
 
-	filesize_before = FileSize(fd);
+	RelationOpenSmgr(rel);
+
+	filesize_before = rel->rd_smgr->smgr_ao->smgr_FileSize(fd);
 	if (filesize_before < offset)
 		ereport(ERROR,
 				(errmsg("\"%s\": file size smaller than logical eof: %m",
@@ -202,7 +212,7 @@ TruncateAOSegmentFile(File fd, Relation rel, int32 segFileNum, int64 offset, AOV
 	 * Call the 'fd' module with a 64-bit length since AO segment files
 	 * can be multi-gigabyte to the terabytes...
 	 */
-	if (FileTruncate(fd, offset, WAIT_EVENT_DATA_FILE_TRUNCATE) != 0)
+	if (rel->rd_smgr->smgr_ao->smgr_FileTruncate(fd, offset, WAIT_EVENT_DATA_FILE_TRUNCATE) != 0)
 		ereport(ERROR,
 				(errmsg("\"%s\": failed to truncate data after eof: %m",
 					    relname)));
@@ -387,7 +397,8 @@ mdunlink_ao_perFile(const int segno, void *ctx)
 
 static void
 copy_file(char *srcsegpath, char *dstsegpath,
-		  RelFileNode dst, int segfilenum, bool use_wal)
+		  RelFileNode dst, SMgrRelation srcSMGR, SMgrRelation dstSMGR,
+		  int segfilenum, bool use_wal)
 {
 	File		srcFile;
 	File		dstFile;
@@ -396,7 +407,7 @@ copy_file(char *srcsegpath, char *dstsegpath,
 	char       *buffer = palloc(BLCKSZ);
 	int dstflags;
 
-	srcFile = PathNameOpenFile(srcsegpath, O_RDONLY | PG_BINARY);
+	srcFile = srcSMGR->smgr_ao->smgr_AORelOpenSegFile(InvalidOid, srcsegpath, O_RDONLY | PG_BINARY);
 	if (srcFile < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -411,13 +422,13 @@ copy_file(char *srcsegpath, char *dstsegpath,
 	if (segfilenum)
 		dstflags |= O_CREAT;
 
-	dstFile = PathNameOpenFile(dstsegpath, dstflags);
+	dstFile = dstSMGR->smgr_ao->smgr_AORelOpenSegFile(InvalidOid, dstsegpath, dstflags);
 	if (dstFile < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 (errmsg("could not create destination file %s: %m", dstsegpath))));
 
-	left = FileDiskSize(srcFile);
+	left = srcSMGR->smgr_ao->smgr_FileDiskSize(srcFile);
 	if (left < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -431,13 +442,13 @@ copy_file(char *srcsegpath, char *dstsegpath,
 		CHECK_FOR_INTERRUPTS();
 
 		len = Min(left, BLCKSZ);
-		if (FileRead(srcFile, buffer, len, offset, WAIT_EVENT_DATA_FILE_READ) != len)
+		if (srcSMGR->smgr_ao->smgr_FileRead(srcFile, buffer, len, offset, WAIT_EVENT_DATA_FILE_READ) != len)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not read %d bytes from file \"%s\": %m",
 							len, srcsegpath)));
 
-		if (FileWrite(dstFile, buffer, len, offset, WAIT_EVENT_DATA_FILE_WRITE) != len)
+		if (dstSMGR->smgr_ao->smgr_FileWrite(dstFile, buffer, len, offset, WAIT_EVENT_DATA_FILE_WRITE) != len)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not write %d bytes to file \"%s\": %m",
@@ -449,19 +460,21 @@ copy_file(char *srcsegpath, char *dstsegpath,
 		left -= len;
 	}
 
-	if (FileSync(dstFile, WAIT_EVENT_DATA_FILE_IMMEDIATE_SYNC) != 0)
+	if (dstSMGR->smgr_ao->smgr_FileSync(dstFile, WAIT_EVENT_DATA_FILE_IMMEDIATE_SYNC) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync file \"%s\": %m",
 						dstsegpath)));
-	FileClose(srcFile);
-	FileClose(dstFile);
+	srcSMGR->smgr_ao->smgr_FileClose(srcFile);
+	dstSMGR->smgr_ao->smgr_FileClose(dstFile);
 	pfree(buffer);
 }
 
 struct copy_append_only_data_callback_ctx {
 	char *srcPath;
 	char *dstPath;
+	SMgrRelation srcSMGR;
+	SMgrRelation dstSMGR;
 	RelFileNode src;
 	RelFileNode dst;
 	bool useWal;
@@ -473,6 +486,7 @@ struct copy_append_only_data_callback_ctx {
  */
 void
 copy_append_only_data(RelFileNode src, RelFileNode dst,
+		SMgrRelation srcSMGR, SMgrRelation dstSMGR,
         BackendId backendid, char relpersistence)
 {
 	char *srcPath;
@@ -488,10 +502,12 @@ copy_append_only_data(RelFileNode src, RelFileNode dst,
 	srcPath = relpathbackend(src, backendid, MAIN_FORKNUM);
 	dstPath = relpathbackend(dst, backendid, MAIN_FORKNUM);
 
-	copy_file(srcPath, dstPath, dst, 0, useWal);
+	copy_file(srcPath, dstPath, dst, srcSMGR, dstSMGR, 0, useWal);
 
 	copyFiles.srcPath = srcPath;
 	copyFiles.dstPath = dstPath;
+	copyFiles.srcSMGR = srcSMGR;
+	copyFiles.dstSMGR = dstSMGR;
 	copyFiles.src = src;
 	copyFiles.dst = dst;
 	copyFiles.useWal = useWal;
@@ -526,7 +542,7 @@ copy_append_only_data_perFile(const int segno, void *ctx)
 		return false;
 	}
 	sprintf(dstSegPath, "%s.%u", copyFiles->dstPath, segno);
-	copy_file(srcSegPath, dstSegPath, copyFiles->dst, segno, copyFiles->useWal);
+	copy_file(srcSegPath, dstSegPath, copyFiles->dst, copyFiles->srcSMGR, copyFiles->dstSMGR, segno, copyFiles->useWal);
 
 	return true;
 }
@@ -595,7 +611,7 @@ truncate_ao_perFile(const int segno, void *ctx)
 	if (fd >= 0)
 	{
 		TruncateAOSegmentFile(fd, aorel, segno, 0, NULL);
-		CloseAOSegmentFile(fd);
+		CloseAOSegmentFile(fd, aorel);
 	}
 	else
 	{
@@ -624,7 +640,7 @@ ao_rel_get_physical_size(Relation aorel)
 	Oid			segrelid;
 	uint64 		total_physical_size = 0;
 
-	Assert(RelationIsAppendOptimized(aorel));
+	Assert(RelationStorageIsAO(aorel));
 
 	GetAppendOnlyEntryAuxOids(aorel,
 							  &segrelid, NULL, NULL, NULL, NULL);
@@ -638,12 +654,12 @@ ao_rel_get_physical_size(Relation aorel)
 		int			segno;
 		bool		isNull;
 
-		if (RelationIsAoRows(aorel))
+		if (RelationStorageIsAoRows(aorel))
 		{
 			segno = DatumGetInt32(fastgetattr(tuple,
 											  Anum_pg_aoseg_segno,
 											  pg_aoseg_dsc, &isNull));
-			total_physical_size += ao_segfile_get_physical_size(aorel, segno, -1);
+			total_physical_size += ao_segfile_get_physical_size(aorel, segno, InvalidFileNumber);
 		}
 		else
 		{
@@ -651,7 +667,7 @@ ao_rel_get_physical_size(Relation aorel)
 			AOCSVPInfo *vpinfo;
 			int			col;
 
-			Assert(RelationIsAoCols(aorel));
+			Assert(RelationStorageIsAoCols(aorel));
 
 			segno = DatumGetInt32(fastgetattr(tuple,
 											  Anum_pg_aocs_segno,
@@ -662,7 +678,10 @@ ao_rel_get_physical_size(Relation aorel)
 			vpinfo = (AOCSVPInfo *) PG_DETOAST_DATUM(d);
 
 			for (col = 0; col < vpinfo->nEntry; ++col)
-				total_physical_size += ao_segfile_get_physical_size(aorel, segno, col);
+			{
+				FileNumber filenum = GetFilenumForAttribute(RelationGetRelid(aorel), col + 1);
+				total_physical_size += ao_segfile_get_physical_size(aorel, segno, filenum);
+			}
 
 			if (DatumGetPointer(d) != (Pointer) vpinfo)
 				pfree(vpinfo);
@@ -676,7 +695,7 @@ ao_rel_get_physical_size(Relation aorel)
 }
 
 static uint64
-ao_segfile_get_physical_size(Relation aorel, int segno, int col)
+ao_segfile_get_physical_size(Relation aorel, int segno, FileNumber filenum)
 {
 	const char *relname;
 	File		fd;
@@ -686,13 +705,13 @@ ao_segfile_get_physical_size(Relation aorel, int segno, int col)
 
 	relname = RelationGetRelationName(aorel);
 
-	MakeAOSegmentFileName(aorel, segno, col, &fileSegNo, filenamepath);
+	MakeAOSegmentFileName(aorel, segno, filenum, &fileSegNo, filenamepath);
 	elogif(Debug_appendonly_print_compaction, LOG,
-		   "Opening append-optimized relation \"%s\", relation id %u, relfilenode %lu column #%d, logical segment #%d (physical segment file #%d)",
-		   RelationGetRelationName(aorel),
+		   "Opening append-optimized relation \"%s\", relation id %u, relfilenode %lu filenum #%d, logical segment #%d (physical segment file #%d)",
+		   relname,
 		   aorel->rd_id,
 		   aorel->rd_node.relNode,
-		   col,
+		   filenum,
 		   segno,
 		   fileSegNo);
 	fd = PathNameOpenFile(filenamepath, O_RDONLY | PG_BINARY);
@@ -700,11 +719,11 @@ ao_segfile_get_physical_size(Relation aorel, int segno, int col)
 		physical_size = FileDiskSize(fd);
 	else
 		elogif(Debug_appendonly_print_compaction, LOG,
-			   "No gp_relation_node entry for append-optimized relation \"%s\", relation id %u, relfilenode %lu column #%d, logical segment #%d (physical segment file #%d)",
+			   "No gp_relation_node entry for append-optimized relation \"%s\", relation id %u, relfilenode %lu filenum #%d, logical segment #%d (physical segment file #%d)",
 			   relname,
 			   aorel->rd_id,
 			   aorel->rd_node.relNode,
-			   col,
+			   filenum,
 			   segno,
 			   fileSegNo);
 	return physical_size;

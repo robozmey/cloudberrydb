@@ -2,7 +2,6 @@
  *
  * datumstream.c
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2009, Greenplum Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -322,6 +321,7 @@ init_datumstream_typeinfo(
 {
 	typeInfo->datumlen = attr->attlen;
 	typeInfo->typid = attr->atttypid;
+	typeInfo->typstorage = attr->attstorage;
 	typeInfo->align = attr->attalign;
 	typeInfo->byval = attr->attbyval;
 }
@@ -363,7 +363,6 @@ init_datumstream_info(
 					  char *compName,
 					  int32 compLevel,
 					  bool checksum,
-					  int32 safeFSWriteSize,
 					  int32 maxsz,
 					  Form_pg_attribute attr)
 {
@@ -394,7 +393,6 @@ init_datumstream_info(
 	/*
 	 * The original version didn't bother to populate these fields...
 	 */
-	ao_attr->safeFSWriteSize = 0;
 
 	if (compName != NULL && pg_strcasecmp(compName, "rle_type") == 0)
 	{
@@ -406,8 +404,6 @@ init_datumstream_info(
 		 */
 		*datumStreamVersion = DatumStreamVersion_Dense_Enhanced;
 		*rle_compression = true;
-
-		ao_attr->safeFSWriteSize = safeFSWriteSize;
 
 		/*
 		 * Use the compresslevel as a kludgy way of specifiying the BULK compression
@@ -494,13 +490,14 @@ create_datumstreamwrite(
 						char *compName,
 						int32 compLevel,
 						bool checksum,
-						int32 safeFSWriteSize,
 						int32 maxsz,
 						Form_pg_attribute attr,
 						char *relname,
+						Oid reloid,
 						char *title,
 						bool needsWAL,
-						RelFileNodeBackend *rnode)
+						RelFileNodeBackend *rnode,
+						const struct f_smgr_ao *smgrAO)
 {
 	DatumStreamWrite *acc = palloc0(sizeof(DatumStreamWrite));
 
@@ -522,7 +519,6 @@ create_datumstreamwrite(
 						  compName,
 						  compLevel,
 						  checksum,
-						  safeFSWriteSize,
 						  maxsz,
 						  attr);
 
@@ -567,9 +563,11 @@ create_datumstreamwrite(
 								 /* memoryContext */ NULL,
 								acc->maxAoBlockSize,
 								relname,
+								reloid,
 								title,
 								&acc->ao_attr,
-								needsWAL);
+								needsWAL,
+								smgrAO);
 
 	acc->ao_write.compression_functions = compressionFunctions;
 	acc->ao_write.compressionState = compressionState;
@@ -640,12 +638,12 @@ create_datumstreamread(
 					   char *compName,
 					   int32 compLevel,
 					   bool checksum,
-					   int32 safeFSWriteSize,
 					   int32 maxsz,
 					   Form_pg_attribute attr,
 					   char *relname,
+					   Oid reloid,
 					   char *title,
-					   RelFileNode *relFileNode)
+					   RelFileNode *relFileNode, const struct f_smgr_ao *smgrAO)
 {
 	DatumStreamRead *acc = palloc0(sizeof(DatumStreamRead));
 
@@ -664,7 +662,6 @@ create_datumstreamread(
 						  compName,
 						  compLevel,
 						  checksum,
-						  safeFSWriteSize,
 						  maxsz,
 						  attr);
 
@@ -700,9 +697,11 @@ create_datumstreamread(
 								/* memoryContext */ NULL,
 							   acc->maxAoBlockSize,
 							   relname,
+							   reloid,
 							   title,
 							   &acc->ao_attr,
-							   relFileNode);
+							   relFileNode,
+							   smgrAO);
 
 	acc->ao_read.compression_functions = compressionFunctions;
 	acc->ao_read.compressionState = compressionState;
@@ -773,6 +772,7 @@ destroy_datumstreamwrite(DatumStreamWrite * ds)
 	if (ds->title)
 	{
 		pfree(ds->title);
+		ds->title = NULL;
 	}
 	pfree(ds);
 }
@@ -783,9 +783,15 @@ destroy_datumstreamread(DatumStreamRead * ds)
 	DatumStreamBlockRead_Finish(&ds->blockRead);
 
 	if (ds->large_object_buffer)
+	{
 		pfree(ds->large_object_buffer);
+		ds->large_object_buffer = NULL;
+	}
 	if (ds->datum_upgrade_buffer)
+	{
 		pfree(ds->datum_upgrade_buffer);
+		ds->datum_upgrade_buffer = NULL;
+	}
 
 	AppendOnlyStorageRead_FinishSession(&ds->ao_read);
 
@@ -1533,9 +1539,6 @@ datumstreamread_find_block(DatumStreamRead * datumStream,
 			(!isOldBlockFormat) ? datumStream->getBlockInfo.firstRow : datumStreamFetchDesc->scanNextRowNum;
 		datumStreamFetchDesc->currentBlock.lastRowNum =
 			datumStreamFetchDesc->currentBlock.firstRowNum + datumStream->getBlockInfo.rowCnt - 1;
-		datumStreamFetchDesc->currentBlock.isCompressed =
-			datumStream->getBlockInfo.isCompressed;
-		datumStreamFetchDesc->currentBlock.isLargeContent = datumStream->getBlockInfo.isLarge;
 		datumStreamFetchDesc->currentBlock.gotContents = false;
 
 		if (Debug_appendonly_print_datumstream)

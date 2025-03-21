@@ -3,7 +3,6 @@
  * joinpath.c
  *	  Routines to find all possible paths for processing a set of joins
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -38,6 +37,7 @@
 
 /* Hook for plugins to get control in add_paths_to_joinrel() */
 set_join_pathlist_hook_type set_join_pathlist_hook = NULL;
+add_paths_to_joinrel_hook_type add_paths_to_joinrel_hook = NULL;
 
 /*
  * Paths parameterized by the parent can be considered to be parameterized by
@@ -137,7 +137,7 @@ static void generate_mergejoin_paths(PlannerInfo *root,
  * with sjinfo->jointype == JOIN_SEMI indicates that.
  */
 void
-add_paths_to_joinrel(PlannerInfo *root,
+add_paths_to_join_relation(PlannerInfo *root,
 					 RelOptInfo *joinrel,
 					 RelOptInfo *outerrel,
 					 RelOptInfo *innerrel,
@@ -429,6 +429,22 @@ add_paths_to_joinrel(PlannerInfo *root,
 	if (set_join_pathlist_hook)
 		set_join_pathlist_hook(root, joinrel, outerrel, innerrel,
 							   jointype, &extra);
+}
+
+void
+add_paths_to_joinrel(PlannerInfo *root,
+					 RelOptInfo *joinrel,
+					 RelOptInfo *outerrel,
+					 RelOptInfo *innerrel,
+					 JoinType jointype,
+					 SpecialJoinInfo *sjinfo,
+					 List *restrictlist)
+{
+	if(add_paths_to_joinrel_hook != NULL) {
+		add_paths_to_joinrel_hook(root, joinrel, outerrel, innerrel, jointype, sjinfo, restrictlist);
+	} else {
+		add_paths_to_join_relation(root, joinrel, outerrel, innerrel, jointype, sjinfo, restrictlist);
+	}
 }
 
 /*

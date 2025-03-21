@@ -4,7 +4,6 @@
  *	  Definitions for tagged nodes.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2009, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -70,11 +69,16 @@ typedef enum NodeTag
 	T_BitmapAnd,
 	T_BitmapOr,
 	T_SeqScan,
+	T_DynamicSeqScan,
 	T_SampleScan,
 	T_IndexScan,
+	T_DynamicIndexScan,
+	T_DynamicIndexOnlyScan,
 	T_IndexOnlyScan,
 	T_BitmapIndexScan,
+	T_DynamicBitmapIndexScan,
 	T_BitmapHeapScan,
+	T_DynamicBitmapHeapScan,
 	T_TidScan,
 	T_TidRangeScan,
 	T_SubqueryScan,
@@ -86,6 +90,7 @@ typedef enum NodeTag
 	T_NamedTuplestoreScan,
 	T_WorkTableScan,
 	T_ForeignScan,
+	T_DynamicForeignScan,
 	T_CustomScan,
 	T_NestLoop,
 	T_MergeJoin,
@@ -143,11 +148,16 @@ typedef enum NodeTag
 	T_BitmapAndState,
 	T_BitmapOrState,
 	T_SeqScanState,
+	T_DynamicSeqScanState,
 	T_SampleScanState,
 	T_IndexScanState,
+	T_DynamicIndexScanState,
+	T_DynamicIndexOnlyScanState,
 	T_IndexOnlyScanState,
 	T_BitmapIndexScanState,
+	T_DynamicBitmapIndexScanState,
 	T_BitmapHeapScanState,
+	T_DynamicBitmapHeapScanState,
 	T_TidScanState,
 	T_TidRangeScanState,
 	T_SubqueryScanState,
@@ -159,6 +169,7 @@ typedef enum NodeTag
 	T_NamedTuplestoreScanState,
 	T_WorkTableScanState,
 	T_ForeignScanState,
+	T_DynamicForeignScanState,
 	T_CustomScanState,
 	T_NestLoopState,
 	T_MergeJoinState,
@@ -539,6 +550,7 @@ typedef enum NodeTag
 	T_PartitionValuesSpec,
 	T_CreateDirectoryTableStmt,
 	T_AlterDirectoryTableStmt,
+	T_DropDirectoryTableStmt,
 	T_CreateFileSpaceStmt,
 	T_FileSpaceEntry,
 	T_DropFileSpaceStmt,
@@ -976,6 +988,8 @@ typedef enum AggSplit
 	 * stripped away from Aggs in setrefs.c.
 	 */
 	AGGSPLIT_DEDUPLICATED = AGGSPLITOP_DEDUPLICATED,
+
+	AGGSPLIT_INTERMEDIATE = AGGSPLITOP_SKIPFINAL | AGGSPLITOP_SERIALIZE | AGGSPLITOP_COMBINE | AGGSPLITOP_DESERIALIZE,
 } AggSplit;
 
 /* Test whether an AggSplit value selects each primitive option: */

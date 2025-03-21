@@ -3,7 +3,6 @@
  * readfuncs_common.c
  *	  Common de-serialization functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2008, PostgreSQL Global Development Group
@@ -132,6 +131,11 @@ _readAExpr(void)
 	else if (strncmp(token,"DISTINCT",length)==0)
 	{
 		local_node->kind = AEXPR_DISTINCT;
+		READ_NODE_FIELD(name);
+	}
+	else if (strncmp(token,"NOT_DISTINCT",length)==0)
+	{
+		local_node->kind = AEXPR_NOT_DISTINCT;
 		READ_NODE_FIELD(name);
 	}
 	else if (strncmp(token,"NULLIF",length)==0)
@@ -505,6 +509,7 @@ _readAlteredTableInfo(void)
 	READ_NODE_FIELD(afterStmts);
 	READ_BOOL_FIELD(verify_new_notnull);
 	READ_INT_FIELD(rewrite);
+	READ_OID_FIELD(newAccessMethod);
 	READ_BOOL_FIELD(dist_opfamily_changed);
 	READ_OID_FIELD(new_opclass);
 	READ_BOOL_FIELD(chgPersistence);
@@ -738,6 +743,36 @@ _readCreateDomainStmt(void)
 	READ_NODE_FIELD(typeName);
 	READ_NODE_FIELD(collClause);
 	READ_NODE_FIELD(constraints);
+
+	READ_DONE();
+}
+
+static void
+_readDropStmt_common(DropStmt *local_node)
+{
+	READ_TEMP_LOCALS();
+
+	READ_NODE_FIELD(objects);
+	READ_ENUM_FIELD(removeType,ObjectType);
+	READ_ENUM_FIELD(behavior,DropBehavior);
+	READ_BOOL_FIELD(missing_ok);
+	READ_BOOL_FIELD(concurrent);
+	READ_BOOL_FIELD(isdynamic);
+
+	/* Force 'missing_ok' in QEs */
+#ifdef COMPILING_BINARY_FUNCS
+	local_node->missing_ok=true;
+#endif /* COMPILING_BINARY_FUNCS */
+}
+
+static DropDirectoryTableStmt *
+_readDropDirectoryTableStmt(void)
+{
+	READ_LOCALS(DropDirectoryTableStmt);
+
+	_readDropStmt_common(&local_node->base);
+
+	READ_BOOL_FIELD(with_content);
 
 	READ_DONE();
 }
@@ -1132,6 +1167,7 @@ _readDropStmt(void)
 	READ_ENUM_FIELD(behavior,DropBehavior);
 	READ_BOOL_FIELD(missing_ok);
 	READ_BOOL_FIELD(concurrent);
+	READ_BOOL_FIELD(isdynamic);
 
 	/* Force 'missing_ok' in QEs */
 #ifdef COMPILING_BINARY_FUNCS

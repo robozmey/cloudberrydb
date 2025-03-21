@@ -3,7 +3,6 @@
  * explain.c
  *	  Explain query execution plans
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -18,6 +17,7 @@
 
 #include "access/xact.h"
 #include "catalog/pg_type.h"
+#include "catalog/pg_inherits.h"
 #include "commands/createas.h"
 #include "commands/defrem.h"
 #include "commands/prepare.h"
@@ -50,8 +50,11 @@
 #include "utils/xml.h"
 
 #include "cdb/cdbgang.h"
+#include "cdb/cdbvars.h"
+#include "optimizer/clauses.h"
 #include "optimizer/tlist.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/orca.h"
 
 #ifdef USE_ORCA
 extern char *SerializeDXLPlan(Query *parse);
@@ -184,6 +187,7 @@ static void ExplainIndentText(ExplainState *es);
 static void ExplainJSONLineEnding(ExplainState *es);
 static void ExplainYAMLLineStarting(ExplainState *es);
 static void escape_yaml(StringInfo buf, const char *str);
+static int countLeafPartTables(Oid relId);
 
 static void Explainlocus(ExplainState *es, CdbLocusType locustype, int parallel);
 
@@ -414,6 +418,9 @@ ExplainDXL(Query *query, ExplainState *es, const char *queryString,
 	MemoryContext oldcxt = CurrentMemoryContext;
 	bool		save_enumerate;
 	char	   *dxl = NULL;
+	PlannerInfo		*root;
+	PlannerGlobal	*glob;
+	Query			*pqueryCopy;
 
 	save_enumerate = optimizer_enumerate_plans;
 
@@ -422,8 +429,53 @@ ExplainDXL(Query *query, ExplainState *es, const char *queryString,
 	/* enable plan enumeration before calling optimizer */
 	optimizer_enumerate_plans = true;
 
+	/*
+	 * Initialize a dummy PlannerGlobal struct. ORCA doesn't use it, but the
+	 * pre- and post-processing steps do.
+	 */
+	glob = makeNode(PlannerGlobal);
+	glob->subplans = NIL;
+	glob->subroots = NIL;
+	glob->rewindPlanIDs = NULL;
+	glob->transientPlan = false;
+	glob->oneoffPlan = false;
+	glob->share.shared_inputs = NULL;
+	glob->share.shared_input_count = 0;
+	glob->share.motStack = NIL;
+	glob->share.qdShares = NULL;
+	/* these will be filled in below, in the pre- and post-processing steps */
+	glob->finalrtable = NIL;
+	glob->relationOids = NIL;
+	glob->invalItems = NIL;
+
+	root = makeNode(PlannerInfo);
+	root->parse = query;
+	root->glob = glob;
+	root->query_level = 1;
+	root->planner_cxt = CurrentMemoryContext;
+	root->wt_param_id = -1;
+
+	/* create a local copy to hand to the optimizer */
+	pqueryCopy = (Query *) copyObject(query);
+
+	/*
+	 * Pre-process the Query tree before calling optimizer.
+	 *
+	 * Constant folding will add dependencies to functions or relations in
+	 * glob->invalItems, for any functions that are inlined or eliminated
+	 * away. (We will find dependencies to other objects later, after planning).
+	 */
+	pqueryCopy = fold_constants(root, pqueryCopy, params, GPOPT_MAX_FOLDED_CONSTANT_SIZE);
+
+	/*
+	 * If any Query in the tree mixes window functions and aggregates, we need to
+	 * transform it such that the grouped query appears as a subquery
+	 */
+	pqueryCopy = (Query *) transformGroupedWindows((Node *) pqueryCopy, NULL);
+
+
 	/* optimize query using optimizer and get generated plan in DXL format */
-	dxl = SerializeDXLPlan(query);
+	dxl = SerializeDXLPlan(pqueryCopy);
 
 	/* restore old value of enumerate plans GUC */
 	optimizer_enumerate_plans = save_enumerate;
@@ -550,7 +602,12 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 			if (ctas->objtype == OBJECT_TABLE)
 				ExplainDummyGroup("CREATE TABLE AS", NULL, es);
 			else if (ctas->objtype == OBJECT_MATVIEW)
-				ExplainDummyGroup("CREATE MATERIALIZED VIEW", NULL, es);
+			{
+				if(ctas->into && ctas->into->dynamicTbl)
+					ExplainDummyGroup("CREATE DYNAMIC TABLE", NULL, es);
+				else
+					ExplainDummyGroup("CREATE MATERIALIZED VIEW", NULL, es);
+			}
 			else
 				elog(ERROR, "unexpected object type: %d",
 					 (int) ctas->objtype);
@@ -687,8 +744,6 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
         queryDesc->showstatctx = cdbexplain_showExecStatsBegin(queryDesc,
 															   starttime);
     }
-	else
-		queryDesc->showstatctx = NULL;
 
 	/* Select execution options */
 	if (es->analyze)
@@ -724,7 +779,21 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 
 		/* Wait for completion of all qExec processes. */
 		if (queryDesc->estate->dispatcherState && queryDesc->estate->dispatcherState->primaryResults)
+		{
 			cdbdisp_checkDispatchResult(queryDesc->estate->dispatcherState, DISPATCH_WAIT_NONE);
+			/*
+			 * If some QE throw errors, we might not receive stats from QEs,
+			 * In ExecutorEnd we will reThrow QE's error, In this situation,
+			 * there is no need to execute ExplainPrintPlan. reThrow error in advance.
+			 */
+			ErrorData  *qeError = NULL;
+			cdbdisp_getDispatchResults(queryDesc->estate->dispatcherState, &qeError);
+			if (qeError)
+			{
+				FlushErrorState();
+				ThrowErrorData(qeError);
+			}
+		}
 
 		/* We can't run ExecutorEnd 'till we're done printing the stats... */
 		totaltime += elapsed_time(&starttime);
@@ -792,7 +861,7 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 			ExplainPropertyStringInfo("Optimizer", es, "Postgres query optimizer");
 #ifdef USE_ORCA
 		else
-			ExplainPropertyStringInfo("Optimizer", es, "Pivotal Optimizer (GPORCA)");
+			ExplainPropertyStringInfo("Optimizer", es, "GPORCA");
 #endif
 
 		ExplainCloseGroup("Settings", "Settings", true, es);
@@ -859,7 +928,7 @@ ExplainPrintSettings(ExplainState *es, PlanGenerator planGen)
 			ExplainPropertyStringInfo("Optimizer", es, "Postgres query optimizer");
 #ifdef USE_ORCA
 		else
-			ExplainPropertyStringInfo("Optimizer", es, "Pivotal Optimizer (GPORCA)");
+			ExplainPropertyStringInfo("Optimizer", es, "GPORCA");
 #endif
 
 		for (int i = 0; i < num; i++)
@@ -1389,6 +1458,7 @@ ExplainPreScanNode(PlanState *planstate, Bitmapset **rels_used)
 		case T_IndexScan:
 		case T_IndexOnlyScan:
 		case T_BitmapHeapScan:
+		case T_DynamicBitmapHeapScan:
 		case T_TidScan:
 		case T_TidRangeScan:
 		case T_SubqueryScan:
@@ -1398,11 +1468,15 @@ ExplainPreScanNode(PlanState *planstate, Bitmapset **rels_used)
 		case T_CteScan:
 		case T_NamedTuplestoreScan:
 		case T_WorkTableScan:
+		case T_DynamicSeqScan:
+		case T_DynamicIndexScan:
+		case T_DynamicIndexOnlyScan:
 		case T_ShareInputScan:
 			*rels_used = bms_add_member(*rels_used,
 										((Scan *) plan)->scanrelid);
 			break;
 		case T_ForeignScan:
+		case T_DynamicForeignScan:
 			*rels_used = bms_add_members(*rels_used,
 										 ((ForeignScan *) plan)->fs_relids);
 			break;
@@ -1574,6 +1648,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_SeqScan:
 			pname = sname = "Seq Scan";
 			break;
+		case T_DynamicSeqScan:
+			pname = sname = "Dynamic Seq Scan";
+			break;
 		case T_SampleScan:
 			pname = sname = "Sample Scan";
 			break;
@@ -1586,11 +1663,20 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_IndexScan:
 			pname = sname = "Index Scan";
 			break;
+		case T_DynamicIndexScan:
+			pname = sname = "Dynamic Index Scan";
+			break;
+		case T_DynamicIndexOnlyScan:
+			pname = sname = "Dynamic Index Only Scan";
+			break;
 		case T_IndexOnlyScan:
 			pname = sname = "Index Only Scan";
 			break;
 		case T_BitmapIndexScan:
 			pname = sname = "Bitmap Index Scan";
+			break;
+		case T_DynamicBitmapIndexScan:
+			pname = sname = "Dynamic Bitmap Index Scan";
 			break;
 		case T_BitmapHeapScan:
 			/*
@@ -1599,6 +1685,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			 * of the table type.
 			 */
 			pname = sname = "Bitmap Heap Scan";
+			break;
+		case T_DynamicBitmapHeapScan:
+			pname = sname = "Dynamic Bitmap Heap Scan";
 			break;
 		case T_TidScan:
 			pname = sname = "Tid Scan";
@@ -1648,6 +1737,31 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					break;
 				case CMD_DELETE:
 					pname = "Foreign Delete";
+					operation = "Delete";
+					break;
+				default:
+					pname = "???";
+					break;
+			}
+			break;
+		case T_DynamicForeignScan:
+			sname = "Dynamic Foreign Scan";
+			switch (((ForeignScan *)((DynamicForeignScan *) plan))->operation)
+			{
+				case CMD_SELECT:
+					pname = "Dynamic Foreign Scan";
+					operation = "Select";
+					break;
+				case CMD_INSERT:
+					pname = "Dynamic Foreign Insert";
+					operation = "Insert";
+					break;
+				case CMD_UPDATE:
+					pname = "Dynamic Foreign Update";
+					operation = "Update";
+					break;
+				case CMD_DELETE:
+					pname = "Dynamic Foreign Delete";
 					operation = "Delete";
 					break;
 				default:
@@ -1898,8 +2012,10 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	switch (nodeTag(plan))
 	{
 		case T_SeqScan:
+		case T_DynamicSeqScan:
 		case T_SampleScan:
 		case T_BitmapHeapScan:
+		case T_DynamicBitmapHeapScan:
 		case T_TidScan:
 		case T_TidRangeScan:
 		case T_SubqueryScan:
@@ -1912,6 +2028,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			ExplainScanTarget((Scan *) plan, es);
 			break;
 		case T_ForeignScan:
+		case T_DynamicForeignScan:
 		case T_CustomScan:
 			if (((Scan *) plan)->scanrelid > 0)
 				ExplainScanTarget((Scan *) plan, es);
@@ -1945,6 +2062,49 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				if (es->format == EXPLAIN_FORMAT_TEXT)
 					appendStringInfo(es->str, " on %s",
 									 quote_identifier(indexname));
+				else
+					ExplainPropertyText("Index Name", indexname, es);
+			}
+			break;
+		case T_DynamicIndexScan:
+			{
+				DynamicIndexScan *dynamicIndexScan = (DynamicIndexScan *) plan;
+				Oid indexoid = dynamicIndexScan->indexscan.indexid;
+				const char *indexname =
+						explain_get_index_name(indexoid);
+
+				if (es->format == EXPLAIN_FORMAT_TEXT)
+					appendStringInfo(es->str, " on %s", indexname);
+				else
+					ExplainPropertyText("Index Name", indexname, es);
+
+				ExplainScanTarget((Scan *) plan, es);
+			}
+			break;
+		case T_DynamicIndexOnlyScan:
+			{
+				DynamicIndexOnlyScan *dynamicIndexScan = (DynamicIndexOnlyScan *) plan;
+				Oid indexoid = dynamicIndexScan->indexscan.indexid;
+				const char *indexname =
+						explain_get_index_name(indexoid);
+
+				if (es->format == EXPLAIN_FORMAT_TEXT)
+					appendStringInfo(es->str, " on %s", indexname);
+				else
+					ExplainPropertyText("Index Name", indexname, es);
+
+				ExplainScanTarget((Scan *) plan, es);
+			}
+			break;
+		case T_DynamicBitmapIndexScan:
+			{
+				BitmapIndexScan *bitmapindexscan = (BitmapIndexScan *) plan;
+				Oid indexoid = bitmapindexscan->indexid;
+				const char *indexname =
+				explain_get_index_name(indexoid);
+
+				if (es->format == EXPLAIN_FORMAT_TEXT)
+					appendStringInfo(es->str, " on %s", indexname);
 				else
 					ExplainPropertyText("Index Name", indexname, es);
 			}
@@ -2235,6 +2395,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	switch (nodeTag(plan))
 	{
 		case T_IndexScan:
+		case T_DynamicIndexScan:
 			show_scan_qual(((IndexScan *) plan)->indexqualorig,
 						   "Index Cond", planstate, ancestors, es);
 			if (((IndexScan *) plan)->indexqualorig)
@@ -2245,9 +2406,23 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
+
 										   planstate, es);
+			if (IsA(plan, DynamicIndexScan)) {
+				char *buf;
+				Oid relid;
+				relid = rt_fetch(((DynamicIndexScan *)plan)
+						->indexscan.scan.scanrelid,
+						es->rtable)->relid;
+				buf = psprintf("(out of %d)",  countLeafPartTables(relid));
+				ExplainPropertyInteger(
+						"Number of partitions to scan", buf,
+						list_length(((DynamicIndexScan *)plan)->partOids),
+						es);
+			}
 			break;
 		case T_IndexOnlyScan:
+		case T_DynamicIndexOnlyScan:
 			show_scan_qual(((IndexOnlyScan *) plan)->indexqual,
 						   "Index Cond", planstate, ancestors, es);
 			if (((IndexOnlyScan *) plan)->recheckqual)
@@ -2262,15 +2437,42 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			if (es->analyze)
 				ExplainPropertyFloat("Heap Fetches", NULL,
 									 planstate->instrument->ntuples2, 0, es);
+			if (IsA(plan, DynamicIndexOnlyScan)) {
+				char *buf;
+				Oid relid;
+				relid = rt_fetch(((DynamicIndexOnlyScan *)plan)
+						->indexscan.scan.scanrelid,
+						es->rtable)->relid;
+				buf = psprintf("(out of %d)",  countLeafPartTables(relid));
+				ExplainPropertyInteger(
+						"Number of partitions to scan", buf,
+						list_length(((DynamicIndexOnlyScan *)plan)->partOids),
+						es);
+			}
 			break;
 		case T_BitmapIndexScan:
+		case T_DynamicBitmapIndexScan:
 			show_scan_qual(((BitmapIndexScan *) plan)->indexqualorig,
 						   "Index Cond", planstate, ancestors, es);
 			break;
 		case T_BitmapHeapScan:
+		case T_DynamicBitmapHeapScan:
 		{
 			List		*bitmapqualorig;
 
+			if (IsA(plan, DynamicBitmapHeapScan)) {
+				char *buf;
+				Oid relid;
+				relid = rt_fetch(((DynamicBitmapHeapScan *)plan)
+						->bitmapheapscan.scan.scanrelid,
+						es->rtable)->relid;
+				buf = psprintf("(out of %d)",  countLeafPartTables(relid));
+				ExplainPropertyInteger(
+						"Number of partitions to scan", buf,
+						list_length(
+							((DynamicBitmapHeapScan *)plan)->partOids),
+						es);
+			}
 			bitmapqualorig = ((BitmapHeapScan *) plan)->bitmapqualorig;
 
 			show_scan_qual(bitmapqualorig,
@@ -2293,11 +2495,23 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			/* fall through to print additional fields the same as SeqScan */
 			/* FALLTHROUGH */
 		case T_SeqScan:
+		case T_DynamicSeqScan:
 		case T_ValuesScan:
 		case T_CteScan:
 		case T_NamedTuplestoreScan:
 		case T_WorkTableScan:
 		case T_SubqueryScan:
+			if (IsA(plan, DynamicSeqScan)) {
+				char *buf;
+				Oid relid;
+				relid = rt_fetch(((DynamicSeqScan *)plan)
+							->seqscan.scanrelid,
+							es->rtable)->relid;
+				buf = psprintf("(out of %d)",  countLeafPartTables(relid));
+				ExplainPropertyInteger(
+					"Number of partitions to scan", buf,
+					list_length(((DynamicSeqScan *)plan)->partOids),es);
+			}
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
@@ -2426,12 +2640,29 @@ ExplainNode(PlanState *planstate, List *ancestors,
 											   planstate, es);
 			}
 			break;
+		case T_DynamicForeignScan:
 		case T_ForeignScan:
 			show_scan_qual(plan->qual, "Filter", planstate, ancestors, es);
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
-			show_foreignscan_info((ForeignScanState *) planstate, es);
+			if (IsA(plan, DynamicForeignScan))
+			{
+				char *buf;
+				Oid relid;
+				relid = rt_fetch(((DynamicForeignScan *)plan)
+							->foreignscan.scan.scanrelid,
+							es->rtable)->relid;
+				buf = psprintf("(out of %d)",  countLeafPartTables(relid));
+				ExplainPropertyInteger(
+					"Number of partitions to scan", buf,
+					list_length(((DynamicForeignScan *)plan)->partOids),es);
+				// TODO: Maybe add show_foreignscan_info here? We'd need to populate the planstate
+			}
+			else
+			{
+				show_foreignscan_info((ForeignScanState *) planstate, es);
+			}
 			break;
 		case T_CustomScan:
 			{
@@ -2921,10 +3152,7 @@ show_sort_keys(SortState *sortstate, List *ancestors, ExplainState *es)
 	Sort	   *plan = (Sort *) sortstate->ss.ps.plan;
 	const char *SortKeystr;
 
-	if (sortstate->noduplicates)
-		SortKeystr = "Sort Key (Distinct)";
-	else
-		SortKeystr = "Sort Key";
+	SortKeystr = "Sort Key";
 
 	show_sort_group_keys((PlanState *) sortstate, SortKeystr,
 						 plan->numCols, 0, plan->sortColIdx,
@@ -3435,7 +3663,7 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 				sortMethod, spaceType, (long) agg->vsum);
 			if (es->verbose)
 			{
-				appendStringInfo(es->str, "  Max Memory: " INT64_FORMAT "kB  Avg Memory: " INT64_FORMAT "kb (%d segments)\n",
+				appendStringInfo(es->str, "  Max Memory: " INT64_FORMAT "kB  Avg Memory: " INT64_FORMAT "kB (%d segments)\n",
 								 (long) agg->vmax,
 								 (long) (agg->vsum / agg->vcnt),
 								 agg->vcnt);
@@ -4487,13 +4715,18 @@ ExplainTargetRel(Plan *plan, Index rti, ExplainState *es)
 	switch (nodeTag(plan))
 	{
 		case T_SeqScan:
+		case T_DynamicSeqScan:
 		case T_SampleScan:
 		case T_IndexScan:
+		case T_DynamicIndexScan:
+		case T_DynamicIndexOnlyScan:
 		case T_IndexOnlyScan:
 		case T_BitmapHeapScan:
+		case T_DynamicBitmapHeapScan:
 		case T_TidScan:
 		case T_TidRangeScan:
 		case T_ForeignScan:
+		case T_DynamicForeignScan:
 		case T_CustomScan:
 		case T_ModifyTable:
 			/* Assert it's on a real relation */
@@ -4502,7 +4735,6 @@ ExplainTargetRel(Plan *plan, Index rti, ExplainState *es)
 			if (es->verbose)
 				namespace = get_namespace_name(get_rel_namespace(rte->relid));
 			objecttag = "Relation Name";
-
 			break;
 		case T_FunctionScan:
 			{
@@ -5828,4 +6060,20 @@ Explainlocus(ExplainState *es, CdbLocusType locustype, int parallel)
 	ExplainPropertyText("Locus", locus, es);
 	if (parallel > 1)
 		ExplainPropertyInteger("Parallel Workers", NULL, parallel, es);
+}
+
+/*
+ * Return the number of leaf parts of the partitioned table with the given oid
+ */
+static int
+countLeafPartTables(Oid relid) {
+	List	   *partitions;
+	partitions = find_all_inheritors(relid, NoLock, NULL);
+	Assert(list_length(partitions) > 0);
+
+	/* find_all_inheritors returns  a list of relation OIDs including the
+	 * parent relId, so length of the list minus one gives total leaf
+	 * partitions.
+	 */
+	return (list_length(partitions) -1);
 }

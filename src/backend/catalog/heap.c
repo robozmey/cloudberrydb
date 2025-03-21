@@ -523,7 +523,7 @@ heap_create(const char *relname,
 		 * AO tables don't use the buffer manager, better to not keep the
 		 * smgr open for it.
 		 */
-		if (RelationIsAppendOptimized(rel))
+		if (RelationStorageIsAO(rel))
 			RelationCloseSmgr(rel);
 	}
 
@@ -1327,6 +1327,7 @@ InsertPgClassTuple(Relation pg_class_desc,
 	values[Anum_pg_class_relfrozenxid - 1] = TransactionIdGetDatum(rd_rel->relfrozenxid);
 	values[Anum_pg_class_relminmxid - 1] = MultiXactIdGetDatum(rd_rel->relminmxid);
 	values[Anum_pg_class_relisivm - 1] = BoolGetDatum(rd_rel->relisivm);
+	values[Anum_pg_class_relisdynamic - 1] = BoolGetDatum(rd_rel->relisdynamic);
 	if (relacl != (Datum) 0)
 		values[Anum_pg_class_relacl - 1] = relacl;
 	else
@@ -1779,14 +1780,13 @@ heap_create_with_catalog(const char *relname,
 	/*
 	 * If this is an append-only relation, add an entry in pg_appendonly.
 	 */
-	if (RelationIsAppendOptimized(new_rel_desc))
+	if (RelationStorageIsAO(new_rel_desc))
 	{
 		StdRdOptions *stdRdOptions = (StdRdOptions *)default_reloptions(reloptions,
 																	 !valid_opts,
 																	 RELOPT_KIND_APPENDOPTIMIZED);
 		InsertAppendOnlyEntry(relid,
 							  stdRdOptions->blocksize,
-							  gp_safefswritesize,
 							  stdRdOptions->compresslevel,
 							  stdRdOptions->checksum,
 							  RelationIsAoCols(new_rel_desc),
@@ -2209,6 +2209,41 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 		/* Unset this so no one tries to look up the generation expression */
 		attStruct->attgenerated = '\0';
 
+		/* Update distribution policy for dropped distribution column */
+		if (GpPolicyIsHashPartitioned(rel->rd_cdbpolicy))
+		{
+			int            ia = 0;
+
+			for (ia = 0; ia < rel->rd_cdbpolicy->nattrs; ia++)
+			{
+				if (attnum == rel->rd_cdbpolicy->attrs[ia])
+				{
+					MemoryContext oldcontext;
+					GpPolicy *policy;
+
+					/* force a random distribution */
+					rel->rd_cdbpolicy->nattrs = 0;
+
+					oldcontext = MemoryContextSwitchTo(GetMemoryChunkContext(rel));
+					policy = GpPolicyCopy(rel->rd_cdbpolicy);
+					MemoryContextSwitchTo(oldcontext);
+
+					/*
+					 * replace policy first in catalog and then assign to
+					 * rd_cdbpolicy to make sure we have intended policy in relcache
+					 * even with relcache invalidation. Otherwise rd_cdbpolicy can
+					 * become invalid soon after assignment.
+					 */
+					GpPolicyReplace(RelationGetRelid(rel), policy);
+					rel->rd_cdbpolicy = policy;
+					if (Gp_role != GP_ROLE_EXECUTE)
+						ereport(NOTICE,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									errmsg("dropping a column that is part of the distribution policy forces a random distribution policy")));
+				}
+			}
+		}
+
 		/*
 		 * Change the column name to something that isn't likely to conflict
 		 */
@@ -2423,6 +2458,14 @@ heap_drop_with_catalog(Oid relid)
 		LockRelationOid(parentOid, AccessExclusiveLock);
 
 		/*
+		 * Now we could update view status of parent.
+		 * Drop a partiton means delete data from parent.
+		 */
+		SetRelativeMatviewAuxStatus(parentOid,
+									MV_DATA_STATUS_EXPIRED,
+									MV_DATA_STATUS_TRANSFER_DIRECTION_UP);
+
+		/*
 		 * If this is not the default partition, dropping it will change the
 		 * default partition's partition constraint, so we must lock it.
 		 */
@@ -2438,7 +2481,7 @@ heap_drop_with_catalog(Oid relid)
 	 */
 	rel = relation_open(relid, AccessExclusiveLock);
 
-	is_appendonly_rel = RelationIsAppendOptimized(rel);
+	is_appendonly_rel = RelationStorageIsAO(rel);
 
 	/*
 	 * There can no longer be anyone *else* touching the relation, but we
@@ -2520,7 +2563,6 @@ heap_drop_with_catalog(Oid relid)
 	if (rel->rd_rel->relkind == RELKIND_DIRECTORY_TABLE)
 	{
 		RemoveDirectoryTableEntry(relid);
-		DirectoryTableDropStorage(rel);
 	}
 
 	/*
@@ -3991,7 +4033,9 @@ heap_truncate_one_rel(Relation rel)
 
 	/* update view info */
 	if (IS_QD_OR_SINGLENODE())
-		SetRelativeMatviewAuxStatus(RelationGetRelid(rel), MV_DATA_STATUS_EXPIRED);
+		SetRelativeMatviewAuxStatus(RelationGetRelid(rel),
+									MV_DATA_STATUS_EXPIRED,
+									MV_DATA_STATUS_TRANSFER_DIRECTION_ALL);
 
 	/* If there is a toast table, truncate that too */
 	toastrelid = rel->rd_rel->reltoastrelid;

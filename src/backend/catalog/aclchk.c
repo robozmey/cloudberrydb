@@ -3,7 +3,6 @@
  * aclchk.c
  *	  Routines to check access control permissions.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -740,9 +739,11 @@ objectNamesToOids(ObjectType objtype, List *objnames)
 				 * GPDB: If we the object is a partitioned relation, also
 				 * recurse to the child partitions. It is different from
 				 * PostgreSQL, but it is how GRANT has historically worked on
-				 * GPDB.
+				 * GPDB. Unless it is indicated that we should not recurse
+				 * (e.g. by specifying the 'ONLY' keyword), in which case
+				 * don't bother finding the inheritors.
 				 */
-				if (objtype == OBJECT_TABLE)
+				if (objtype == OBJECT_TABLE && relvar->inh)
 				{
 					HeapTuple	tp;
 

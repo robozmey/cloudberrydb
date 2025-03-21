@@ -3,7 +3,6 @@
  * walsender_private.h
  *	  Private definitions from replication/walsender.c.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *
  * src/include/replication/walsender_private.h
@@ -108,7 +107,12 @@ typedef struct WalSnd
 
 extern WalSnd *MyWalSnd;
 
+/*
+ * GPDB: Meant to hold persistent state about a walsender<->walreceiver
+ * connection, on the walsender side, even if the walsender has died.
+ */
 typedef enum
+
 {
 	WALSNDERROR_NONE = 0,
 	WALSNDERROR_WALREAD

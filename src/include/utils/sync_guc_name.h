@@ -2,13 +2,12 @@
 *
 * sync_guc_name.h
 *
-* Portions Copyright (c) 2023, HashData Technology Limited.
-*
 * DENTIFICATION
 *	src/include/utils/sync_guc_name.h
 *--------------------------------------------------------------------------
 */
 /* items in this file should be ordered */
+		"allow_dml_directory_table",
 		"allow_segment_DML",
 		"allow_system_table_mods",
 		"array_nulls",
@@ -37,6 +36,8 @@
 		"debug_appendonly_print_visimap",
 		"debug_appendonly_use_no_toast",
 		"debug_discard_caches",
+		"debug_shareinput_xslice",
+		"deadlock_timeout",
 		"default_table_access_method",
 		"default_index_access_method",
 		"default_tablespace",
@@ -50,6 +51,7 @@
 		"gin_pending_list_limit",
 		"gp_allow_date_field_width_5digits",
 		"gp_appendonly_compaction",
+		"gp_appendonly_compaction_segfile_limit",
 		"gp_appendonly_compaction_threshold",
 		"gp_appendonly_verify_block_checksums",
 		"gp_appendonly_verify_write_block",
@@ -63,8 +65,6 @@
 		"gp_enable_runtime_filter",
 		"gp_enable_segment_copy_checking",
 		"gp_external_enable_filter_pushdown",
-		"gp_hashagg_default_nbatches",
-		"gp_hashagg_groups_per_bucket",
 		"gp_hashjoin_tuples_per_bucket",
 		"gp_ignore_error_table",
 		"gp_indexcheck_insert",

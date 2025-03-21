@@ -3849,7 +3849,7 @@ fetch_more_data(ForeignScanState *node)
 
 		for (i = 0; i < numrows; i++)
 		{
-			Assert(IsA(node->ss.ps.plan, ForeignScan));
+			Assert(IsA(node->ss.ps.plan, ForeignScan) || IsA(node->ss.ps.plan, DynamicForeignScan));
 
 			fsstate->tuples[i] =
 				make_tuple_from_result_row(res, i,
@@ -3914,6 +3914,14 @@ set_transmission_modes(void)
 		(void) set_config_option("extra_float_digits", "3",
 								 PGC_USERSET, PGC_S_SESSION,
 								 GUC_ACTION_SAVE, true, 0, false);
+
+	/*
+	 * In addition force restrictive search_path, in case there are any
+	 * regproc or similar constants to be printed.
+	 */
+	(void) set_config_option("search_path", "pg_catalog",
+							 PGC_USERSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
 
 	return nestlevel;
 }
@@ -6864,6 +6872,29 @@ add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	fpextra->count_est = extra->count_est;
 	fpextra->offset_est = extra->offset_est;
 
+	/* If mpp_execute = 'all segments', we need to adjust origin count_est and offset_est. */
+	if (final_rel->exec_location == FTEXECLOCATION_ALL_SEGMENTS && fpextra->offset_est > 0)
+	{
+		if (fpextra->count_est > 0)
+		{
+			/*
+			 * When both OFFSET and LIMIT clause are specified,
+			 * we need to fetch tuples from 0 to limitOffset + limitCount from remote servers.
+			 */
+			fpextra->count_est += fpextra->offset_est;
+		}
+		else
+		{
+			/*
+			 * When only OFFSET clasue is specified,
+			 * we need to fetch all tuples from remote servers.
+			 */
+			fpextra->count_est = 0;
+		}
+
+		fpextra->offset_est = 0;
+	}
+
 	/*
 	 * Estimate the costs of performing the final sort and the LIMIT
 	 * restriction remotely.  If has_final_sort is false, we wouldn't need to
@@ -7627,7 +7658,7 @@ greenplumCheckIsCloudberry(UserMapping *user)
 	if (PQntuples(res) == 0)
 		pgfdw_report_error(ERROR, res, conn, true, query);
 
-	ret = strstr(PQgetvalue(res, 0, 0), "Cloudberry Database") ? 1 : 0;
+	ret = strstr(PQgetvalue(res, 0, 0), "Apache Cloudberry") ? 1 : 0;
 
 	PQclear(res);
 	ReleaseConnection(conn);

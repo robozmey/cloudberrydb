@@ -86,6 +86,7 @@ DROP EXTERNAL TABLE IF EXISTS exttab_udfs_1;
 DROP EXTERNAL TABLE IF EXISTS exttab_udfs_2;
 DROP EXTERNAL TABLE IF EXISTS exttab_views_3;
 DROP EXTERNAL WEB TABLE IF EXISTS table_env;
+DROP EXTERNAL WEB TABLE IF EXISTS table_master;
 DROP EXTERNAL WEB TABLE IF EXISTS table_qry;
 
 DROP VIEW IF EXISTS exttab_views_3;
@@ -116,6 +117,16 @@ CREATE EXTERNAL WEB TABLE table_env (val TEXT)
   FORMAT 'TEXT' (ESCAPE 'OFF');
 SELECT * FROM table_env WHERE val LIKE 'GP_QUERY%' ORDER BY val ASC;
 SELECT * FROM table_env WHERE val LIKE 'GP_QUERY%\%' ESCAPE '&' ORDER BY val ASC;
+
+-- ensure squelching on master
+CREATE EXTERNAL WEB TABLE table_master (val TEXT)
+  EXECUTE E'cat @abs_srcdir@/data/lineitem.csv' ON MASTER
+  FORMAT 'TEXT' (ESCAPE 'OFF');
+BEGIN;
+DECLARE _psql_cursor NO SCROLL CURSOR FOR SELECT 1 FROM table_master;
+FETCH FORWARD 1 FROM _psql_cursor;
+CLOSE _psql_cursor;
+COMMIT;
 
 -- echo will behave differently on different platforms, force to use bash with -E option
 CREATE EXTERNAL WEB TABLE table_qry (val TEXT)
@@ -270,6 +281,32 @@ DROP OWNED BY test_role_issue_12748;
 DROP ROLE test_role_issue_12748;
 DROP PROTOCOL dummy_protocol_issue_12748;
 
+-- Test pg_exttable's encoding: QE's encoding should be consistent with QD
+-- GitHub Issue #9727: https://github.com/greenplum-db/gpdb/issues/9727
+SET client_encoding = 'ISO-8859-1';
+CREATE EXTERNAL TABLE issue_9727 (d varchar(20)) location ('gpfdist://9727/d.dat') format 'csv' (DELIMITER '|');
+SELECT encoding from pg_exttable where urilocation='{gpfdist://9727:8080/d.dat}';
+SELECT encoding from gp_dist_random('pg_exttable') where urilocation='{gpfdist://9727:8080/d.dat}';
+DROP FOREIGN TABLE issue_9727;
+RESET client_encoding;
+
+-- Test external table location escape
+-- GitHub Issue #17179: https://github.com/greenplum-db/gpdb/issues/17179
+CREATE READABLE EXTERNAL TABLE public.test_ext
+(
+  id integer
+)
+LOCATION(
+  'file://gpdev/tmp/test1|.|tx||t|||',
+  'file://gpdev/tmp/test2|.|tx||t||||'
+)
+FORMAT 'TEXT' (
+  delimiter 'off' null E'\\N' escape E'\\'
+)
+ENCODING 'UTF8'
+LOG ERRORS PERSISTENTLY SEGMENT REJECT LIMIT 10 PERCENT;
+SELECT urilocation FROM pg_exttable WHERE reloid = 'public.test_ext'::regclass;
+DROP EXTERNAL TABLE public.test_ext;
 --
 -- WET tests
 --
@@ -3597,6 +3634,10 @@ SELECT * FROM test_part_integrity;
 
 DROP TABLE test_part_integrity;
 
+-- Testing creating external table with replicated distribution
+-- Should report error
+CREATE WRITABLE EXTERNAL WEB TABLE ext_dist_repl(a int, b int) EXECUTE 'some command' FORMAT 'TEXT' DISTRIBUTED REPLICATED;
+
 -- Testing altering the distribution policy of external tables.
 CREATE WRITABLE EXTERNAL WEB TABLE ext_w_dist(a int, b int) EXECUTE 'cat > @abs_srcdir@/data/ext_w_dist.tbl' FORMAT 'TEXT' (DELIMITER AS '|' NULL AS 'null' ESCAPE AS ' ') DISTRIBUTED BY (a);
 ALTER TABLE ext_w_dist SET WITH (reorganize=true); -- should error out if forcing reorganize
@@ -3605,6 +3646,7 @@ ALTER TABLE ext_w_dist SET DISTRIBUTED BY (b);
 SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'ext_w_dist'::regclass;
 ALTER TABLE ext_w_dist SET DISTRIBUTED RANDOMLY;
 SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'ext_w_dist'::regclass;
+ALTER TABLE ext_w_dist SET DISTRIBUTED REPLICATED; -- ERROR
 CREATE EXTERNAL WEB TABLE ext_r_dist(a int) EXECUTE 'printf ${GP_SEGMENT_ID}' FORMAT 'TEXT' DISTRIBUTED BY (a);
 CREATE EXTERNAL WEB TABLE ext_r_dist(a int) EXECUTE 'printf ${GP_SEGMENT_ID}' FORMAT 'TEXT';
 ALTER TABLE ext_r_dist SET DISTRIBUTED BY (a); -- should error out altering readable external tables' distribution policy
@@ -3612,17 +3654,17 @@ ALTER TABLE ext_r_dist SET DISTRIBUTED BY (a); -- should error out altering read
 -- Testing external table as the partition child.
 CREATE TABLE part_root(a int) PARTITION BY RANGE(a);
 CREATE TABLE part_child (LIKE part_root);
-CREATE WRITABLE EXTERNAL WEB TABLE part_ext_w(a int) EXECUTE 'cat > @abs_srcdir@/data/part_ext.tbl' FORMAT 'TEXT' (DELIMITER AS '|' NULL AS 'null' ESCAPE AS ' ') DISTRIBUTED BY (a);
+CREATE EXTERNAL WEB TABLE part_ext_r(a int) EXECUTE 'cat > @abs_srcdir@/data/part_ext.tbl' FORMAT 'TEXT' (DELIMITER AS '|' NULL AS 'null' ESCAPE AS ' ');
+CREATE WRITABLE EXTERNAL WEB TABLE part_ext_w(a int, b int) EXECUTE 'cat > @abs_srcdir@/data/part_ext.tbl' FORMAT 'TEXT' (DELIMITER AS '|' NULL AS 'null' ESCAPE AS ' ') DISTRIBUTED BY (a);
 ALTER TABLE part_root ATTACH PARTITION part_child FOR VALUES FROM (0) TO (10);
-ALTER TABLE part_root ATTACH PARTITION part_ext_w FOR VALUES FROM (10) TO (20);
+ALTER TABLE part_root ATTACH PARTITION part_ext_r FOR VALUES FROM (10) TO (20);
 
--- Adding column should work fine
+-- Adding column on readable external table should work fine
 ALTER TABLE part_root ADD COLUMN b int;
-INSERT INTO part_root SELECT i,i FROM generate_series(1,19)i;
 
--- altering distribution policy should work fine
+-- altering distribution policy on writable external table should work fine
 SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'part_ext_w'::regclass;
-ALTER TABLE part_root SET DISTRIBUTED BY (b);
+ALTER TABLE part_ext_w SET DISTRIBUTED BY (b);
 SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'part_ext_w'::regclass;
 
 DROP TABLE part_root;
@@ -3638,9 +3680,9 @@ CREATE EXTERNAL TABLE ext_persistently (c INT)
 location ('file://@hostname@@abs_srcdir@/data/ext_persistently.tbl' )
 FORMAT 'text' (delimiter '|') LOG ERRORS PERSISTENTLY SEGMENT REJECT LIMIT 100;
 
-SELECT logerrors from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_false';
-SELECT logerrors from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_true';
-SELECT logerrors from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_persistently';
+SELECT logerrors, options from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_false';
+SELECT logerrors, options from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_true';
+SELECT logerrors, options from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_persistently';
 
 -- drop tables
 DROP EXTERNAL TABLE ext_false;

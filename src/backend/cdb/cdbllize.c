@@ -5,7 +5,6 @@
  *
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Portions Copyright (c) 2023, HashData Technology Limited.
  *
  * This file contains functions to process plan tree, at various stages in
  * planning, to produce a parallelize MPP plan. Outline of the stages,
@@ -496,7 +495,7 @@ cdbllize_adjust_top_path(PlannerInfo *root, Path *best_path,
 				ereport(NOTICE,
 						(errcode(ERRCODE_SUCCESSFUL_COMPLETION),
 						 errmsg("Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) "
-								"named '%s' as the Cloudberry Database data distribution key for this "
+								"named '%s' as the Apache Cloudberry data distribution key for this "
 								"table. ", columnsbuf.data),
 						 errhint("The 'DISTRIBUTED BY' clause determines the distribution of data."
 								 " Make sure column(s) chosen are the optimal data distribution key to minimize skew.")));
@@ -918,8 +917,6 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 		 */
 		if (motion->motionType == MOTIONTYPE_OUTER_QUERY)
 		{
-			Assert(!motion->sendSorted);
-
 			if (context->currentPlanFlow->flotype == FLOW_SINGLETON)
 			{
 				motion->motionType = MOTIONTYPE_GATHER;
@@ -928,6 +925,20 @@ fix_outer_query_motions_mutator(Node *node, decorate_subplans_with_motions_conte
 					 context->currentPlanFlow->flotype == FLOW_PARTITIONED)
 			{
 				motion->motionType = MOTIONTYPE_BROADCAST;
+				/*
+				 * In cdbpathtoplan_create_motion_plan if locus is CdbLocusType_OuterQuery
+				 * We use make_sorted_union_motion to keep the pathkeys of path.
+				 * But, sendSorted of BroadCast motion can not be true.
+				 * So make sort plan above broad cast motion to keep pathkeys.
+				 */
+				if (motion->sendSorted)
+				{
+					motion->sendSorted = false;
+					newnode = (Node *)make_sort((Plan *)motion, motion->numSortCols,
+						 motion->sortColIdx, motion->sortOperators,
+						 motion->collations, motion->nullsFirst);
+					return newnode;
+				}
 			}
 			else
 				elog(ERROR, "unexpected Flow type in parent of a SubPlan");
@@ -1025,6 +1036,7 @@ fix_subplan_motion(PlannerInfo *root, Plan *subplan, Flow *outer_query_flow)
 		{
 			initPlans = list_concat(initPlans, subplan->initPlan);
 			subplan = subplan->lefttree;
+			subFlow = subplan->flow;
 		}
 
 		/*
@@ -1041,6 +1053,7 @@ fix_subplan_motion(PlannerInfo *root, Plan *subplan, Flow *outer_query_flow)
 
 			sendSlice = strippedMotion->senderSliceInfo;
 			subplan = subplan->lefttree;
+			subFlow = subplan->flow;
 			initPlans = list_concat(initPlans, strippedMotion->plan.initPlan);
 		}
 		else

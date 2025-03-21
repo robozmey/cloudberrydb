@@ -12,7 +12,6 @@
  * identifying statement boundaries in multi-statement source strings.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2009, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -239,6 +238,8 @@ typedef struct Query
 	 */
 	int			stmt_location;	/* start location, or -1 if unknown */
 	int			stmt_len;		/* length in bytes; 0 means "rest of string" */
+
+	bool		expandMatViews; /* force expansion of materialized views during rewrite to treat as views */
 } Query;
 
 /****************************************************************************
@@ -2105,6 +2106,7 @@ typedef enum AlterTableType
 	AT_SetLogged,				/* SET LOGGED */
 	AT_SetUnLogged,				/* SET UNLOGGED */
 	AT_DropOids,				/* SET WITHOUT OIDS */
+	AT_SetAccessMethod,			/* SET ACCESS METHOD */
 	AT_SetTableSpace,			/* SET TABLESPACE */
 	AT_SetRelOptions,			/* SET (...) -- AM specific parameters */
 	AT_ResetRelOptions,			/* RESET (...) -- AM specific parameters */
@@ -2432,7 +2434,7 @@ typedef struct CopyStmt
 	List	   *options;		/* List of DefElem nodes */
 	Node	   *whereClause;	/* WHERE condition (or NULL) */
 
-	Node	   *sreh;			/* Single row error handling info */
+	List	   *sreh;			/* Single row error handling info */
 } CopyStmt;
 
 /* ----------------------
@@ -2471,6 +2473,21 @@ typedef struct VariableShowStmt
 	char	   *name;
 } VariableShowStmt;
 
+/*
+ * GPDB: Where did the CreateStmt originate? Was it generated and if so, what
+ * type of operation generated it?
+ *
+ * Note: 'classic' syntax refers to the legacy GPDB partitioning syntax that
+ * predates the upstream partitioning syntax that was acquired during the
+ * Postgres 12 merge.
+ */
+typedef enum CreateStmtOrigin
+{
+	ORIGIN_NO_GEN,
+	ORIGIN_GP_CLASSIC_CREATE_GEN,
+	ORIGIN_GP_CLASSIC_ALTER_GEN
+} CreateStmtOrigin;
+
 /* ----------------------
  *		Create Table Statement
  *
@@ -2499,6 +2516,7 @@ typedef struct CreateStmt
 	char	   *tablespacename; /* table space to use, or NULL */
 	char	   *accessMethod;	/* table access method */
 	bool		if_not_exists;	/* just do nothing if it already exists? */
+	bool 		gp_style_alter_part; /* unused */
 
 	DistributedBy *distributedBy;   /* what columns we distribute the data by */
 	Node       *partitionBy;     /* what columns we partition the data by */
@@ -2514,6 +2532,8 @@ typedef struct CreateStmt
 	List	   *part_idx_oids;
 	List	   *part_idx_names;
 	List	   *tags;			/* List of tags DefElem nodes */
+
+	CreateStmtOrigin origin;	/* GPDB: provenance of this CreateStmt */
 } CreateStmt;
 
 /* ----------------------
@@ -3412,6 +3432,7 @@ typedef struct CreateDirectoryTableStmt
 {
 	CreateStmt	base;
 	char	   *tablespacename;
+	char       *location;   /* dtlocation for pg_directory_table */
 } CreateDirectoryTableStmt;
 
 typedef struct AlterDirectoryTableStmt
@@ -3438,7 +3459,19 @@ typedef struct DropStmt
 	DropBehavior behavior;		/* RESTRICT or CASCADE behavior */
 	bool		missing_ok;		/* skip error if object is missing? */
 	bool		concurrent;		/* drop index concurrently? */
+	bool		isdynamic;		/* drop a dynamic table? */
 } DropStmt;
+
+/* ----------------------
+ *		DROP Directory Table Statement
+ * ----------------------
+ */
+
+typedef struct DropDirectoryTableStmt
+{
+	DropStmt	base;
+	bool		with_content;	/* whether drop directory table file */
+} DropDirectoryTableStmt;
 
 /* ----------------------
  *				Truncate Table Statement
@@ -4121,6 +4154,7 @@ typedef struct RefreshMatViewStmt
 	bool		concurrent;		/* allow concurrent access? */
 	bool		skipData;		/* true for WITH NO DATA */
 	RangeVar   *relation;		/* relation to insert into */
+	bool		isdynamic;		/* relation is dynamic table? */
 } RefreshMatViewStmt;
 
 /* ----------------------

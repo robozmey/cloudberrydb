@@ -479,7 +479,14 @@ update mytab_@amname@ set col_text=' new value' where col_int = 1;
 select * from mytab_@amname@;
 vacuum mytab_@amname@;
 SELECT reltuples FROM pg_class WHERE relname = 'mytab_@amname@';
+
+-- New strategy of VACUUM AO/CO was introduced by PR #13255 for performance enhancement.
+-- Index dead tuples will not always be cleaned up completely after VACUUM, resulting
+-- index stats pg_class->reltuples will not always be accurate. So ignore the stats check
+-- for reltuples to coordinate with the new behavior.
+-- start_ignore
 SELECT reltuples FROM pg_class WHERE relname = 'mytab_int_idx1_@amname@';
+-- end_ignore
 
 -- @Description Checks that deleting works with many AO blocks.
 -- 
@@ -1008,3 +1015,13 @@ explain (costs off)
 select * from taocs where c4>5 and c3>3 and c2!=12 and c4<15 and c2!=10 and c3<15 and c2>1 and c2<15 and c2+c3!=28 and gp_segment_id=1;
 select * from taocs where c4>5 and c3>3 and c2!=12 and c4<15 and c2!=10 and c3<15 and c2>1 and c2<15 and c2+c3!=28 and gp_segment_id=1;
 
+-- @Description Tests that speculative inserts are not supported (for
+-- conflicting inserts and otherwise).
+--
+CREATE TABLE spec_insert(i int unique, j int) distributed by (i);
+INSERT INTO spec_insert VALUES(1, 2);
+INSERT INTO spec_insert VALUES(1, 3) ON CONFLICT(i) DO NOTHING;
+INSERT INTO spec_insert VALUES(1, 3) ON CONFLICT(i) DO UPDATE SET j = 3;
+
+INSERT INTO spec_insert VALUES(2, 3) ON CONFLICT(i) DO NOTHING;
+INSERT INTO spec_insert VALUES(2, 3) ON CONFLICT(i) DO UPDATE SET j = 4;

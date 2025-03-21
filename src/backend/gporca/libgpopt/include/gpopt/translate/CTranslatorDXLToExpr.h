@@ -290,6 +290,9 @@ private:
 	// translate a DXL scalar ident into an expr scalar ident
 	CExpression *PexprScalarIdent(const CDXLNode *pdxlnIdent);
 
+	// translate a DXL scalar param into an expr scalar param
+	CExpression *PexprScalarParam(const CDXLNode *pdxlnParam);
+
 	// translate a DXL scalar nullif into a scalar nullif expression
 	CExpression *PexprScalarNullIf(const CDXLNode *pdxlnNullIf);
 
@@ -320,6 +323,9 @@ private:
 	CExpression *PexprScalarConst(const CDXLNode *pdxlnConst);
 
 	CExpression *PexprSortGroupClause(const CDXLNode *pdxlnSortGroupClause);
+
+	// translate a DXL FieldSelect node into a FieldSelect expression
+	CExpression *PexprFieldSelect(const CDXLNode *pdxlnConst);
 
 	// translate a DXL project list node into a project list expression
 	CExpression *PexprScalarProjList(const CDXLNode *proj_list_dxlnode);

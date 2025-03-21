@@ -3,8 +3,6 @@
  * tablecmds.h
  *	  prototypes for tablecmds.c.
  *
- *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -18,6 +16,7 @@
 #include "access/attnum.h"
 #include "catalog/dependency.h"
 #include "catalog/gp_distribution_policy.h"
+#include "catalog/pg_am.h"
 #include "executor/executor.h"
 #include "executor/tuptable.h"
 #include "nodes/execnodes.h"
@@ -135,4 +134,5 @@ extern void GpRenameChildPartitions(Relation targetrelation,
 									const char *newparentrelname);
 extern void set_random_distribution_if_drop_distkey(Relation rel, AttrNumber attnum);
 
+extern Datum get_rel_opts(Relation rel);
 #endif							/* TABLECMDS_H */

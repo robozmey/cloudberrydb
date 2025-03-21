@@ -3,7 +3,6 @@
  * pquery.c
  *	  POSTGRES process query command code
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -31,6 +30,7 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+#include "cdb/cdbexplain.h"
 #include "cdb/ml_ipc.h"
 #include "cdb/cdbtm.h"
 #include "commands/createas.h"
@@ -117,6 +117,7 @@ CreateQueryDesc(PlannedStmt *plannedstmt,
 
 	qd->extended_query = false; /* default value */
 	qd->portal_name = NULL;
+	qd->showstatctx = NULL;
 
 	qd->ddesc = NULL;
 
@@ -141,6 +142,9 @@ FreeQueryDesc(QueryDesc *qdesc)
 	/* forget our snapshots */
 	UnregisterSnapshot(qdesc->snapshot);
 	UnregisterSnapshot(qdesc->crosscheck_snapshot);
+
+	if (qdesc->showstatctx)
+		cdbexplain_showStatCtxFree(qdesc->showstatctx);
 
 	/* Only the QueryDesc itself need be freed */
 	pfree(qdesc);
@@ -1732,7 +1736,7 @@ DoPortalRunFetch(Portal portal,
 				/* until we enable backward scan - bail out here */
 				ereport(ERROR,
 						(errcode(ERRCODE_GP_FEATURE_NOT_YET),
-						 errmsg("backward scan is not supported in this version of Cloudberry Database")));
+						 errmsg("backward scan is not supported in this version of Apache Cloudberry")));
 			}
 			/* fall out of switch to share code with FETCH_BACKWARD */
 			break;
@@ -1747,7 +1751,7 @@ DoPortalRunFetch(Portal portal,
 				/* until we enable backward scan - bail out here */
 				ereport(ERROR,
 						(errcode(ERRCODE_GP_FEATURE_NOT_YET),
-						 errmsg("backward scan is not supported in this version of Cloudberry Database")));
+						 errmsg("backward scan is not supported in this version of Apache Cloudberry")));
 			}
 			/* fall out of switch to share code with FETCH_FORWARD */
 			break;
@@ -1776,7 +1780,7 @@ DoPortalRunFetch(Portal portal,
 					if(portal->portalPos > 0)
 						ereport(ERROR,
 								(errcode(ERRCODE_GP_FEATURE_NOT_YET),
-								 errmsg("backward scan is not supported in this version of Cloudberry Database")));
+								 errmsg("backward scan is not supported in this version of Apache Cloudberry")));
 					
 					DoPortalRewind(portal);
 					if (count > 1)
@@ -1811,7 +1815,7 @@ DoPortalRunFetch(Portal portal,
 				/* until we enable backward scan - bail out here */
 				ereport(ERROR,
 						(errcode(ERRCODE_GP_FEATURE_NOT_YET),
-						 errmsg("backward scan is not supported in this version of Cloudberry Database")));
+						 errmsg("backward scan is not supported in this version of Apache Cloudberry")));
 				
 				PortalRunSelect(portal, true, FETCH_ALL, None_Receiver);
 				if (count < -1)
@@ -1825,7 +1829,7 @@ DoPortalRunFetch(Portal portal,
 				/* until we enable backward scan - bail out here */
 				ereport(ERROR,
 						(errcode(ERRCODE_GP_FEATURE_NOT_YET),
-						 errmsg("backward scan is not supported in this version of Cloudberry Database")));
+						 errmsg("backward scan is not supported in this version of Apache Cloudberry")));
 				
 				/* Rewind to start, return zero rows */
 				DoPortalRewind(portal);
@@ -1852,7 +1856,7 @@ DoPortalRunFetch(Portal portal,
 				/* until we enable backward scan - bail out here */
 				ereport(ERROR,
 						(errcode(ERRCODE_GP_FEATURE_NOT_YET),
-						 errmsg("backward scan is not supported in this version of Cloudberry Database")));				
+						 errmsg("backward scan is not supported in this version of Apache Cloudberry")));				
 				
 				if (count < -1)
 					PortalRunSelect(portal, false, -count - 1, None_Receiver);
@@ -1920,7 +1924,7 @@ DoPortalRunFetch(Portal portal,
 		/* until we enable backward scan - bail out here */
 		ereport(ERROR,
 				(errcode(ERRCODE_GP_FEATURE_NOT_YET),
-				 errmsg("backward scan is not supported in this version of Cloudberry Database")));
+				 errmsg("backward scan is not supported in this version of Apache Cloudberry")));
 		
 		if (result > 0 && !portal->atEnd)
 			result--;

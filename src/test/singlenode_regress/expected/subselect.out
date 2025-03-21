@@ -1356,13 +1356,10 @@ select * from int4_tbl o where (f1, f1) in
                      Output: i.f1, ((generate_series(1, 50)) / 10)
                      ->  ProjectSet
                            Output: generate_series(1, 50), i.f1
-                           ->  HashAggregate
+                           ->  Seq Scan on public.int4_tbl i
                                  Output: i.f1
-                                 Group Key: i.f1
-                                 ->  Seq Scan on public.int4_tbl i
-                                       Output: i.f1
  Optimizer: Postgres query optimizer
-(20 rows)
+(17 rows)
 
 select * from int4_tbl o where (f1, f1) in
   (select f1, generate_series(1,50) / 10 g from int4_tbl i group by f1);
@@ -1657,7 +1654,7 @@ declare c1 scroll cursor for
   where i <> all (values (2),(3));
 move forward all in c1;
 fetch backward all in c1;
-ERROR:  backward scan is not supported in this version of Cloudberry Database
+ERROR:  backward scan is not supported in this version of Apache Cloudberry
 commit;
 --end_ignore
 --
@@ -1712,11 +1709,15 @@ select * from x where f1 = 1;
 explain (verbose, costs off)
 with x as (select * from (select f1, random() from subselect_tbl) ss)
 select * from x where f1 = 1;
-              QUERY PLAN              
---------------------------------------
- Seq Scan on public.subselect_tbl
-   Output: subselect_tbl.f1, random()
-   Filter: (subselect_tbl.f1 = 1)
+                     QUERY PLAN                     
+----------------------------------------------------
+ Subquery Scan on x
+   Output: x.f1, x.random
+   Filter: (x.f1 = 1)
+   ->  Shared Scan (share slice:id -1:0)
+         Output: share0_ref1.f1, share0_ref1.random
+         ->  Seq Scan on public.subselect_tbl
+               Output: subselect_tbl.f1, random()
  Optimizer: Postgres query optimizer
 (4 rows)
 

@@ -3,7 +3,6 @@
  * cdbpath.h
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -75,5 +74,9 @@ cdbpath_motion_for_parallel_join(PlannerInfo    *root,
 						bool            outer_require_existing_order,
 						bool            inner_require_existing_order,
 						bool			parallel_aware);
+
+extern void set_allow_append_initplan_for_function_scan(void);
+extern void unset_allow_append_initplan_for_function_scan(void);
+extern bool get_allow_append_initplan_for_function_scan(void);
 
 #endif   /* CDBPATH_H */

@@ -3,7 +3,6 @@
 # GNUmakefile--
 #    Makefile for src/test/regress (the regression tests)
 #
-# Portions Copyright (c) 2023, HashData Technology Limited.
 # Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
@@ -41,10 +40,12 @@ EXTRADEFS = '-DHOST_TUPLE="$(host_tuple)"' \
 
 # Build regression test driver
 
-all: pg_regress$(X) twophase_pqexecparams
+all: pg_regress$(X) twophase_pqexecparams extended_protocol_resqueue
 
 pg_regress$(X): pg_regress.o pg_regress_main.o $(WIN32RES) | submake-libpgport
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@
+extended_protocol_resqueue: extended_protocol_resqueue.c
+	$(CC) $(CPPFLAGS) -I../../../src/interfaces/libpq -L$(GPHOME)/lib -L../../../src/interfaces/libpq  -o $@ $< -lpq
 
 # dependencies ensure that path changes propagate
 pg_regress.o: pg_regress.c $(top_builddir)/src/port/pg_config_paths.h
@@ -134,7 +135,7 @@ installdirs-tests: installdirs
 
 # Get some extra C modules from contrib/spi
 
-all: refint$(DLSUFFIX) autoinc$(DLSUFFIX) tablespace-setup hooktest query_info_hook_test
+all: refint$(DLSUFFIX) autoinc$(DLSUFFIX) hooktest query_info_hook_test
 
 refint$(DLSUFFIX): $(top_builddir)/contrib/spi/refint$(DLSUFFIX)
 	cp $< $@
@@ -201,24 +202,30 @@ check-tests: all | temp-install
 #	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/serial_schedule $(EXTRA_TESTS)
 installcheck: installcheck-good
 
-installcheck-small: all
+installcheck-small: all tablespace-setup
 	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(EXTRA_TESTS)
 
-installcheck-good: all twophase_pqexecparams hooktest query_info_hook_test
+installcheck-cbdb: all tablespace-setup twophase_pqexecparams hooktest query_info_hook_test
+	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/greenplum_schedule $(EXTRA_TESTS)
+
+installcheck-good: all tablespace-setup twophase_pqexecparams hooktest query_info_hook_test
 	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule --schedule=$(srcdir)/greenplum_schedule $(EXTRA_TESTS)
 
 installcheck-parallel: all
 	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
 
 # cbdb parallel plan tests, ignore the incompatible cases, should run with 5 GUCs like below:
-installcheck-cbdb-parallel: all twophase_pqexecparams
+installcheck-cbdb-parallel: all tablespace-setup twophase_pqexecparams
 	( \
 	export PGOPTIONS='-c optimizer=off -c enable_parallel=true -c min_parallel_table_scan_size=0 -c min_parallel_index_scan_size=0 -c force_parallel_mode=1'; \
-	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule --schedule=$(srcdir)/greenplum_schedule $(MAXCONNOPT) $(EXTRA_TESTS) --exclude-tests explain \
+	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule --schedule=$(srcdir)/greenplum_schedule --max-connections=5 $(EXTRA_TESTS) --exclude-tests explain \
 	)
 
 installcheck-tests: all
 	$(pg_regress_installcheck) $(REGRESS_OPTS) $(TESTS) $(EXTRA_TESTS)
+
+installcheck-fixme: all
+	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/fixme_schedule $(EXTRA_TESTS)
 
 ifeq ($(BUILD_TYPE),prod)
 .PHONY: installcheck-icudp

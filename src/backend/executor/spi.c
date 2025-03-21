@@ -443,6 +443,16 @@ SPI_rollback_and_chain(void)
 }
 
 /*
+ * SPICleanup is a no-op, kept for backwards compatibility. We rely on
+ * AtEOXact_SPI to cleanup. Extensions should not (need to) fiddle with the
+ * internal SPI state directly.
+ */
+void
+SPICleanup(void)
+{
+}
+
+/*
  * Clean up SPI state at transaction commit or abort.
  */
 void
@@ -1732,7 +1742,7 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	}
 
 	/*
-	 * Cloudberry Database needs this
+	 * Apache Cloudberry needs this
 	 */
 	portal->is_extended_query = true;
 
@@ -2344,7 +2354,7 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 		CompleteCachedPlan(plansource,
 						   stmt_list,
 						   NULL,
-						   nodeTag(parsetree),
+						   nodeTag(parsetree->stmt),
 						   plan->argtypes,
 						   plan->nargs,
 						   plan->parserSetup,
@@ -2595,7 +2605,7 @@ _SPI_execute_plan(SPIPlanPtr plan, const SPIExecuteOptions *options,
 			CompleteCachedPlan(plansource,
 							   stmt_list,
 							   NULL,
-							   nodeTag(parsetree),
+							   nodeTag(parsetree->stmt),
 							   plan->argtypes,
 							   plan->nargs,
 							   plan->parserSetup,

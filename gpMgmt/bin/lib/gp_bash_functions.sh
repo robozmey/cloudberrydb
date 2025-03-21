@@ -23,7 +23,7 @@ if hash brew 2> /dev/null; then
   CMDPATH+=("$(brew --prefix)/bin")
 fi
 
-#GPPATH is the list of possible locations for the Cloudberry Database binaries, in precedence order
+#GPPATH is the list of possible locations for the Apache Cloudberry binaries, in precedence order
 declare -a GPPATH
 GPPATH=( $GPHOME $MPPHOME $BIZHOME )
 if [ ${#GPPATH[@]} -eq 0 ];then
@@ -40,6 +40,11 @@ GP_UNIQUE_COMMAND=gpstart
 findCmdInPath() {
 		cmdtofind=$1
 
+		CMD=`which $cmdtofind`
+		if [ $? -eq 0 ]; then
+				echo $CMD
+				return
+		fi
 		for pathel in ${CMDPATH[@]}
 				do
 				CMD=$pathel/$cmdtofind
@@ -77,7 +82,6 @@ DIRNAME=`findCmdInPath dirname`
 ECHO=`findCmdInPath echo`
 FIND=`findCmdInPath find`
 GREP=`findCmdInPath grep`
-EGREP=`findCmdInPath egrep`
 HEAD=`findCmdInPath head`
 HOSTNAME=`findCmdInPath hostname`
 IP=`findCmdInPath ip`
@@ -257,6 +261,9 @@ LOG_MSG () {
 # Limitation: If the token used for separating command output from banner appears in the begining
 # of the line in command output/banner output, in that case only partial command output will be returned
 REMOTE_EXECUTE_AND_GET_OUTPUT () {
+  INITIAL_DEBUG_LEVEL=$DEBUG_LEVEL
+  DEBUG_LEVEL=0
+
   LOG_MSG "[INFO]:-Start Function $FUNCNAME"
   HOST="$1"
   CMD="echo 'GP_DELIMITER_FOR_IGNORING_BASH_BANNER';$2"
@@ -269,6 +276,8 @@ REMOTE_EXECUTE_AND_GET_OUTPUT () {
      LOG_MSG "[INFO]:-Completed $TRUSTED_SHELL $HOST $CMD"
   fi
   LOG_MSG "[INFO]:-End Function $FUNCNAME"
+
+  DEBUG_LEVEL=$INITIAL_DEBUG_LEVEL
   #Return output
   echo "$OUTPUT"
 }
@@ -309,7 +318,7 @@ ERROR_EXIT () {
 		DEBUG_LEVEL=1
 		if [ $BACKOUT_FILE ]; then
 				if [ -s $BACKOUT_FILE ]; then
-						LOG_MSG "[WARN]:-Script has left Cloudberry Database in an incomplete state"
+						LOG_MSG "[WARN]:-Script has left Apache Cloudberry in an incomplete state"
 						LOG_MSG "[WARN]:-Run command bash $BACKOUT_FILE on coordinator to remove these changes"
 						$ECHO "$RM -f $BACKOUT_FILE" >> $BACKOUT_FILE
 				fi
@@ -321,11 +330,9 @@ ERROR_EXIT () {
 ERROR_CHK () {
 	LOG_MSG "[INFO]:-Start Function $FUNCNAME"
 	if [ $# -ne 3 ];then
-		INITIAL_LEVEL=$DEBUG_LEVEL
-		DEBUG_LEVEL=1
-		LOG_MSG "[WARN]:-Incorrect # parameters supplied to $FUNCNAME"
-		DEBUG_LEVEL=$INITIAL_LEVEL
-		return;fi
+		LOG_MSG "[WARN]:-Incorrect # parameters supplied to $FUNCNAME" 1
+		return;
+	fi
 	RETVAL=$1;shift
 	MSG_TXT=$1;shift
 	ACTION=$1 #1=issue warn, 2=fatal
@@ -333,10 +340,7 @@ ERROR_CHK () {
 		LOG_MSG "[INFO]:-Successfully completed $MSG_TXT"
 	else
 		if [ $ACTION -eq 1 ];then
-			INITIAL_LEVEL=$DEBUG_LEVEL
-			DEBUG_LEVEL=1
-			LOG_MSG "[WARN]:-Issue with $MSG_TXT"
-			DEBUG_LEVEL=$INITIAL_LEVEL
+			LOG_MSG "[WARN]:-Issue with $MSG_TXT" 1
 		else
 			LOG_MSG "[INFO]:-End Function $FUNCNAME"
 			ERROR_EXIT "[FATAL]:-Failed to complete $MSG_TXT "
@@ -852,32 +856,31 @@ GET_PG_PID_ACTIVE () {
 		PORT=$1;shift
 		HOST=$1
 		PG_LOCK_FILE="/tmp/.s.PGSQL.${PORT}.lock"
-		PG_LOCK_NETSTAT=""
+		PG_LOCK_SS=""
 		if [ x"" == x"$HOST" ];then
-			#See if we have a netstat entry for this local host
+			#See if we have a ss entry for this local host
 			PORT_ARRAY=(`$SS -an 2>/dev/null |$AWK '{for (i =1; i<=NF ; i++) if ($i==".s.PGSQL.${PORT}") print $i}'|$AWK -F"." '{print $NF}'|$SORT -u`)
 			for P_CHK in ${PORT_ARRAY[@]}
 			do
-				if [ $P_CHK -eq $PORT ];then  PG_LOCK_NETSTAT=$PORT;fi
+				if [ $P_CHK -eq $PORT ];then  PG_LOCK_SS=$PORT;fi
 			done
-			#PG_LOCK_NETSTAT=`$NETSTAT -an 2>/dev/null |$GREP ".s.PGSQL.${PORT}"|$AWK '{print $NF}'|$HEAD -1`
 			#See if we have a lock file in /tmp
 			if [ -f ${PG_LOCK_FILE} ];then
 				PG_LOCK_TMP=1
 			else
 				PG_LOCK_TMP=0
 			fi
-			if [ x"" == x"$PG_LOCK_NETSTAT" ] && [ $PG_LOCK_TMP -eq 0 ];then
+			if [ x"" == x"$PG_LOCK_SS" ] && [ $PG_LOCK_TMP -eq 0 ];then
 				PID=0
 				LOG_MSG "[INFO]:-No socket connection or lock file in /tmp found for port=${PORT}"
 			else
 				#Now check the failure combinations
-				if [ $PG_LOCK_TMP -eq 0 ] && [ x"" != x"$PG_LOCK_NETSTAT" ];then
+				if [ $PG_LOCK_TMP -eq 0 ] && [ x"" != x"$PG_LOCK_SS" ];then
 				#Have a process but no lock file
 					LOG_MSG "[WARN]:-No lock file $PG_LOCK_FILE but process running on port $PORT" 1
 					PID=1
 				fi
-				if [ $PG_LOCK_TMP -eq 1 ] && [ x"" == x"$PG_LOCK_NETSTAT" ];then
+				if [ $PG_LOCK_TMP -eq 1 ] && [ x"" == x"$PG_LOCK_SS" ];then
 				#Have a lock file but no process
 					if [ -r ${PG_LOCK_FILE} ];then
 						PID=`$CAT ${PG_LOCK_FILE}|$HEAD -1|$AWK '{print $1}'`
@@ -887,8 +890,8 @@ GET_PG_PID_ACTIVE () {
 					fi
 					LOG_MSG "[WARN]:-Have lock file $PG_LOCK_FILE but no process running on port $PORT" 1
 				fi
-				if [ $PG_LOCK_TMP -eq 1 ] && [ x"" != x"$PG_LOCK_NETSTAT" ];then
-				#Have both a lock file and a netstat process
+				if [ $PG_LOCK_TMP -eq 1 ] && [ x"" != x"$PG_LOCK_SS" ];then
+				#Have both a lock file and a ss process
 					if [ -r ${PG_LOCK_FILE} ];then
 						PID=`$CAT ${PG_LOCK_FILE}|$HEAD -1|$AWK '{print $1}'`
 					else
@@ -903,24 +906,23 @@ GET_PG_PID_ACTIVE () {
 			if [ $RETVAL -ne 0 ];then
 				PID=0
 			else
-				PORT_ARRAY=($( REMOTE_EXECUTE_AND_GET_OUTPUT $HOST "$SS -an 2>/dev/null |$AWK '{for (i =1; i<=NF ; i++) if (\$i==\".s.PGSQL.${PORT}\") print \$i}'|$AWK -F\".\" '{print \$NF}'|$SORT -u"))
+				PORT_ARRAY=($( REMOTE_EXECUTE_AND_GET_OUTPUT $HOST "$SS -an 2>/dev/null" |$AWK '{for (i =1; i<=NF ; i++) if ($i==".s.PGSQL.${PORT}") print $i}'|$AWK -F"." '{print $NF}'|$SORT -u))
 				for P_CHK in ${PORT_ARRAY[@]}
 				do
-					if [ $P_CHK -eq $PORT ];then  PG_LOCK_NETSTAT=$PORT;fi
+					if [ $P_CHK -eq $PORT ];then  PG_LOCK_SS=$PORT;fi
 				done
-				#PG_LOCK_NETSTAT=`$TRUSTED_SHELL $HOST "$NETSTAT -an 2>/dev/null |$GREP ".s.PGSQL.${PORT}" 2>/dev/null"|$AWK '{print $NF}'|$HEAD -1`
 				PG_LOCK_TMP=$( REMOTE_EXECUTE_AND_GET_OUTPUT $HOST "ls ${PG_LOCK_FILE} 2>/dev/null|$WC -l" )
-				if [ x"" == x"$PG_LOCK_NETSTAT" ] && [ $PG_LOCK_TMP -eq 0 ];then
+				if [ x"" == x"$PG_LOCK_SS" ] && [ $PG_LOCK_TMP -eq 0 ];then
 					PID=0
 					LOG_MSG "[INFO]:-No socket connection or lock file $PG_LOCK_FILE found for port=${PORT}"
 				else
 				#Now check the failure combinations
-					if [ $PG_LOCK_TMP -eq 0 ] && [ x"" != x"$PG_LOCK_NETSTAT" ];then
+					if [ $PG_LOCK_TMP -eq 0 ] && [ x"" != x"$PG_LOCK_SS" ];then
 					#Have a process but no lock file
 						LOG_MSG "[WARN]:-No lock file $PG_LOCK_FILE but process running on port $PORT on $HOST" 1
 						PID=1
 					fi
-					if [ $PG_LOCK_TMP -eq 1 ] && [ x"" == x"$PG_LOCK_NETSTAT" ];then
+					if [ $PG_LOCK_TMP -eq 1 ] && [ x"" == x"$PG_LOCK_SS" ];then
 					#Have a lock file but no process
 						CAN_READ=$( REMOTE_EXECUTE_AND_GET_OUTPUT $HOST "if [ -r ${PG_LOCK_FILE} ];then echo 1;else echo 0;fi" )
 
@@ -932,8 +934,8 @@ GET_PG_PID_ACTIVE () {
 						LOG_MSG "[WARN]:-Have lock file $PG_LOCK_FILE but no process running on port $PORT on $HOST" 1
 						PID=1
 					fi
-					if [ $PG_LOCK_TMP -eq 1 ] && [ x"" != x"$PG_LOCK_NETSTAT" ];then
-					#Have both a lock file and a netstat process
+					if [ $PG_LOCK_TMP -eq 1 ] && [ x"" != x"$PG_LOCK_SS" ];then
+					#Have both a lock file and a ss process
 						CAN_READ=$( REMOTE_EXECUTE_AND_GET_OUTPUT $HOST "if [ -r ${PG_LOCK_FILE} ];then echo 1;else echo 0;fi" )
 						if [ $CAN_READ -eq 1 ];then
 							PID=$( REMOTE_EXECUTE_AND_GET_OUTPUT $HOST "$CAT ${PG_LOCK_FILE}|$HEAD -1 2>/dev/null"|$AWK '{print $1}' )
@@ -1140,7 +1142,7 @@ CHK_GPDB_ID () {
 		elif [ x$GPDB_GROUPID_CHK == x$COORDINATOR_INITDB_GROUPID ] && [ x"x" == x"$GROUP_EXECUTE" ] ; then
 		    LOG_MSG "[INFO]:-Current group id of $GPDB_GROUPID, matches initdb group id of $COORDINATOR_INITDB_GROUPID"
 		else
-			LOG_MSG "[WARN]:-File permission mismatch.  The $GPDB_ID_CHK owns the Cloudberry Database installation directory."
+			LOG_MSG "[WARN]:-File permission mismatch.  The $GPDB_ID_CHK owns the Apache Cloudberry installation directory."
 			LOG_MSG "[WARN]:-You are currently logged in as $COORDINATOR_INITDB_ID and may not have sufficient"
 			LOG_MSG "[WARN]:-permissions to run the Cloudberry binaries and management utilities."
 		fi
@@ -1323,6 +1325,29 @@ CHECK_FTS () {
         ret=0
     fi
     return $ret
+}
+
+SET_VAR () {
+	#
+	# MPP-13617: If segment contains a ~, we assume ~ is the field delimiter.
+	# Otherwise we assume : is the delimiter.  This allows us to easily 
+	# handle IPv6 addresses which may contain a : by using a ~ as a delimiter. 
+	#
+	I=$1
+	case $I in
+		*~*)
+		S="~"
+			;;
+		*)
+		S=":"
+			;;
+	esac
+	GP_HOSTNAME=`$ECHO $I|$CUT -d$S -f1`
+	GP_HOSTADDRESS=`$ECHO $I|$CUT -d$S -f2`
+	GP_PORT=`$ECHO $I|$CUT -d$S -f3`
+	GP_DIR=`$ECHO $I|$CUT -d$S -f4`
+	GP_DBID=`$ECHO $I|$CUT -d$S -f5`
+	GP_CONTENT=`$ECHO $I|$CUT -d$S -f6`
 }
 
 #******************************************************************************

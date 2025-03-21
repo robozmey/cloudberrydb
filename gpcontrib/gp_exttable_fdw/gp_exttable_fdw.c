@@ -66,7 +66,6 @@ extern Datum gp_exttable_permission_check(PG_FUNCTION_ARGS);
 extern Datum pg_exttable(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(gp_exttable_fdw_handler);
-PG_FUNCTION_INFO_V1(gp_exttable_permission_check);
 PG_FUNCTION_INFO_V1(pg_exttable);
 
 /*
@@ -136,10 +135,9 @@ formatOptionsToTextDatum(List *options, char formattype)
 	StringInfoData cfbuf;
 
 	initStringInfo(&cfbuf);
+	bool isfirst = true;
 	if (fmttype_is_text(formattype) || fmttype_is_csv(formattype))
 	{
-		bool isfirst = true;
-
 		/*
 		 * Note: the order of the options should be same with the original
 		 * pg_exttable catalog's fmtopt field.
@@ -177,6 +175,11 @@ formatOptionsToTextDatum(List *options, char formattype)
 			DefElem    *defel = (DefElem *) lfirst(option);
 			char	   *key = defel->defname;
 			char	   *val = (char *) defGetString(defel);
+
+			if (isfirst)
+				isfirst = false;
+			else
+				appendStringInfo(&cfbuf, " ");
 
 			appendStringInfo(&cfbuf, "%s '%s'", key, val);
 		}
@@ -322,11 +325,16 @@ Datum pg_exttable(PG_FUNCTION_ARGS)
 			nulls[4] = true;
 
 		/*
-		 * options. Since our document not contains the OPTION caluse, so we
+		 * options. Since our document not contains the OPTION clause, so we
 		 * assume no external table options in used for now.  Except
 		 * gpextprotocol.c.
+		 * 
+		 * Besides, we need to provide extra information about error_log_persisitent here.
 		 */
-		nulls[5] = true;
+		if IS_LOG_ERRORS_PERSISTENTLY(extentry->logerrors)
+			values[5] = strListToArray(list_make1(makeString("error_log_persistent=true")));
+		else
+			nulls[5] = true;
 
 		/* command */
 		if (extentry->command)
@@ -366,160 +374,6 @@ Datum pg_exttable(PG_FUNCTION_ARGS)
 	}
 
 	SRF_RETURN_DONE(funcctx);
-}
-
-/* FDW validator for external tables */
-Datum
-gp_exttable_permission_check(PG_FUNCTION_ARGS)
-{
-	List	   *options_list = untransformRelOptions(PG_GETARG_DATUM(0));
-
-	if (!superuser() && Gp_role == GP_ROLE_DISPATCH)
-	{
-		/*----------
-		 * check permissions to create this external table.
-		 *
-		 * - Always allow if superuser.
-		 * - Never allow EXECUTE or 'file' exttables if not superuser.
-		 * - Allow http, gpfdist or gpfdists tables if pg_auth has the right
-		 *	 permissions for this role and for this type of table
-		 *----------
-		 */
-		ListCell *lc;
-		bool iswritable = false;
-		foreach(lc, options_list)
-		{
-			DefElem    *def = (DefElem *) lfirst(lc);
-
-			if (pg_strcasecmp(def->defname, "command") == 0)
-			{
-				ereport(ERROR,
-						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-						 errmsg("must be superuser to create an EXECUTE external web table")));
-			}
-			else if (pg_strcasecmp(def->defname, "is_writable") == 0)
-			{
-				iswritable = defGetBoolean(def);
-			}
-		}
-
-		foreach(lc, options_list)
-		{
-			DefElem    *def = (DefElem *) lfirst(lc);
-
-			if (pg_strcasecmp(def->defname, "location_uris") == 0)
-			{
-				List *location_list = TokenizeLocationUris(defGetString(def));
-				ListCell   *first_uri = list_head(location_list);
-				Value	   *v = lfirst(first_uri);
-				char	   *uri_str = pstrdup(v->val.str);
-				Uri		   *uri = ParseExternalTableUri(uri_str);
-
-				/* Assert(exttypeDesc->exttabletype == EXTTBL_TYPE_LOCATION); */
-
-				if (uri->protocol == URI_FILE)
-				{
-					ereport(ERROR,
-							(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-							 errmsg("must be superuser to create an external table with a file protocol")));
-				}
-				else
-				{
-					/*
-					 * Check if this role has the proper 'gpfdist', 'gpfdists' or
-					 * 'http' permissions in pg_auth for creating this table.
-					 */
-
-					bool		isnull;
-					HeapTuple	tuple;
-
-					tuple = SearchSysCache1(AUTHOID, ObjectIdGetDatum(GetUserId()));
-					if (!HeapTupleIsValid(tuple))
-						ereport(ERROR,
-								(errcode(ERRCODE_UNDEFINED_OBJECT),
-								 errmsg("role \"%s\" does not exist (in DefineExternalRelation)",
-										GetUserNameFromId(GetUserId(), false))));
-
-					if ((uri->protocol == URI_GPFDIST || uri->protocol == URI_GPFDISTS) && iswritable)
-					{
-						Datum	 	d_wextgpfd;
-						bool		createwextgpfd;
-
-						d_wextgpfd = SysCacheGetAttr(AUTHOID, tuple,
-													 Anum_pg_authid_rolcreatewextgpfd,
-													 &isnull);
-						createwextgpfd = (isnull ? false : DatumGetBool(d_wextgpfd));
-
-						if (!createwextgpfd)
-							ereport(ERROR,
-									(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-									 errmsg("permission denied: no privilege to create a writable gpfdist(s) external table")));
-					}
-					else if ((uri->protocol == URI_GPFDIST || uri->protocol == URI_GPFDISTS) && !iswritable)
-					{
-						Datum		d_rextgpfd;
-						bool		createrextgpfd;
-
-						d_rextgpfd = SysCacheGetAttr(AUTHOID, tuple,
-													 Anum_pg_authid_rolcreaterextgpfd,
-													 &isnull);
-						createrextgpfd = (isnull ? false : DatumGetBool(d_rextgpfd));
-
-						if (!createrextgpfd)
-							ereport(ERROR,
-									(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-									 errmsg("permission denied: no privilege to create a readable gpfdist(s) external table")));
-					}
-					else if (uri->protocol == URI_HTTP && !iswritable)
-					{
-						Datum		d_exthttp;
-						bool		createrexthttp;
-
-						d_exthttp = SysCacheGetAttr(AUTHOID, tuple,
-													Anum_pg_authid_rolcreaterexthttp,
-													&isnull);
-						createrexthttp = (isnull ? false : DatumGetBool(d_exthttp));
-
-						if (!createrexthttp)
-							ereport(ERROR,
-									(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-									 errmsg("permission denied: no privilege to create an http external table")));
-					}
-					else if (uri->protocol == URI_CUSTOM)
-					{
-						Oid			ownerId = GetUserId();
-						char	   *protname = uri->customprotocol;
-						Oid			ptcId = get_extprotocol_oid(protname, false);
-						AclResult	aclresult;
-
-						/* Check we have the right permissions on this protocol */
-						if (!pg_extprotocol_ownercheck(ptcId, ownerId))
-						{
-							AclMode		mode = (iswritable ? ACL_INSERT : ACL_SELECT);
-
-							aclresult = pg_extprotocol_aclcheck(ptcId, ownerId, mode);
-
-							if (aclresult != ACLCHECK_OK)
-								aclcheck_error(aclresult, OBJECT_EXTPROTOCOL, protname);
-						}
-					}
-					else
-						ereport(ERROR,
-								(errcode(ERRCODE_INTERNAL_ERROR),
-								 errmsg("internal error in DefineExternalRelation"),
-								 errdetail("Protocol is %d, writable is %d.",
-										   uri->protocol, iswritable)));
-
-					ReleaseSysCache(tuple);
-				}
-				FreeExternalTableUri(uri);
-				pfree(uri_str);
-				break;
-			}
-		}
-	}
-
-	PG_RETURN_VOID();
 }
 
 static void

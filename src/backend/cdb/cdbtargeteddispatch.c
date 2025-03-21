@@ -39,10 +39,10 @@
 #include "cdb/cdbutil.h"
 
 #include "executor/executor.h"
+#include "commands/defrem.h"
 
 #define PRINT_DISPATCH_DECISIONS_STRING ("print_dispatch_decisions")
 
-static char *gp_test_options = "";
 
 /* PRINT_DISPATCH_DECISIONS_STRING; */
 
@@ -171,8 +171,10 @@ GetContentIdsFromPlanForSingleRelation(PlannerInfo *root, Plan *plan, int rangeT
 		seg_id_var = makeVar(rangeTableIndex,
 							 GpSegmentIdAttributeNumber,
 							 vartypeid, type_mod, type_coll, 0);
+		Oid opclass = GetDefaultOpClass(vartypeid, HASH_AM_OID);
+		Oid opfamily = get_opclass_family(opclass);
 		pvs_segids = DeterminePossibleValueSet((Node *) qualification,
-											   (Node *) seg_id_var);
+											   (Node *) seg_id_var, opfamily);
 		if (!pvs_segids.isAnyValuePossible)
 		{
 			seg_ids = GetPossibleValuesAsArray(&pvs_segids, &len);
@@ -218,6 +220,8 @@ GetContentIdsFromPlanForSingleRelation(PlannerInfo *root, Plan *plan, int rangeT
 		{
 			Var		   *var;
 			PossibleValueSet pvs;
+			Oid policy_opclass = policy->opclasses[i];
+			Oid policy_opfamily = get_opclass_family(policy_opclass);
 
 			var = makeVar(rangeTableIndex,
 						  policy->attrs[i],
@@ -225,13 +229,12 @@ GetContentIdsFromPlanForSingleRelation(PlannerInfo *root, Plan *plan, int rangeT
 						  parts[i].attr->atttypmod,
 						  parts[i].attr->attcollation,
 						  0);
-
 			/**
 			 * Note that right now we only examine the given qual.  This is okay because if there are other
 			 *   quals on the plan then those would be ANDed with the qual, which can only narrow our choice
 			 *   of segment and not expand it.
 			 */
-			pvs = DeterminePossibleValueSet((Node *) qualification, (Node *) var);
+			pvs = DeterminePossibleValueSet((Node *) qualification, (Node *) var, policy_opfamily);
 
 			if (pvs.isAnyValuePossible)
 			{
@@ -364,55 +367,6 @@ MergeDirectDispatchCalculationInfo(DirectDispatchInfo *to, DirectDispatchInfo *f
 	}
 
 	to->haveProcessedAnyCalculations = true;
-}
-
-/**
- * returns true if we should print test messages.  Note for clients: for multi-slice queries then messages will print in
- *   the order of processing which may not always be deterministic (single joins can be rearranged by the planner,
- *   for example).
- */
-static bool
-ShouldPrintTestMessages()
-{
-	return gp_test_options && strstr(gp_test_options, PRINT_DISPATCH_DECISIONS_STRING) != NULL;
-}
-
-void
-FinalizeDirectDispatchDataForSlice(PlanSlice *slice)
-{
-	DirectDispatchInfo *dd = &slice->directDispatch;
-
-	if (dd->haveProcessedAnyCalculations)
-	{
-		if (dd->isDirectDispatch)
-		{
-			if (dd->contentIds == NULL)
-			{
-				int			random_segno;
-
-				random_segno = cdbhashrandomseg(getgpsegmentCount());
-				dd->contentIds = list_make1_int(random_segno);
-				if (ShouldPrintTestMessages())
-					elog(INFO, "DDCR learned no content dispatch is required");
-			}
-			else
-			{
-				if (ShouldPrintTestMessages())
-					elog(INFO, "DDCR learned dispatch to content %d", linitial_int(dd->contentIds));
-			}
-		}
-		else
-		{
-			if (ShouldPrintTestMessages())
-				elog(INFO, "DDCR learned full dispatch is required");
-		}
-	}
-	else
-	{
-		if (ShouldPrintTestMessages())
-			elog(INFO, "DDCR learned no information: default to full dispatch");
-		dd->isDirectDispatch = false;
-	}
 }
 
 void
@@ -561,6 +515,8 @@ DirectDispatchUpdateContentIdsFromPlan(PlannerInfo *root, Plan *plan)
 													 * so disable */
 			break;
 		case T_SplitUpdate:
+			break;
+		case T_CustomScan:
 			break;
 		default:
 			elog(ERROR, "unknown plan node %d", nodeTag(plan));

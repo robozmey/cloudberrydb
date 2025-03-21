@@ -3,7 +3,6 @@
  * nodeAssertOp.c
  *	  Implementation of nodeAssertOp.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2012, EMC Corp.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -122,7 +121,7 @@ ExecInitAssertOp(AssertOp *node, EState *estate, int eflags)
 	assertOpState->ps.qual =
 		ExecInitQual(node->plan.qual, (PlanState *) assertOpState);
 
-	if (estate->es_instrument && (estate->es_instrument & INSTRUMENT_CDB))
+	if (estate->es_instrument & INSTRUMENT_CDB)
 	{
 		assertOpState->ps.cdbexplainbuf = makeStringInfo();
 	}

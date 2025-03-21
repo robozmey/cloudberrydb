@@ -21,7 +21,8 @@ SHLIB_LINK_INTERNAL = -Wl,-Bsymbolic -Wl,-Bstatic -Wl,-Bstatic $(libpq) -Wl,-Bdy
 EXTENSION = postgres_fdw
 DATA = postgres_fdw--1.0.sql postgres_fdw--1.0--1.1.sql
 
-REGRESS = gp_postgres_fdw mpp_postgres_fdw #postgres_fdw
+REGRESS = gp2pg_postgres_fdw gp_postgres_fdw mpp_postgres_fdw #postgres_fdw
+REGRESS_OPTS += --init-file=$(top_srcdir)/src/test/regress/init_file
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
@@ -45,3 +46,13 @@ clean: clean-symlinks
 
 clean-symlinks:
 	rm -f link-canary.c
+
+# For postgres_fdw test
+export PG_PORT=5432
+installcheck: install prep_postgres
+clean: clean_postgres
+prep_postgres:
+	./postgres_setup.bash
+clean_postgres:
+	./postgres_clean.bash
+.PHONY: prep_postgres clean_postgres

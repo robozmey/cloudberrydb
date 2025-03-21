@@ -161,7 +161,11 @@ typedef struct PortalData
 	bool		portalPinned;	/* a pinned portal can't be dropped */
 	bool		autoHeld;		/* was automatically converted from pinned to
 								 * held (see HoldPinnedPortals()) */
-	bool		hasResQueueLock;	/* true => resscheduler lock must be released */
+	/*
+	 * true => resscheduler lock must be released. Set to true at the end of
+	 * successful reslock acquisition in ResLockPortal() and ResLockUtilityPortal().
+	 */
+	bool		hasResQueueLock;
 
 	/* If not NULL, Executor is active; call ExecutorEnd eventually: */
 	QueryDesc  *queryDesc;		/* info needed for executor invocation */
@@ -275,5 +279,7 @@ extern void ForgetPortalSnapshots(void);
 extern void AtExitCleanup_ResPortals(void);
 extern void TotalResPortalIncrements(int pid, Oid queueid,
 									 Cost *totalIncrements, int *num);
+extern List *GetAllParallelRetrieveCursorPortals(void);
+extern int GetNumOfParallelRetrieveCursors(void);
 
 #endif							/* PORTAL_H */

@@ -11,7 +11,6 @@
  * subplans, which are re-evaluated every time their result is required.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -1090,7 +1089,7 @@ ExecInitSubPlan(SubPlan *subplan, PlanState *parent)
  */
 
 /*
- * Cloudberry Database Changes:
+ * Apache Cloudberry Changes:
  * In the case where this is running on the dispatcher, and it's a parallel
  * dispatch subplan, we need to dispatch the query to the qExecs as well, like
  * in ExecutorRun. Except in this case we don't have to worry about insert
@@ -1104,7 +1103,7 @@ ExecSetParamPlan(SubPlanState *node, ExprContext *econtext, QueryDesc *queryDesc
 	SubLinkType subLinkType = subplan->subLinkType;
 	EState	   *estate = planstate->state;
 	ScanDirection dir = estate->es_direction;
-	MemoryContext oldcontext = NULL;
+	volatile MemoryContext oldcontext = NULL;
 	TupleTableSlot *slot;
 	ListCell   *pvar;
 	ListCell   *l;
@@ -1184,12 +1183,6 @@ PG_TRY();
 	if (subLinkType == ARRAY_SUBLINK)
 		astate = initArrayResultAny(subplan->firstColType,
 									CurrentMemoryContext, true);
-
-	/*
-	 * Enforce forward scan direction regardless of caller. It's hard but not
-	 * impossible to get here in backward scan, so make it work anyway.
-	 */
-	estate->es_direction = ForwardScanDirection;
 
 	/*
 	 * Must switch to per-query memory context.
@@ -1408,7 +1401,7 @@ PG_TRY();
 		{
 			queryDesc->estate->dispatcherState = NULL;
 			FlushErrorState();
-			ReThrowError(qeError);
+			ThrowErrorData(qeError);
 		}
 
 		/* collect pgstat from QEs for current transaction level */

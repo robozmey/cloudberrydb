@@ -9,7 +9,6 @@
  * into a lot of low-level code.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -281,7 +280,9 @@ extern bytea *ao_amoptions(Datum reloptions, char relkind,
 									bool validate);
 extern Datum transformAOStdRdOptions(StdRdOptions *opts, Datum withOpts);
 
-extern void validateAppendOnlyRelOptions(int blocksize, int writesize,
+extern bool relOptionsEquals(Datum oldOptions, Datum newOptions);
+
+extern void validateAppendOnlyRelOptions(int blocksize,
 										 int complevel, char* comptype,
 										 bool checksum, bool co);
 extern void parse_validate_reloptions(StdRdOptions *result, Datum reloptions,
@@ -302,13 +303,16 @@ extern void validate_and_adjust_options(StdRdOptions *result, relopt_value *opti
 /* attribute enconding specific functions */
 extern void validateAOCOColumnEncodingClauses(List *aocoColumnEncoding);
 extern List *transformColumnEncoding(const TableAmRoutine *tam, Relation rel, List *colDefs,
-										List *stenc, List *withOptions, bool createDefaultOne);
+										List *stenc, List *withOptions, List *parentenc,
+										bool explicitOnly, bool createDefaultOne, bool appendonly);
 
 List* transfromColumnEncodingAocoRootPartition(List *colDefs, List *stenc, List *withOptions, bool errorOnEncodingClause);
 
 extern List *transformStorageEncodingClause(List *options, bool validate);
 extern List *form_default_storage_directive(List *enc);
 extern bool is_storage_encoding_directive(const char *name);
+extern bool reloptions_has_opt(List *opts, const char *name);
+extern List *build_ao_rel_storage_opts(List *opts, Relation rel);
 
 extern relopt_value *
 parseRelOptions(Datum options, bool validate, relopt_kind kind, int *numrelopts);

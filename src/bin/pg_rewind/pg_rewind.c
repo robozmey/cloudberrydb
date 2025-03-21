@@ -3,7 +3,6 @@
  * pg_rewind.c
  *	  Synchronizes a PostgreSQL data directory to a new timeline
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
@@ -158,7 +157,7 @@ main(int argc, char **argv)
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			puts("pg_rewind (Cloudberry Database) " PG_VERSION);
+			puts("pg_rewind (Apache Cloudberry) " PG_VERSION);
 			exit(0);
 		}
 	}
@@ -351,6 +350,21 @@ main(int argc, char **argv)
 	dbid_target = get_target_dbid(argv[0]);
 
 	sanityChecks();
+
+#ifdef FAULT_INJECTOR
+	/*
+	 * SUSPEND_PG_REWIND is used for testing purposes. If set to true, the pg_rewind process will be
+	 * suspended for 120 seconds, so that it's entry can be checked in the pg_stat_activity table.
+	 * The goal being that we can run another instance of gprecoverseg and assert that it ignores
+	 * recovery for segments that already have an active pg_rewind process.
+	 */
+	char* suspend_pg_rewind = getenv("SUSPEND_PG_REWIND");
+	if(suspend_pg_rewind != NULL && strcmp(suspend_pg_rewind, "true") == 0)
+	{
+		pg_log_info("pg_rewind suspended");
+		sleep(120);
+	}
+#endif
 
 	/*
 	 * Find the common ancestor timeline between the clusters.
@@ -1058,7 +1072,7 @@ get_target_dbid(const char *argv0)
 
 	/* locate postgres binary */
 	if ((ret = find_other_exec(argv0, "postgres",
-							   "postgres (Cloudberry Database) " PG_VERSION "\n",
+							   "postgres (Apache Cloudberry) " PG_VERSION "\n",
 							   exec_path)) < 0)
 	{
 		char        full_path[MAXPGPATH];

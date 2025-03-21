@@ -4,7 +4,6 @@
  *	  POSTGRES buffer manager definitions.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -217,7 +216,18 @@ extern void DropRelFileNodeBuffers(struct SMgrRelationData *smgr_reln, ForkNumbe
 extern void DropRelFileNodesAllBuffers(struct SMgrRelationData **smgr_reln, int nnodes);
 extern void DropDatabaseBuffers(Oid dbid);
 
-extern BlockNumber RelationGuessNumberOfBlocksFromSize(uint64 szbytes);
+/*
+ * GPDB: it is possible to need to calculate the number of blocks from the table
+ * size. An example use case is when we are the dispatcher and we need to
+ * acquire the number of blocks from all segments.
+ *
+ * Use the same calculation that RelationGetNumberOfBlocksInFork is using.
+ */
+static inline BlockNumber
+RelationGuessNumberOfBlocksFromSize(uint64 szbytes)
+{
+	return (szbytes + (BLCKSZ - 1)) / BLCKSZ;
+}
 
 #define RelationGetNumberOfBlocks(reln) \
 	RelationGetNumberOfBlocksInFork(reln, MAIN_FORKNUM)

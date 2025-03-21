@@ -48,9 +48,6 @@ COORDINATOR_ONLY_TABLES_NON_MAPPED = [
 
 COORDINATOR_ONLY_TABLES = [ # TODO: Why 'gp_segment_configuration' is missing here?
     'gp_configuration_history',
-    'pg_auth_time_constraint',
-    'pg_description',
-    'pg_shdescription',
     'pg_stat_last_operation',
     'pg_stat_last_shoperation',
     'pg_statistic',
@@ -78,6 +75,7 @@ DEPENDENCY_EXCLUSION = [
     'pg_compression',
     'pg_conversion',
     'pg_database',
+    'pg_default_acl',
     'pg_enum',
     'pg_namespace',
     'pg_resgroup',
@@ -85,7 +83,9 @@ DEPENDENCY_EXCLUSION = [
     'pg_resourcetype',
     'pg_resqueue',
     'pg_resqueuecapability',
-    'pg_tablespace'
+    'pg_subscription',
+    'pg_tablespace',
+    'pg_transform'
     ]
 
 # ============================================================================

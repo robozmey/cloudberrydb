@@ -6,7 +6,6 @@
  * See also lsyscache.h, which provides convenience routines for
  * common cache-lookup operations.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -128,9 +127,10 @@ enum SysCacheIdentifier
 	MVAUXOID,
 	MVTABLESMVRELOID,
 	USERMAPPINGOID,
-	USERMAPPINGUSERSERVER
+	USERMAPPINGUSERSERVER,
+	ATTENCODINGNUM
 
-#define SysCacheSize (USERMAPPINGUSERSERVER + 1)
+#define SysCacheSize (ATTENCODINGNUM + 1)
 };
 
 extern void InitCatalogCache(void);

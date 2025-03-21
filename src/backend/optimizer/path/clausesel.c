@@ -3,7 +3,6 @@
  * clausesel.c
  *	  Routines to compute clause selectivities
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -164,6 +163,14 @@ clauselist_selectivity_ext(PlannerInfo *root,
 
 	int pos = 0;
 	int i = 0;
+
+	// if the PlannerInfo was created from Orca, we don't care about the selectivity/costing
+	// here and some of the necessary fields may not be populated (eg: glob). Instead return
+	// the default selectivity
+	if (root->is_from_orca)
+	{
+		return s1;
+	}
 
 	/* allocate array to hold all selectivity factors */
 	rgsel = (Selectivity *) palloc(sizeof(Selectivity) * list_length(clauses));
@@ -399,14 +406,7 @@ clauselist_selectivity_ext(PlannerInfo *root,
 	}
 
 	pfree(rgsel);
-	/* 
-	 * For Anti Semi Join, selectivity is determined by the fraction of 
-	 * tuples that do no match 
-	 */
-	if (JOIN_ANTI == jointype || JOIN_LASJ_NOTIN == jointype)
-	{
-		s1 = (1 - s1);
-	}
+
 	return s1;
 }
 

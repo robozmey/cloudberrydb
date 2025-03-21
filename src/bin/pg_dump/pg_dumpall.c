@@ -2,7 +2,6 @@
  *
  * pg_dumpall.c
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2010, Greenplum inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -31,7 +30,7 @@
 #include "pg_backup.h"
 
 /* version string we expect back from pg_dump */
-#define PGDUMP_VERSIONSTR "pg_dump (Cloudberry Database) " PG_VERSION "\n"
+#define PGDUMP_VERSIONSTR "pg_dump (Apache Cloudberry) " PG_VERSION "\n"
 
 
 static void help(void);
@@ -212,7 +211,7 @@ main(int argc, char *argv[])
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			puts("pg_dumpall (Cloudberry Database) " PG_VERSION);
+			puts("pg_dumpall (Apache Cloudberry) " PG_VERSION);
 			exit_nicely(0);
 		}
 	}
@@ -578,6 +577,7 @@ main(int argc, char *argv[])
 	 * we know how to escape strings.
 	 */
 	encoding = PQclientEncoding(conn);
+	setFmtEncoding(encoding);
 	std_strings = PQparameterStatus(conn, "standard_conforming_strings");
 	if (!std_strings)
 		std_strings = "off";
@@ -596,7 +596,7 @@ main(int argc, char *argv[])
 	if (quote_all_identifiers && server_version >= 80300)
 		executeCommand(conn, "SET quote_all_identifiers = true");
 
-	fprintf(OPF,"--\n-- Cloudberry Database cluster dump\n--\n\n");
+	fprintf(OPF,"--\n-- Apache Cloudberry cluster dump\n--\n\n");
 	if (verbose)
 		dumpTimestamp("Started on");
 
@@ -759,8 +759,8 @@ help(void)
 	printf(_("  --use-set-session-authorization\n"
 			 "                               use SET SESSION AUTHORIZATION commands instead of\n"
 			 "                               ALTER OWNER commands to set ownership\n"));
-	printf(_("  --gp-syntax                  dump with Cloudberry Database syntax (default if gpdb)\n"));
-	printf(_("  --no-gp-syntax               dump without Cloudberry Database syntax (default if postgresql)\n"));
+	printf(_("  --gp-syntax                  dump with Apache Cloudberry syntax (default if gpdb)\n"));
+	printf(_("  --no-gp-syntax               dump without Apache Cloudberry syntax (default if postgresql)\n"));
 
 	printf(_("\nConnection options:\n"));
 	printf(_("  -d, --dbname=CONNSTR     connect using connection string\n"));
@@ -801,9 +801,9 @@ dumpResGroups(PGconn *conn)
 	PGresult   *res;
 	int		i;
 	int		i_groupname,
-			i_cpu_hard_quota_limit,
+			i_cpu_max_percent,
 			i_concurrency,
-			i_cpu_soft_priority,
+			i_cpu_weight,
 			i_cpuset;
 
 	printfPQExpBuffer(buf, "SELECT g.rsgname AS groupname, "
@@ -821,8 +821,8 @@ dumpResGroups(PGconn *conn)
 
 	i_groupname = PQfnumber(res, "groupname");
 	i_concurrency = PQfnumber(res, "concurrency");
-	i_cpu_hard_quota_limit = PQfnumber(res, "cpu_max_percent");
-	i_cpu_soft_priority = PQfnumber(res, "cpu_weight");
+	i_cpu_max_percent = PQfnumber(res, "cpu_max_percent");
+	i_cpu_weight = PQfnumber(res, "cpu_weight");
 	i_cpuset = PQfnumber(res, "cpuset");
 
 	if (PQntuples(res) > 0)
@@ -838,8 +838,8 @@ dumpResGroups(PGconn *conn)
 
 		groupname = PQgetvalue(res, i, i_groupname);
 		concurrency = PQgetvalue(res, i, i_concurrency);
-		cpu_max_percent = PQgetvalue(res, i, i_cpu_hard_quota_limit);
-		cpu_weight = PQgetvalue(res, i, i_cpu_soft_priority);
+		cpu_max_percent = PQgetvalue(res, i, i_cpu_max_percent);
+		cpu_weight = PQgetvalue(res, i, i_cpu_weight);
 		cpuset = PQgetvalue(res, i, i_cpuset);
 
 		resetPQExpBuffer(buf);

@@ -53,7 +53,6 @@
  *
  * TODO: explain how this works.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -504,6 +503,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	int64		AnalyzePageDirty = VacuumPageDirty;
 	PgStat_Counter startreadtime = 0;
 	PgStat_Counter startwritetime = 0;
+	int max_natts = onerel->rd_att->natts;
 
 
 	if (inh)
@@ -722,8 +722,21 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	/*
 	 * Maintain information if the row of a column exceeds WIDTH_THRESHOLD
 	 */
-	colLargeRowIndexes = (Bitmapset **) palloc0(sizeof(Bitmapset *) * onerel->rd_att->natts);
-	colLargeRowLength = (double *)palloc0(sizeof(double) * onerel->rd_att->natts);
+	if (inh)
+	{
+		ListCell *le;
+		List* tableOIDs = find_all_inheritors(RelationGetRelid(onerel), NoLock, NULL);
+		foreach (le, tableOIDs)
+		{
+			Oid child_relid = lfirst_oid(le);
+			int natts = get_relnatts(child_relid);
+			if (natts > max_natts)
+				max_natts = natts;
+		}
+	}
+	colLargeRowIndexes = (Bitmapset **) palloc0(sizeof(Bitmapset *) * max_natts);
+	colLargeRowLength = (double *)palloc0(sizeof(double) * max_natts);
+
 
 	if ((params->options & VACOPT_FULLSCAN) != 0)
 	{
@@ -735,8 +748,8 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 		}
 	}
 
-	sample_needed = needs_sample(vacattrstats, attr_cnt);
-	if (sample_needed)
+	sample_needed = needs_sample(onerel, vacattrstats, attr_cnt);
+	if (ctx || sample_needed)
 	{
 		if (ctx)
 			MemoryContextSwitchTo(caller_context);
@@ -862,6 +875,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 		for (i = 0; i < attr_cnt; i++)
 		{
 			VacAttrStats *stats = vacattrstats[i];
+			stats->tupDesc = onerel->rd_att;
 			/*
 			 * utilize hyperloglog and merge utilities to derive
 			 * root table statistics by directly calling merge_leaf_stats()
@@ -903,7 +917,6 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 			AttributeOpts *aopt =
 			get_attribute_options(onerel->rd_id, stats->attr->attnum);
 
-			stats->tupDesc = onerel->rd_att;
 			/*
 			 * get total length and number of too wide rows in the sample,
 			 * in case get wrong stawidth.
@@ -1063,7 +1076,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	{
 		BlockNumber relallvisible;
 
-		if (RelationIsAppendOptimized(onerel))
+		if (RelationStorageIsAO(onerel))
 			relallvisible = 0;
 		else
             		relallvisible = AcquireNumberOfAllVisibleBlocks(onerel);
@@ -1962,18 +1975,6 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 	bool		has_child;
 
 	/*
-	 * Like in acquire_sample_rows(), if we're in the QD, fetch the sample
-	 * from segments.
-	 */
-	if (Gp_role == GP_ROLE_DISPATCH && ENABLE_DISPATCH())
-	{
-		return acquire_sample_rows_dispatcher(onerel,
-											  true, /* inherited stats */
-											  elevel, rows, targrows,
-											  totalrows, totaldeadrows);
-	}
-
-	/*
 	 * Find all members of inheritance set.  We only need AccessShareLock on
 	 * the children.
 	 */
@@ -1986,6 +1987,7 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 	 * child but no longer does.  In that case, we can clear the
 	 * relhassubclass field so as not to make the same mistake again later.
 	 * (This is safe because we hold ShareUpdateExclusiveLock.)
+	 * Please refer to https://github.com/greenplum-db/gpdb/issues/14644
 	 */
 	if (list_length(tableOIDs) < 2)
 	{
@@ -1998,7 +2000,20 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 				(errmsg("skipping analyze of \"%s.%s\" inheritance tree --- this inheritance tree contains no child tables",
 						get_namespace_name(RelationGetNamespace(onerel)),
 						RelationGetRelationName(onerel))));
-		return 0;
+		if (Gp_role == GP_ROLE_EXECUTE)
+			return 0;
+	}
+
+	/*
+	 * Like in acquire_sample_rows(), if we're in the QD, fetch the sample
+	 * from segments.
+	 */
+	if (Gp_role == GP_ROLE_DISPATCH)
+	{
+		return acquire_sample_rows_dispatcher(onerel,
+											  true, /* inherited stats */
+											  elevel, rows, targrows,
+											  totalrows, totaldeadrows);
 	}
 
 	/*
@@ -4414,11 +4429,17 @@ merge_leaf_stats(VacAttrStatsP stats,
 			(errmsg("Merging leaf partition stats to calculate root partition stats : column %s",
 					get_attname(stats->attr->attrelid, stats->attr->attnum, false))));
 
-	/* GPDB_12_MERGE_FIXME: what's the appropriate lock level? AccessShareLock
-	 * is enough to scan the table, but are we updating them, too? If not,
-	 * NoLock might be enough?
+	/* 
+	 * Since we have acquired ShareUpdateExclusiveLock on the parent table when
+	 * ANALYZE'ing it, we don't need extra lock to guard against concurrent DROP
+	 * of either the parent or the child (which requries AccessExclusiveLock on
+	 * the parent).
+	 * Concurrent UPDATE is possible but because we are not updating the table
+	 * ourselves, NoLock is sufficient here.
 	 */
-	all_children_list = find_all_inheritors(stats->attr->attrelid, AccessShareLock, NULL);
+	all_children_list = find_all_inheritors(stats->attr->attrelid, NoLock, NULL);
+	SIMPLE_FAULT_INJECTOR("merge_leaf_stats_after_find_children");
+
 	oid_list = NIL;
 	foreach (lc, all_children_list)
 	{
@@ -5087,29 +5108,30 @@ calculate_correlation_use_weighted_mean(CdbPgResults *cdb_pgresults,
 
 	for (int segno = 0; segno < segmentNum; segno++)
 	{
-		int			rows;
+		int			rows, nfields;
 		float4		correlationValue;
 		int			attno;
 		struct pg_result *pgresult = cdb_pgresults->pg_results[segno];
 		int			index;
-
-		if (PQresultStatus(pgresult) != PGRES_TUPLES_OK)
+		ExecStatusType status = PQresultStatus(pgresult);
+		if (status != PGRES_TUPLES_OK)
 		{
 			cdbdisp_clearCdbPgResults(cdb_pgresults);
 			ereport(ERROR,
 					(errmsg("unexpected result from segment: %d",
-							PQresultStatus(pgresult))));
+							status)));
 		}
 		/*
 		 * gp_acquire_correlations returns a result for each alive columns.
 		 */
 		rows = PQntuples(pgresult);
-		if (rows != live_natts || PQnfields(pgresult) != 1)
+		nfields = PQnfields(pgresult);
+		if (rows != live_natts || nfields != 1)
 		{
 			cdbdisp_clearCdbPgResults(cdb_pgresults);
 			ereport(ERROR,
 					(errmsg("unexpected shape of result from segment (%d rows, %d cols)",
-							rows, PQnfields(pgresult))));
+							rows, nfields)));
 		}
 		for (int j = 0; j < rows; j++)
 		{
@@ -5210,28 +5232,29 @@ calculate_correlation_use_mean(CdbPgResults *cdb_pgresults,
 
 	for (int segno = 0; segno < segmentNum; segno++)
 	{
-		int			ntuples;
+		int			ntuples, nfields;
 		float4		correlationValue;
 		int			attno;
 		struct pg_result *pgresult = cdb_pgresults->pg_results[segno];
-
-		if (PQresultStatus(pgresult) != PGRES_TUPLES_OK)
+		ExecStatusType  status = PQresultStatus(pgresult);
+		if (status != PGRES_TUPLES_OK)
 		{
 			cdbdisp_clearCdbPgResults(cdb_pgresults);
 			ereport(ERROR,
 					(errmsg("unexpected result from segment: %d",
-							PQresultStatus(pgresult))));
+							status)));
 		}
 		/*
 		 * gp_acquire_correlations returns a result for each alive columns.
 		 */
 		ntuples = PQntuples(pgresult);
-		if (ntuples != live_natts || PQnfields(pgresult) != 1)
+		nfields = PQnfields(pgresult);
+		if (ntuples != live_natts || nfields != 1)
 		{
 			cdbdisp_clearCdbPgResults(cdb_pgresults);
 			ereport(ERROR,
 					(errmsg("unexpected shape of result from segment (%d rows, %d cols)",
-							ntuples, PQnfields(pgresult))));
+							ntuples, nfields)));
 		}
 		for (int j = 0; j < ntuples; j++)
 		{

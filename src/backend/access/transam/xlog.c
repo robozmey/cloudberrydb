@@ -4,7 +4,6 @@
  *		PostgreSQL write-ahead log manager
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -122,7 +121,7 @@ char	   *wal_consistency_checking_string = NULL;
 bool	   *wal_consistency_checking = NULL;
 bool		wal_init_zero = true;
 bool		wal_recycle = true;
-bool		log_checkpoints = false;
+bool		log_checkpoints = true;
 int			sync_method = DEFAULT_SYNC_METHOD;
 int			wal_level = WAL_LEVEL_MINIMAL;
 int			CommitDelay = 0;	/* precommit delay in microseconds */
@@ -345,6 +344,10 @@ bool		wal_receiver_create_temp_slot = false;
 bool		StandbyMode = false;
 
 Startup_hook_type Startup_hook = NULL;
+
+ConsistencyCheck_hook_type xlog_check_consistency_hook = NULL;
+
+XLOGDropDatabase_hook_type XLOGDropDatabase_hook = NULL;
 
 /*
  * if recoveryStopsBefore/After returns true, it saves information of the stop
@@ -953,7 +956,7 @@ static void LocalSetXLogInsertAllowed(void);
 static void CreateEndOfRecoveryRecord(void);
 static XLogRecPtr CreateOverwriteContrecordRecord(XLogRecPtr aborted_lsn);
 static void CheckPointGuts(XLogRecPtr checkPointRedo, int flags);
-static void KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo, XLogRecPtr PriorRedoPtr);
+static void KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo);
 static XLogRecPtr XLogGetReplicationSlotMinimumLSN(void);
 
 static void AdvanceXLInsertBuffer(XLogRecPtr upto, bool opportunistic);
@@ -1009,7 +1012,6 @@ static int	get_sync_bit(int method);
 
 /* New functions added for WAL replication */
 static void XLogProcessCheckpointRecord(XLogReaderState *rec);
-
 static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
 								XLogRecData *rdata,
 								XLogRecPtr StartPos, XLogRecPtr EndPos);
@@ -3520,7 +3522,10 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not open file \"%s\": %m", path)));
+				 errmsg("could not open file \"%s\": %m", path),
+				 (AmCheckpointerProcess() ?
+				  errhint("This is known to fail occasionally during archive recovery, where it is harmless.") :
+				  0)));
 
 	elog(DEBUG2, "done creating and filling new WAL file");
 
@@ -7546,17 +7551,8 @@ StartupXLOG(void)
 			 * during recovery and need not be started yet.
 			 */
 			StartupSUBTRANS(oldestActiveXID);
-			/*
-			 * Do not initialize DistributedLog subsystem. Hot standby /
-			 * mirror cannot advance distributed xmin because QD does not
-			 * dispatch queries to mirrors.	 To align with upstream, we still
-			 * want a functional hot standby as far as a single primary/mirror
-			 * pair is concerned.  Initializing distributed log subsystem
-			 * affects oldest xmin computation in hot standby, the oldest xmin
-			 * never advances.	Therefore, avoid initializing distributed log
-			 * in hot standby.	If, in future, queries from QD need to be
-			 * dispatched to mirrors, this will have to change.
-			 */
+			DistributedLog_Startup(oldestActiveXID,
+								   XidFromFullTransactionId(ShmemVariableCache->nextXid));
 
 			/*
 			 * If we're beginning at a shutdown checkpoint, we know that
@@ -8536,6 +8532,37 @@ StartupXLOG(void)
 		ShutdownRecoveryTransactionEnvironment();
 
 	/*
+	 * GPDB: A timeline history file is only marked as ready for archival if
+	 * WAL archiving was already enabled when a new timeline id is created
+	 * during promotion.  Thus it's possible to get into a state where the
+	 * timeline history file is not archived yet due to WAL archiving being
+	 * disabled during the timeline switch.  As such, we need to guarantee
+	 * that the current timeline history file is archived.  This will make
+	 * sure downstream operations that require the timeline history file
+	 * succeed (e.g. creating a standby with recovery_target_timeline
+	 * explicitly set to the control file's timeline id or when creating a
+	 * streaming replication standby).  Skip if the current timeline ID is 1
+	 * since there's no timeline history file for it.
+	 */
+	if (XLogArchivingActive() && ThisTimeLineID > 1)
+	{
+		char		histfname[MAXFNAMELEN];
+
+		TLHistoryFileName(histfname, ThisTimeLineID);
+
+		/*
+		 * Timeline history .done files do not get removed automatically so
+		 * this check should be valid to make sure we don't archive the
+		 * timeline history file again on restart.  However, if the timeline
+		 * history .done file was manually removed for some reason, then we
+		 * make the assumption that the archive_command is set up properly to
+		 * gracefully handle the re-archiving attempt.
+		 */
+		if (!XLogArchiveIsReadyOrDone(histfname))
+			XLogArchiveNotify(histfname);
+	}
+
+	/*
 	 * If there were cascading standby servers connected to us, nudge any wal
 	 * sender processes to notice that we've been promoted.
 	 */
@@ -8633,6 +8660,10 @@ CheckRecoveryConsistency(void)
 		 * references to uninitialized pages.
 		 */
 		XLogCheckInvalidPages();
+
+		if (xlog_check_consistency_hook) {
+			xlog_check_consistency_hook();
+		}
 
 		reachedConsistency = true;
 		ereport(LOG,
@@ -8837,7 +8868,9 @@ ReadCheckpointRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr,
 	uint8		info;
 	bool sizeOk;
 	uint32 chkpt_len;
-	uint32 chkpt_tot_len;
+	uint32 chkpt_hdr_len_short;
+	uint32 chkpt_hdr_len_long;
+	bool length_match;
 
 	if (!XRecOffIsValid(RecPtr))
 	{
@@ -8919,16 +8952,24 @@ ReadCheckpointRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr,
 	/*
 	 * GPDB: Verify the Checkpoint record length. For an extended Checkpoint
 	 * record (when record total length is greater than regular checkpoint
-	 * record total length), compare the difference between the regular
-	 * checkpoint size and the extended variable size.
+	 * record total length, e.g. in the case of containing DTX info), compare
+	 * the difference between the regular checkpoint size and the extended
+	 * variable size.
 	 */
 	sizeOk = false;
 	chkpt_len = XLogRecGetDataLen(xlogreader);
-	chkpt_tot_len = SizeOfXLogRecord + SizeOfXLogRecordDataHeaderShort + sizeof(CheckPoint);
-	if ((chkpt_len == sizeof(CheckPoint) && record->xl_tot_len == chkpt_tot_len) ||
+	chkpt_hdr_len_short = SizeOfXLogRecord + SizeOfXLogRecordDataHeaderShort + sizeof(CheckPoint);
+	chkpt_hdr_len_long = SizeOfXLogRecord + SizeOfXLogRecordDataHeaderLong + sizeof(CheckPoint);
+
+	if (chkpt_len > 255) /* for XLR_BLOCK_ID_DATA_LONG */
+		length_match = ((chkpt_len - sizeof(CheckPoint)) == (record->xl_tot_len - chkpt_hdr_len_long));
+	else /* for XLR_BLOCK_ID_DATA_SHORT */
+		length_match = ((chkpt_len - sizeof(CheckPoint)) == (record->xl_tot_len - chkpt_hdr_len_short));
+
+	if ((chkpt_len == sizeof(CheckPoint) && record->xl_tot_len == chkpt_hdr_len_short) ||
 		((chkpt_len > sizeof(CheckPoint) &&
-		  record->xl_tot_len > chkpt_tot_len &&
-		  ((chkpt_len - sizeof(CheckPoint)) == (record->xl_tot_len - chkpt_tot_len)))))
+		  record->xl_tot_len > chkpt_hdr_len_short &&
+		  length_match)))
 		sizeOk = true;
 
 	if (!sizeOk)
@@ -8952,8 +8993,13 @@ ReadCheckpointRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr,
 	 * We should be wary of conflating "report" parameter.  It is currently
 	 * always true when we want to process the extended checkpoint record.
 	 * For now this seems fine as it avoids a diff with postgres.
+	 *
+	 * The coordinator may execute write DTX during gpexpand, so the newly
+	 * added segment may contain DTX info in checkpoint XLOG. However, this step
+	 * is useless and should be avoided for segments, or fatal may be thrown since
+	 * max_tm_gxacts is 0 in segments.
 	 */
-	if (report)
+	if (report && IS_QUERY_DISPATCHER())
 	{
 		CheckpointExtendedRecord ckptExtended;
 		UnpackCheckPointRecord(xlogreader, &ckptExtended);
@@ -9767,7 +9813,7 @@ CreateCheckPoint(int flags)
 	XLogBeginInsert();
 	XLogRegisterData((char *) (&checkPoint), sizeof(checkPoint));
 
-	/* CloudberryDB checkpoints have extra info */
+	/* Cloudberry checkpoints have extra info */
 	XLogRegisterData((char *) dtxCheckPointInfo, dtxCheckPointInfoSize);
 
 	recptr = XLogInsert(RM_XLOG_ID,
@@ -9843,6 +9889,7 @@ CreateCheckPoint(int flags)
 	 * have trouble while fooling with old log segments.
 	 */
 	END_CRIT_SECTION();
+	SIMPLE_FAULT_INJECTOR("checkpoint_control_file_updated");
 
 	/*
 	 * Let smgr do post-checkpoint cleanup (eg, deleting old files).
@@ -9861,7 +9908,7 @@ CreateCheckPoint(int flags)
 	 * prevent the disk holding the xlog from growing full.
 	 */
 	XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
-	KeepLogSeg(recptr, &_logSegNo, PriorRedoPtr);
+	KeepLogSeg(recptr, &_logSegNo);
 	if (InvalidateObsoleteReplicationSlots(_logSegNo))
 	{
 		/*
@@ -9869,7 +9916,7 @@ CreateCheckPoint(int flags)
 		 * horizon, starting again from RedoRecPtr.
 		 */
 		XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
-		KeepLogSeg(recptr, &_logSegNo, PriorRedoPtr);
+		KeepLogSeg(recptr, &_logSegNo);
 	}
 	_logSegNo--;
 	RemoveOldXlogFiles(_logSegNo, RedoRecPtr, recptr);
@@ -10273,7 +10320,7 @@ CreateRestartPoint(int flags)
 	receivePtr = GetWalRcvFlushRecPtr(NULL, NULL);
 	replayPtr = GetXLogReplayRecPtr(&replayTLI);
 	endptr = (receivePtr < replayPtr) ? replayPtr : receivePtr;
-	KeepLogSeg(endptr, &_logSegNo, InvalidXLogRecPtr);
+	KeepLogSeg(endptr, &_logSegNo);
 	if (InvalidateObsoleteReplicationSlots(_logSegNo))
 	{
 		/*
@@ -10281,7 +10328,7 @@ CreateRestartPoint(int flags)
 		 * horizon, starting again from RedoRecPtr.
 		 */
 		XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
-		KeepLogSeg(endptr, &_logSegNo, InvalidXLogRecPtr);
+		KeepLogSeg(endptr, &_logSegNo);
 	}
 	_logSegNo--;
 
@@ -10400,7 +10447,7 @@ GetWALAvailability(XLogRecPtr targetLSN)
 
 	/* calculate oldest segment currently needed by slots */
 	XLByteToSeg(currpos, oldestSlotSeg, wal_segment_size);
-	KeepLogSeg(currpos, &oldestSlotSeg, InvalidXLogRecPtr);
+	KeepLogSeg(currpos, &oldestSlotSeg);
 
 	/*
 	 * Find the oldest extant segment file. We get 1 until checkpoint removes
@@ -10461,12 +10508,11 @@ GetWALAvailability(XLogRecPtr targetLSN)
  * invalidation is optionally done here, instead.
  */
 static void
-KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo, XLogRecPtr PriorRedoPtr)
+KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
 {
 	XLogSegNo	currSegNo;
 	XLogSegNo	segno;
 	XLogRecPtr	keep;
-	static XLogRecPtr CkptRedoBeforeMinLSN = InvalidXLogRecPtr;
 
 	XLByteToSeg(recptr, currSegNo, wal_segment_size);
 	segno = currSegNo;
@@ -10474,38 +10520,27 @@ KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo, XLogRecPtr PriorRedoPtr)
 	/*
 	 * Calculate how many segments are kept by slots first, adjusting for
 	 * max_slot_wal_keep_size.
+	 *
+	 * Greenplum: coordinator needs a different way to determine the keep
+	 * point as replication slot is not created there.
 	 */
-	keep = XLogGetReplicationSlotMinimumLSN();
+	keep = IS_QUERY_DISPATCHER() ?
+		WalSndCtlGetXLogCleanUpTo() :
+		XLogGetReplicationSlotMinimumLSN();
+
 #ifdef FAULT_INJECTOR
 	/*
-	 * Let the WAL still needed be removed.  This is used to test if WAL sender
-	 * can recognize that an incremental recovery has failed when the WAL
+	 * Ignore the replication slot's LSN and let the WAL still needed by the
+	 * replication slot to be removed.  This is used to test if WAL sender can
+	 * recognize that an incremental recovery has failed when the WAL
 	 * requested by a mirror no longer exists.
 	 */
 	if (SIMPLE_FAULT_INJECTOR("keep_log_seg") == FaultInjectorTypeSkip)
-	{
 		keep = GetXLogWriteRecPtr();
-		XLByteToSeg(keep, *logSegNo, wal_segment_size);
-	}
 #endif
 
 	if (keep != InvalidXLogRecPtr)
 	{
-		/*
-		 * GPDB never uses restart_lsn as lowest cut-off point. Instead always
-		 * will use Checkpoint redo location prior to restart_lsn as cut-off
-		 * point.
-		 */
-		if (!XLogRecPtrIsInvalid(PriorRedoPtr))
-		{
-			if (PriorRedoPtr < keep)
-			{
-				keep = PriorRedoPtr;
-				CkptRedoBeforeMinLSN = PriorRedoPtr;
-			}
-			else if (!XLogRecPtrIsInvalid(CkptRedoBeforeMinLSN))
-				keep = CkptRedoBeforeMinLSN;
-		}
 		XLByteToSeg(keep, segno, wal_segment_size);
 
 		/* Cap by max_slot_wal_keep_size ... */
@@ -11251,6 +11286,10 @@ VerifyOverwriteContrecord(xl_overwrite_contrecord *xlrec, XLogReaderState *state
 		elog(FATAL, "mismatching overwritten LSN %X/%X -> %X/%X",
 			 LSN_FORMAT_ARGS(xlrec->overwritten_lsn),
 			 LSN_FORMAT_ARGS(state->overwrittenRecPtr));
+
+	/* We have safely skipped the aborted record */
+	abortedRecPtr = InvalidXLogRecPtr;
+	missingContrecPtr = InvalidXLogRecPtr;
 
 	/* We have safely skipped the aborted record */
 	abortedRecPtr = InvalidXLogRecPtr;
@@ -12520,6 +12559,8 @@ do_pg_abort_backup(int code, Datum arg)
 	{
 		XLogCtl->Insert.forcePageWrites = false;
 	}
+
+	sessionBackupState = SESSION_BACKUP_NONE;
 	WALInsertLockRelease();
 
 	if (emit_warning)
@@ -13864,10 +13905,17 @@ initialize_wal_bytes_written(void)
  * transactions starving concurrent transactions from commiting due to sync
  * rep. This interface provides a way for primary to avoid racing forward with
  * WAL generation and move at sustained speed with network and mirrors.
+ *
+ * NB: This function should never be called from inside a critical section,
+ * meaning caller should never have MyProc->delayChkpt set to true. Otherwise,
+ * if mirror is down, we will end up in a deadlock situation between the primary
+ * and the checkpointer process, because if MyProc->delayChkpt is set,
+ * checkpointer cannot proceed to unset WalSndCtl->sync_standbys_defined.
  */
 void
 wait_to_avoid_large_repl_lag(void)
 {
+	Assert(!MyProc->delayChkpt);
 	/* rep_lag_avoidance_threshold is defined in KB */
 	if (rep_lag_avoidance_threshold &&
 		wal_bytes_written > (rep_lag_avoidance_threshold * 1024))

@@ -51,9 +51,12 @@ cdbgang_createGang_async(List *segments, SegmentType segmentType)
 	PostgresPollingStatusType	*pollingStatus = NULL;
 	SegmentDatabaseDescriptor	*segdbDesc = NULL;
 	struct timeval	startTS;
+	char	   	*options = NULL;
+	char	   	*diff_options = NULL;
 	Gang	*newGangDefinition;
 	int		create_gang_retry_counter = 0;
 	int		in_recovery_mode_count = 0;
+	int		other_failures = 0;
 	int		successful_connections = 0;
 	int		poll_timeout = 0;
 	int		i = 0;
@@ -73,14 +76,22 @@ cdbgang_createGang_async(List *segments, SegmentType segmentType)
 
 	Assert(CurrentGangCreating == NULL);
 
+	makeOptions(&options, &diff_options);
+
 	/* If we're in a retry, we may need to reset our initial state, a bit */
 	newGangDefinition = NULL;
 	/* allocate and initialize a gang structure */
 	newGangDefinition = buildGangDefinition(segments, segmentType);
 	CurrentGangCreating = newGangDefinition;
 	/*
-	 * If we're in a global transaction, and there is some primary segment down,
+	 * If we're in a global transaction, and there is some segment configuration change,
 	 * we have to error out so that the current global transaction can be aborted.
+	 * This is because within a transaction we use cached version of configuration information 
+	 * obtained at start of transaction, which we can't update in-middle of transaction.
+	 * so QD will still talk to the old primary but not a new promoted one. This isn't an issue 
+	 * if the old primary is completely down since we'll find a FATAL error during communication,
+	 * but becomes an issue if the old primary is working and acting like normal to QD.
+	 * 
 	 * Before error out, we need to reset the session instead of disconnectAndDestroyAllGangs.
 	 * The latter will drop CdbComponentsContext what we will use in AtAbort_Portals.
 	 * Because some primary segment is down writerGangLost will be marked when recycling gangs,
@@ -110,6 +121,7 @@ create_gang_retry:
 	Assert(newGangDefinition->size == size);
 	successful_connections = 0;
 	in_recovery_mode_count = 0;
+	other_failures = 0;
 	retry = false;
 
 	/*
@@ -127,8 +139,6 @@ create_gang_retry:
 		{
 			bool		ret;
 			char		gpqeid[100];
-			char	   *options = NULL;
-			char	   *diff_options = NULL;
 
 			/*
 			 * Create the connection requests.	If we find a segment without a
@@ -162,8 +172,6 @@ create_gang_retry:
 				ereport(ERROR,
 						(errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
 						 errmsg("failed to construct connectionstring")));
-
-			makeOptions(&options, &diff_options);
 
 			/* start connection in asynchronous way */
 			cdbconn_doConnectStart(segdbDesc, gpqeid, options, diff_options);
@@ -243,16 +251,43 @@ create_gang_retry:
 						if (segment_failure_due_to_recovery(PQerrorMessage(segdbDesc->conn)))
 						{
 							in_recovery_mode_count++;
+							/* Mark it as done, so we can consider retrying */
 							connStatusDone[i] = true;
 							elog(LOG, "segment is in reset/recovery mode (%s)", segdbDesc->whoami);
 						}
-						else
+						else if (segment_failure_due_to_missing_writer(PQerrorMessage(segdbDesc->conn)))
 						{
-							if (segment_failure_due_to_missing_writer(PQerrorMessage(segdbDesc->conn)))
-								markCurrentGxactWriterGangLost();
+							markCurrentGxactWriterGangLost();
 							ereport(ERROR, (errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
 											errmsg("failed to acquire resources on one or more segments"),
 											errdetail("%s (%s)", PQerrorMessage(segdbDesc->conn), segdbDesc->whoami)));
+						}
+#ifdef FAULT_INJECTOR
+						else if (segment_failure_due_to_fault_injector(PQerrorMessage(segdbDesc->conn)))
+						{
+							ereport(ERROR, (errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+								errmsg("failed to acquire resources on one or more segments: fault injector"),
+								errdetail("%s (%s)", PQerrorMessage(segdbDesc->conn), segdbDesc->whoami)));
+						}
+#endif
+						else
+						{
+							/* Failed for some other reason */
+							if (gp_gang_creation_retry_count <= 0 ||
+								create_gang_retry_counter >= gp_gang_creation_retry_count)
+							{
+								/*
+								 * If we exhausted all of our retries, ERROR out
+								 * with the appropriate message.
+								 */
+								ereport(ERROR, (errcode(ERRCODE_GP_INTERCONNECTION_ERROR),
+									errmsg("failed to acquire resources on one or more segments"),
+									errdetail("%s (%s)", PQerrorMessage(segdbDesc->conn), segdbDesc->whoami)));
+							}
+
+							/* Mark it as done, so we can consider retrying below */
+							connStatusDone[i] = true;
+							other_failures++;
 						}
 						break;
 
@@ -319,7 +354,7 @@ create_gang_retry:
 		/* some segments are in reset/recovery mode */
 		if (successful_connections != size)
 		{
-			Assert(successful_connections + in_recovery_mode_count == size);
+			Assert(successful_connections + in_recovery_mode_count + other_failures == size);
 
 			if (gp_gang_creation_retry_count <= 0 ||
 				create_gang_retry_counter++ >= gp_gang_creation_retry_count)

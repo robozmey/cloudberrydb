@@ -37,7 +37,6 @@
  * details.
  *
  * Portions Copyright (c) 2019-Present VMware, Inc. or its affiliates.
- * Portions Copyright (c) 2023, HashData Technology Limited.
  *
  * IDENTIFICATION
  *	    src/backend/cdb/cdbgroupingpaths.c
@@ -289,11 +288,7 @@ cdb_create_multistage_grouping_paths(PlannerInfo *root,
 	/*
 	 * Is the input hashable / sortable? This is largely the same logic as in
 	 * upstream create_grouping_paths(), but we can do hashing in limited ways
-	 * even if there are DISTINCT aggs or grouping setst.
-	 *
-	 * GPDB_12_MERGE:FIXME: the similar rules in planner.c got more complicated.
-	 * Does this need to be more fine-grained too? See GROUPING_CAN_USE_SORT and
-	 * GROUPING_CAN_USE_HASH.
+	 * even if there are DISTINCT aggs or grouping sets.
 	 */
 	can_sort = grouping_is_sortable(parse->groupClause);
 	can_hash = (parse->groupClause != NIL &&
@@ -412,19 +407,6 @@ cdb_create_multistage_grouping_paths(PlannerInfo *root,
 		SortGroupClause *gsetcl;
 		List	   *gcls;
 		List	   *tlist;
-
-		/* GPDB_12_MERGE_FIXME: For now, bail out if there are any unsortable
-		 * refs. PostgreSQL supports hashing with grouping sets nowadays, but
-		 * the code in this file hasn't been updated to deal with it yet.
-		 */
-		ListCell   *lc;
-		foreach(lc, parse->groupClause)
-		{
-			SortGroupClause *gc = lfirst_node(SortGroupClause, lc);
-
-			if (!OidIsValid(gc->sortop))
-				return;
-		}
 
 		gsetid = makeNode(GroupingSetId);
 		grouping_sets_tlist = copyObject(root->processed_tlist);
@@ -973,7 +955,7 @@ strip_gsetid_from_pathkeys(Index gsetid_sortref, List *pathkeys)
  * input isn't sorted already).
  */
 static void
-	add_first_stage_group_agg_path(PlannerInfo *root,
+add_first_stage_group_agg_path(PlannerInfo *root,
 							   Path *path,
 							   bool is_sorted,
 							   cdb_agg_planning_context *ctx)

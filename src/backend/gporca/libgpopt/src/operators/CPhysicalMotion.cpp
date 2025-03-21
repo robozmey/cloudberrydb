@@ -42,13 +42,11 @@ CPhysicalMotion::FValidContext(CMemoryPool *, COptimizationContext *poc,
 	GPOS_ASSERT(nullptr != pccBest);
 
 	CDrvdPropPlan *pdpplanChild = pccBest->Pdpplan();
-	// GPDB_12_MERGE_FIXME: Check partition propagation spec
-#if 0
-	if (pdpplanChild->Ppim()->FContainsUnresolved())
+	CPartitionPropagationSpec *pps_req = poc->Prpp()->Pepp()->PppsRequired();
+	if (pdpplanChild->Ppps()->IsUnsupportedPartSelector(pps_req))
 	{
 		return false;
 	}
-#endif
 
 	CEnfdDistribution *ped = poc->Prpp()->Ped();
 	if (ped->FCompatible(this->Pds()) && ped->FCompatible(pdpplanChild->Pds()))
@@ -85,6 +83,7 @@ CPhysicalMotion::PdsRequired(CMemoryPool *mp,
 {
 	GPOS_ASSERT(0 == child_index);
 
+	// scenario 1:
 	// if the required distribution is EdtStrictRandom, it indicates
 	// that this motion operator was enforced into the same
 	// group as that of CPhysicalComputeScalar just below CPhysicalDML(Insert)
@@ -133,10 +132,11 @@ CPhysicalMotion::PdsRequired(CMemoryPool *mp,
 	//	      +--CScalarProjectList
 	//	         +--CScalarProjectElement "ColRef_0008"
 	//	            +--CScalarConst (1)
+	// scenario 2:
+	// CTE consumer's derived property is EdtStrictRandom. It's
+	// sent back to the physical sequence.
 	if (CDistributionSpec::EdtStrictRandom == pdsRequired->Edt())
 	{
-		GPOS_ASSERT(COperator::EopPhysicalMotionRandom == Eopid());
-		GPOS_ASSERT(CDistributionSpec::EdtStrictRandom == Pds()->Edt());
 		return GPOS_NEW(mp) CDistributionSpecRandom();
 	}
 

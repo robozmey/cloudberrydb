@@ -2076,6 +2076,9 @@ evalStandardFunc(CState *st,
 	PgBenchExprLink *l = args;
 	bool		has_null = false;
 
+	/* Some compiler (gcc-12) may raise warning about uninitialized variable */
+	memset(vargs, 0, sizeof(vargs));
+
 	for (nargs = 0; nargs < MAX_FARGS && l != NULL; nargs++, l = l->next)
 	{
 		if (!evaluateExpr(st, l->expr, &vargs[nargs]))
@@ -5895,7 +5898,7 @@ main(int argc, char **argv)
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			puts("pgbench (Cloudberry Database) " PG_VERSION);
+			puts("pgbench (Apache Cloudberry) " PG_VERSION);
 			exit(0);
 		}
 	}
@@ -6283,6 +6286,14 @@ main(int argc, char **argv)
 	{
 		pg_log_fatal("too many command-line arguments (first is \"%s\")",
 					 argv[optind]);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
+		exit(1);
+	}
+
+	if (optind < argc)
+	{
+		fprintf(stderr, _("%s: too many command-line arguments (first is \"%s\")\n"),
+				progname, argv[optind]);
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(1);
 	}

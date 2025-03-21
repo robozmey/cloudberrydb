@@ -74,13 +74,6 @@ extern char *regexp_fixed_prefix(text *text_re, bool case_insensitive,
 /* ruleutils.c */
 extern bool quote_all_identifiers;
 extern char *pg_get_constraintexpr_string(Oid constraintId);
-extern const char *quote_identifier(const char *ident);
-extern char *quote_qualified_identifier(const char *qualifier,
-						   const char *ident);
-extern void generate_operator_clause(fmStringInfo buf,
-						 const char *leftop, Oid leftoptype,
-						 Oid opoid,
-						 const char *rightop, Oid rightoptype);
 
 extern const char *quote_identifier(const char *ident);
 extern char *quote_qualified_identifier(const char *qualifier,
@@ -148,5 +141,11 @@ extern Datum gp_instrument_shmem_summary(PG_FUNCTION_ARGS);
 
 /* utils/gp/segadmin.c */
 extern bool gp_activate_standby(void);
+
+/* utils/adt/genfile.c */
+extern Datum pg_file_write(PG_FUNCTION_ARGS);
+extern Datum pg_file_rename(PG_FUNCTION_ARGS);
+extern Datum pg_file_unlink(PG_FUNCTION_ARGS);
+extern Datum pg_logdir_ls(PG_FUNCTION_ARGS);
 
 #endif							/* BUILTINS_H */

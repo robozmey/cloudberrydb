@@ -11,7 +11,7 @@ CREATE TABLE J1_TBL (
   j integer,
   t text
 );
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE TABLE J2_TBL (
   i integer,
@@ -1663,11 +1663,11 @@ SELECT '' AS "xxx", *
 -- Multiway full join
 --
 CREATE TABLE t1 (name TEXT, n INTEGER);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'name' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'name' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE TABLE t2 (name TEXT, n INTEGER) distributed replicated;
 CREATE TABLE t3 (name TEXT, n INTEGER);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'name' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'name' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO t1 VALUES ( 'bb', 11 );
 INSERT INTO t2 VALUES ( 'bb', 12 );
@@ -1825,7 +1825,7 @@ insert into x values (3,null);
 insert into x values (4,44);
 insert into x values (5,null);
 create temp table y (y1 int, y2 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'y1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'y1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into y values (1,111);
 insert into y values (2,222);
@@ -1960,12 +1960,12 @@ drop table if exists foo;
 -- Both DELETE and UPDATE allow the specification of additional tables
 -- to "join" against to determine which rows should be modified.
 CREATE TEMP TABLE t1 (a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE TEMP TABLE t2 (a int, b int) distributed replicated;
 CREATE TEMP TABLE t3 (x int, y int) distributed replicated;
 CREATE TEMP TABLE t4 (x int, y int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO t1 VALUES (5, 10);
 INSERT INTO t1 VALUES (15, 20);
@@ -2008,7 +2008,7 @@ CREATE TEMP TABLE tt1 ( tt1_id int4, joincol int4 ) distributed replicated;
 INSERT INTO tt1 VALUES (1, 11);
 INSERT INTO tt1 VALUES (2, NULL);
 CREATE TEMP TABLE tt2 ( tt2_id int4, joincol int4 );
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'tt2_id' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'tt2_id' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO tt2 VALUES (21, 11);
 INSERT INTO tt2 VALUES (22, 11);
@@ -2041,7 +2041,7 @@ insert into tt3 select x, repeat('xyzzy', 100) from generate_series(1,10000) x;
 create index tt3i on tt3(f1);
 analyze tt3;
 create temp table tt4(f1 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into tt4 values (0),(1),(9999);
 analyze tt4;
@@ -2065,7 +2065,7 @@ WHERE d.f1 IS NULL;
 --
 create temp table tt5(f1 int, f2 int) distributed replicated;
 create temp table tt6(f1 int, f2 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into tt5 values(1, 10);
 insert into tt5 values(1, 11);
@@ -2509,9 +2509,34 @@ explain(costs off) with cte1 as (insert into rpt_issue_15860 values (1, 2) retur
 -- CBDB_FIXME: How to derive a plan?
 -- Replicates join OuterQuery
 explain(costs off) with cte1 as (insert into rpt_issue_15860 values (1, 2) returning *) select ( select foo.c1 from (select * from strewn_issue_15860) foo join cte1  using(c2)  where foo.c1 = hash_issue_15860.c1) from hash_issue_15860;
-ERROR:  could not devise a query plan for the given query (pathnode.c:275)
+ERROR:  could not devise a query plan for the given query (pathnode.c:281)
+-- Test case for Github Issue 17460
+create table t_17460 (a int ) distributed replicated;
+create table foo_17460 (a int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into t_17460 values(1);
+insert into foo_17460 select i from generate_series(1, 10000) i;
+analyze t_17460;
+analyze foo_17460;
+-- update|delete on replicated table should not use unique rowid skill
+-- to plan semi join.
+explain (costs off) delete from t_17460 where a in (select a from foo_17460);
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Delete on t_17460
+   ->  Hash Semi Join
+         Hash Cond: (t_17460.a = foo_17460.a)
+         ->  Seq Scan on t_17460
+         ->  Hash
+               ->  Broadcast Motion 3:3  (slice1; segments: 3)
+                     ->  Seq Scan on foo_17460
+ Optimizer: Postgres query optimizer
+(8 rows)
+
+delete from t_17460 where a in (select a from foo_17460);
 drop schema rpt_joins cascade;
-NOTICE:  drop cascades to 11 other objects
+NOTICE:  drop cascades to 13 other objects
 DETAIL:  drop cascades to table j1_tbl
 drop cascades to table j2_tbl
 drop cascades to table rpt_joins.t1
@@ -2523,3 +2548,5 @@ drop cascades to table rpt_issue_15860
 drop cascades to table rpt2_issue_15860
 drop cascades to table hash_issue_15860
 drop cascades to table strewn_issue_15860
+drop cascades to table t_17460
+drop cascades to table foo_17460

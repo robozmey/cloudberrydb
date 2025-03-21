@@ -7,7 +7,6 @@
  * numbers of equally-sized objects are allocated (and freed).
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2017-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -56,6 +55,8 @@
 #include "lib/ilist.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
+#include "utils/gp_alloc.h"
+#include "lib/ilist.h"
 
 /*
  * SlabContext is a specialized implementation of MemoryContext.
@@ -232,7 +233,7 @@ SlabContextCreate(MemoryContext parent,
 	headerSize += chunksPerBlock * sizeof(bool);
 #endif
 
-	slab = (SlabContext *) malloc(headerSize);
+	slab = (SlabContext *) gp_malloc(headerSize);
 	if (slab == NULL)
 	{
 		MemoryContextStats(TopMemoryContext);
@@ -311,7 +312,7 @@ SlabReset(MemoryContext context)
 #ifdef CLOBBER_FREED_MEMORY
 			wipe_mem(block, slab->blockSize);
 #endif
-			free(block);
+			gp_free(block);
 			slab->nblocks--;
 			context->mem_allocated -= slab->blockSize;
 		}
@@ -333,7 +334,7 @@ SlabDelete(MemoryContext context, MemoryContext parent)
 	/* Reset to release all the SlabBlocks */
 	SlabReset(context);
 	/* And free the context header */
-	free(context);
+	gp_free(context);
 }
 
 /*
@@ -368,7 +369,7 @@ SlabAlloc(MemoryContext context, Size size)
 	 */
 	if (slab->minFreeChunks == 0)
 	{
-		block = (SlabBlock *) malloc(slab->blockSize);
+		block = (SlabBlock *) gp_malloc(slab->blockSize);
 
 		if (block == NULL)
 			return NULL;
@@ -563,7 +564,7 @@ SlabFree(MemoryContext context, void *pointer)
 	/* If the block is now completely empty, free it. */
 	if (block->nfree == slab->chunksPerBlock)
 	{
-		free(block);
+		gp_free(block);
 		slab->nblocks--;
 		context->mem_allocated -= slab->blockSize;
 	}

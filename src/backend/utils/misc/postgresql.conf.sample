@@ -66,7 +66,7 @@
       					# a Cloudberry instance. The master and 
 					# each segment has its own port number. 
 # note: Port numbers for the Cloudberry system must also be changed in the
-# gp_configuration catalog. See the Cloudberry Database Administrator Guide 
+# gp_configuration catalog. See the Apache Cloudberry Administrator Guide 
 # for instructions!
 #
 # WARNING: YOU MUST SHUT DOWN YOUR GREENPLUM SYSTEM BEFORE CHANGING 
@@ -223,7 +223,7 @@ max_prepared_transactions = 250		# can be 0 or more
 #full_page_writes = on			# recover from partial page writes
 #wal_log_hints = off			# also do full page writes of non-critical updates
 					# (change requires restart)
-#wal_compression = off			# enable compression of full-page writes
+#wal_compression = on			# enable compression of full-page writes
 #wal_init_zero = on			# zero-fill new WAL files
 #wal_recycle = on			# recycle WAL files
 #wal_buffers = -1			# min 32kB, -1 sets based on shared_buffers
@@ -396,7 +396,6 @@ max_prepared_transactions = 250		# can be 0 or more
 #gp_selectivity_damping_for_joins = off
 
 #gp_enable_sort_limit = on
-#gp_enable_sort_distinct = on
 
 # - Planner Cost Constants -
 
@@ -406,8 +405,6 @@ max_prepared_transactions = 250		# can be 0 or more
 #cpu_tuple_cost = 0.01			# same scale as above
 #cpu_index_tuple_cost = 0.005		# same scale as above
 #cpu_operator_cost = 0.0025		# same scale as above
-
-# GPDB_96_MERGE_FIXME: figure out the appropriate values for the parallel gucs
 #parallel_tuple_cost = 0.1		# same scale as above
 #parallel_setup_cost = 1000.0	# same scale as above
 #parallel_tuple_cost = 0.1		# same scale as above
@@ -550,7 +547,7 @@ optimizer_analyze_root_partition = on # stats collection on root partitions
 					# their durations, > 0 logs only
 					# actions running at least this number
 					# of milliseconds.
-#log_checkpoints = off
+#log_checkpoints = on
 #log_connections = off
 #log_disconnections = off
 #log_duration = off
@@ -797,10 +794,6 @@ gp_resqueue_memory_policy = 'eager_free'	# memory request based queueing.
 #---------------------------------------------------------------------------
 #gp_external_enable_exec = on   # enable external tables with EXECUTE.
 
-#---------------------------------------------------------------------------
-# APPEND ONLY TABLES
-#---------------------------------------------------------------------------
-#gp_safefswritesize = 0   # minimum size for safe AO writes in a non-mature fs
 #------------------------------------------------------------------------------
 # VERSION AND PLATFORM COMPATIBILITY
 #------------------------------------------------------------------------------

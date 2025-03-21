@@ -45,6 +45,7 @@
 #include "storage/lmgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/faultinjector.h"
 #include "utils/guc.h"
 #include "utils/int8.h"
 #include "utils/lsyscache.h"
@@ -134,7 +135,15 @@ InsertInitialSegnoEntry(Relation parentrel, int segno)
 	if (!HeapTupleIsValid(pg_aoseg_tuple))
 		elog(ERROR, "failed to build AO file segment tuple");
 
-	CatalogTupleInsertFrozen(pg_aoseg_rel, pg_aoseg_tuple);
+	CatalogTupleInsert(pg_aoseg_rel, pg_aoseg_tuple);
+#ifdef FAULT_INJECTOR
+	FaultInjector_InjectFaultIfSet(
+							"insert_aoseg_before_freeze",
+							DDLNotSpecified,
+							"", //databaseName
+							RelationGetRelationName(parentrel));
+#endif
+	heap_freeze_tuple_wal_logged(pg_aoseg_rel, pg_aoseg_tuple);
 
 	/*
 	 * Lock the tuple so that a concurrent insert transaction will not
@@ -357,8 +366,6 @@ GetAllFileSegInfo(Relation parentrel,
 		elog(ERROR, "could not find pg_aoseg aux table for AO table \"%s\"",
 			 RelationGetRelationName(parentrel));
 
-	Assert(RelationIsAoRows(parentrel));
-
 	if (segrelidptr != NULL)
 		*segrelidptr = segrelid;
 
@@ -457,7 +464,7 @@ GetAllFileSegInfo_pg_aoseg_rel(char *relationName,
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("got invalid eof value: NULL")));
-		oneseginfo->eof += DatumGetInt64(eof);
+		oneseginfo->eof = DatumGetInt64(eof);
 
 		/* get the tupcount */
 		tupcount = fastgetattr(tuple, Anum_pg_aoseg_tupcount, pg_aoseg_dsc, &isNull);
@@ -465,7 +472,7 @@ GetAllFileSegInfo_pg_aoseg_rel(char *relationName,
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("got invalid tupcount value: NULL")));
-		oneseginfo->total_tupcount += DatumGetInt64(tupcount);
+		oneseginfo->total_tupcount = DatumGetInt64(tupcount);
 
 		/* get the varblock count */
 		varblockcount = fastgetattr(tuple, Anum_pg_aoseg_varblockcount, pg_aoseg_dsc, &isNull);
@@ -473,7 +480,7 @@ GetAllFileSegInfo_pg_aoseg_rel(char *relationName,
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("got invalid varblockcount value: NULL")));
-		oneseginfo->varblockcount += DatumGetInt64(varblockcount);
+		oneseginfo->varblockcount = DatumGetInt64(varblockcount);
 
 		/* get the modcount */
 		modcount = fastgetattr(tuple, Anum_pg_aoseg_modcount, pg_aoseg_dsc, &isNull);
@@ -481,7 +488,7 @@ GetAllFileSegInfo_pg_aoseg_rel(char *relationName,
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("got invalid modcount value: NULL")));
-		oneseginfo->modcount += DatumGetInt64(modcount);
+		oneseginfo->modcount = DatumGetInt64(modcount);
 
 		/* get the file format version number */
 		formatversion = fastgetattr(tuple, Anum_pg_aoseg_formatversion, pg_aoseg_dsc, &isNull);
@@ -515,7 +522,7 @@ GetAllFileSegInfo_pg_aoseg_rel(char *relationName,
 			oneseginfo->eof_uncompressed = InvalidUncompressedEof;
 		}
 		else
-			oneseginfo->eof_uncompressed += DatumGetInt64(eof_uncompressed);
+			oneseginfo->eof_uncompressed = DatumGetInt64(eof_uncompressed);
 
 		elogif(Debug_appendonly_print_scan, LOG,
 			   "Append-only found existing segno %d with eof " INT64_FORMAT " for table '%s'",
@@ -616,8 +623,6 @@ ClearFileSegInfo(Relation parentrel, int segno)
 	Oid segrelid;
 
 	GetAppendOnlyEntryAuxOids(parentrel, &segrelid, NULL, NULL, NULL, NULL);
-
-	Assert(RelationIsAoRows(parentrel));
 
 	elogif(Debug_appendonly_print_compaction, LOG,
 		   "Clear seg file info: segno %d table '%s'",
@@ -753,9 +758,9 @@ UpdateFileSegInfo_internal(Relation parentrel,
 	bool		isNull;
 	Oid segrelid;
 
+	Assert(RelationStorageIsAoRows(parentrel));
 	GetAppendOnlyEntryAuxOids(parentrel, &segrelid, NULL, NULL, NULL, NULL);
 
-	Assert(RelationIsAoRows(parentrel));
 	Assert(newState >= AOSEG_STATE_USECURRENT && newState <= AOSEG_STATE_AWAITING_DROP);
 
 	/*
@@ -956,8 +961,6 @@ GetSegFilesTotals(Relation parentrel, Snapshot appendOnlyMetaDataSnapshot)
 	bool		isNull;
 	Oid			segrelid;
 
-	Assert(RelationIsAoRows(parentrel));
-
 	result = (FileSegTotals *) palloc0(sizeof(FileSegTotals));
 
 	GetAppendOnlyEntryAuxOids(parentrel, &segrelid, NULL, NULL, NULL, NULL);
@@ -1073,10 +1076,10 @@ gp_aoseg_history(PG_FUNCTION_ARGS)
 		context->aoRelOid = aoRelOid;
 
 		aocsRel = table_open(aoRelOid, AccessShareLock);
-		if (!RelationIsAoRows(aocsRel))
+		if (!RelationStorageIsAoRows(aocsRel))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("'%s' is not an append-only row relation",
+					 errmsg("Relation '%s' does not have appendoptimized row-oriented storage",
 							RelationGetRelationName(aocsRel))));
 
 		GetAppendOnlyEntryAuxOids(aocsRel, &segrelid, NULL, NULL, NULL, NULL);
@@ -1225,10 +1228,10 @@ gp_aoseg(PG_FUNCTION_ARGS)
 		context->aoRelOid = aoRelOid;
 
 		aocsRel = table_open(aoRelOid, AccessShareLock);
-		if (!RelationIsAoRows(aocsRel))
+		if (!RelationStorageIsAoRows(aocsRel))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("'%s' is not an append-only row relation",
+					 errmsg("Relation '%s' does not have appendoptimized row-oriented storage",
 							RelationGetRelationName(aocsRel))));
 
 		GetAppendOnlyEntryAuxOids(aocsRel, &segrelid, NULL, NULL, NULL, NULL);
@@ -1358,7 +1361,7 @@ get_ao_distribution(PG_FUNCTION_ARGS)
 	 */
 	if (SRF_IS_FIRSTCALL())
 	{
-		bool		connected = false;
+		volatile bool		connected = false;
 		Oid			segrelid;
 
 		funcctx = SRF_FIRSTCALL_INIT();
@@ -1381,7 +1384,7 @@ get_ao_distribution(PG_FUNCTION_ARGS)
 		/*
 		 * verify this is an AO relation
 		 */
-		if (!RelationIsAppendOptimized(parentrel))
+		if (!RelationStorageIsAO(parentrel))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("'%s' is not an append-only relation",
@@ -1525,16 +1528,22 @@ get_ao_compression_ratio(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	Relation	parentrel;
-	float8		result;
+	float8		result = -1.0;
+
+	/* open the parent (main) relation */
+	parentrel = table_open(relid, AccessShareLock);
+
+	if (parentrel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		table_close(parentrel, AccessShareLock);
+		PG_RETURN_FLOAT8(result);
+	}
 
 	if (Gp_role == GP_ROLE_EXECUTE)
 		ereport(ERROR,
 				(errmsg("get_ao_compression_ratio is expected to run in QD process, or utility mode")));
 
-	/* open the parent (main) relation */
-	parentrel = table_open(relid, AccessShareLock);
-
-	if (!RelationIsAppendOptimized(parentrel))
+	if (!(RelationIsAoRows(parentrel) || RelationIsAoCols(parentrel)))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("'%s' is not an append-only relation",
@@ -1555,7 +1564,7 @@ aorow_compression_ratio_internal(Relation parentrel)
 {
 	StringInfoData sqlstmt;
 	Relation	aosegrel;
-	bool		connected = false;
+	volatile bool		connected = false;
 	int			proc;	/* 32 bit, only holds number of segments */
 	int			ret;
 	float8		compress_ratio = -1;	/* the default, meaning "not
@@ -1624,12 +1633,10 @@ aorow_compression_ratio_internal(Relation parentrel)
 
 			if (NULL == attr1 || NULL == attr2)
 			{
-				SPI_finish();
-				return 1;
+				compress_ratio = 1;
 			}
-
-			if (scanint8(attr1, true, &eof) &&
-				scanint8(attr2, true, &eof_uncomp))
+			else if (scanint8(attr1, true, &eof) &&
+					 scanint8(attr2, true, &eof_uncomp))
 			{
 				/* guard against division by zero */
 				if (eof > 0)
@@ -1640,6 +1647,12 @@ aorow_compression_ratio_internal(Relation parentrel)
 					/* format to 2 digit decimal precision */
 					compress_ratio = round(compress_ratio * 100.0) / 100.0;
 				}
+			}
+			else
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("unable to parse aorow compress_ratio string to int8.")));
 			}
 		}
 

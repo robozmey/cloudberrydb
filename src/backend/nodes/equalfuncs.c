@@ -18,7 +18,6 @@
  * "x" to be considered equal() to another reference to "x" in the query.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -176,6 +175,8 @@ _equalIntoClause(const IntoClause *a, const IntoClause *b)
 	COMPARE_SCALAR_FIELD(ivm);
 	COMPARE_SCALAR_FIELD(matviewOid);
 	COMPARE_STRING_FIELD(enrname);
+	COMPARE_SCALAR_FIELD(dynamicTbl);
+	COMPARE_STRING_FIELD(schedule);
 	return true;
 }
 
@@ -1384,6 +1385,7 @@ _equalCreateStmt(const CreateStmt *a, const CreateStmt *b)
 	COMPARE_STRING_FIELD(tablespacename);
 	COMPARE_STRING_FIELD(accessMethod);
 	COMPARE_SCALAR_FIELD(if_not_exists);
+	COMPARE_SCALAR_FIELD(origin);
 
 	COMPARE_NODE_FIELD(distributedBy);
 	COMPARE_SCALAR_FIELD(relKind);
@@ -1480,6 +1482,7 @@ _equalDropStmt(const DropStmt *a, const DropStmt *b)
 	COMPARE_SCALAR_FIELD(behavior);
 	COMPARE_SCALAR_FIELD(missing_ok);
 	COMPARE_SCALAR_FIELD(concurrent);
+	COMPARE_SCALAR_FIELD(isdynamic);
 
 	return true;
 }
@@ -1962,6 +1965,7 @@ _equalRefreshMatViewStmt(const RefreshMatViewStmt *a, const RefreshMatViewStmt *
 	COMPARE_SCALAR_FIELD(concurrent);
 	COMPARE_SCALAR_FIELD(skipData);
 	COMPARE_NODE_FIELD(relation);
+	COMPARE_SCALAR_FIELD(isdynamic);
 
 	return true;
 }
@@ -3470,6 +3474,7 @@ _equalCreateDirectoryTableStmt(const CreateDirectoryTableStmt *a, const CreateDi
 		return false;
 
 	COMPARE_STRING_FIELD(tablespacename);
+	COMPARE_STRING_FIELD(location);
 
 	return true;
 }
@@ -3481,6 +3486,48 @@ _equalAlterDirectoryTableStmt(const AlterDirectoryTableStmt *a, const AlterDirec
 	COMPARE_NODE_FIELD(tags);
 	COMPARE_SCALAR_FIELD(unsettag);
 	
+	return true;
+}
+
+static bool
+_equalDropDirectoryTableStmt(const DropDirectoryTableStmt *a, const DropDirectoryTableStmt *b)
+{
+	if (!_equalDropStmt(&a->base, &b->base))
+		return false;
+
+	COMPARE_SCALAR_FIELD(with_content);
+
+	return true;
+}
+
+static bool
+_equalCreateTaskStmt(const CreateTaskStmt *a, const CreateTaskStmt *b)
+{
+	COMPARE_STRING_FIELD(taskname);
+	COMPARE_STRING_FIELD(schedule);
+	COMPARE_STRING_FIELD(sql);
+	COMPARE_NODE_FIELD(options);
+	COMPARE_SCALAR_FIELD(if_not_exists);
+
+	return true;
+}
+
+static bool
+_equalAlterTaskStmt(const AlterTaskStmt *a, const AlterTaskStmt *b)
+{
+	COMPARE_STRING_FIELD(taskname);
+	COMPARE_NODE_FIELD(options);
+	COMPARE_SCALAR_FIELD(missing_ok);
+
+	return true;
+}
+
+static bool
+_equalDropTaskStmt(const DropTaskStmt *a, const DropTaskStmt *b)
+{
+	COMPARE_STRING_FIELD(taskname);
+	COMPARE_SCALAR_FIELD(missing_ok);
+
 	return true;
 }
 
@@ -4438,6 +4485,20 @@ equal(const void *a, const void *b)
 
 		case T_AlterDirectoryTableStmt:
 			retval = _equalAlterDirectoryTableStmt(a, b);
+			break;
+
+		case T_DropDirectoryTableStmt:
+			retval = _equalDropDirectoryTableStmt(a, b);
+			break;
+
+		case T_CreateTaskStmt:
+			retval = _equalCreateTaskStmt(a, b);
+			break;
+		case T_AlterTaskStmt:
+			retval = _equalAlterTaskStmt(a, b);
+			break;
+		case T_DropTaskStmt:
+			retval = _equalDropTaskStmt(a, b);
 			break;
 
 		default:

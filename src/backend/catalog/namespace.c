@@ -3159,11 +3159,33 @@ makeRangeVarFromNameList(List *names)
 			break;
 		case 2:
 			rel->schemaname = strVal(linitial(names));
+
+			/* GPDB: When QD generates query tree and serializes it to string
+			 * and sends it to QE, and QE will deserialize it to a plan tree.
+			 * In this process, Greenplum will not consider the difference
+			 * between NULL and an empty string, so if the original value is
+			 * a NULL, QE may deserialize it to an empty string, which could
+			 * lead to error in the following process.
+			 */
+			if (rel->schemaname && strlen(rel->schemaname) == 0)
+				rel->schemaname = NULL;
+
 			rel->relname = strVal(lsecond(names));
 			break;
 		case 3:
 			rel->catalogname = strVal(linitial(names));
 			rel->schemaname = strVal(lsecond(names));
+
+			/* GPDB: When QD generates query tree and serializes it to string
+			 * and sends it to QE, and QE will deserialize it to a plan tree.
+			 * In this process, Greenplum will not consider the difference
+			 * between NULL and an empty string, so if the original value is
+			 * a NULL, QE may deserialize it to an empty string, which could
+			 * lead to error in the following process.
+			 */
+			if (rel->schemaname && strlen(rel->schemaname) == 0)
+				rel->schemaname = NULL;
+
 			rel->relname = strVal(lthird(names));
 			break;
 		default:
@@ -3421,6 +3443,8 @@ GetTempToastNamespace(void)
  *
  * This is used for conveying state to a parallel worker, and is not meant
  * for general-purpose access.
+ *
+ * GPDB: also used when dispatch MPP query
  */
 void
 GetTempNamespaceState(Oid *tempNamespaceId, Oid *tempToastNamespaceId)
@@ -3458,6 +3482,30 @@ SetTempNamespaceState(Oid tempNamespaceId, Oid tempToastNamespaceId)
 	 */
 
 	baseSearchPathValid = false;	/* may need to rebuild list */
+}
+
+/*
+ * like SetTempNamespaceState, but the process running normally
+ *
+ * GPDB: used to set session level temporary namespace after reader gang launched.
+ */
+void
+SetTempNamespaceStateAfterBoot(Oid tempNamespaceId, Oid tempToastNamespaceId)
+{
+	Assert(Gp_role == GP_ROLE_EXECUTE);
+
+	/* writer gang will do InitTempTableNamespace(), ignore the dispatch on writer gang */
+	if (Gp_is_writer)
+		return;
+
+	/* skip rebuild search path if search path is correct and valid */
+	if (tempNamespaceId == myTempNamespace && myTempToastNamespace == tempToastNamespaceId)
+		return;
+
+	myTempNamespace = tempNamespaceId;
+	myTempToastNamespace = tempToastNamespaceId;
+
+	baseSearchPathValid = false;	/* need to rebuild list */
 }
 
 
@@ -3584,6 +3632,10 @@ OverrideSearchPathMatchesCurrent(OverrideSearchPath *path)
 
 /*
  * PushOverrideSearchPath - temporarily override the search path
+ *
+ * Do not use this function; almost any usage introduces a security
+ * vulnerability.  It exists for the benefit of legacy code running in
+ * non-security-sensitive environments.
  *
  * We allow nested overrides, hence the push/pop terminology.  The GUC
  * search_path variable is ignored while an override is active.
@@ -4306,6 +4358,28 @@ DropTempTableNamespaceForResetSession(Oid namespaceOid)
 }
 
 /*
+ * Remove temp namespace entry from pg_namespace.
+ */
+void
+DropTempTableNamespaceEntryForResetSession(Oid namespaceOid, Oid toastNamespaceOid)
+{
+	if (IsTransactionOrTransactionBlock())
+		elog(ERROR, "Called within a transaction");
+
+	StartTransactionCommand();
+
+	/* Make sure the temp namespace is valid. */
+	if (SearchSysCacheExists1(NAMESPACEOID,
+							  ObjectIdGetDatum(namespaceOid)))
+	{
+		RemoveSchemaById(namespaceOid);
+		RemoveSchemaById(toastNamespaceOid);
+	}
+
+	CommitTransactionCommand();
+}
+
+/*
  * Called by CreateSchemaCommand when creating a temporary schema 
  */
 void
@@ -4353,6 +4427,7 @@ ResetTempNamespace(void)
 	cancel_before_shmem_exit_if_matched(RemoveTempRelationsCallback, 0);
 
 	myTempNamespace = InvalidOid;
+	myTempToastNamespace = InvalidOid;
 	myTempNamespaceSubID = InvalidSubTransactionId;
 	baseSearchPathValid = false;	/* need to rebuild list */
 
@@ -4726,7 +4801,7 @@ TempNamespaceValid(bool error_if_removed)
 		if (SearchSysCacheExists1(NAMESPACEOID,
 								  ObjectIdGetDatum(myTempNamespace)))
 			return true;
-		else if (Gp_role != GP_ROLE_EXECUTE && error_if_removed) 
+		else if (Gp_role != GP_ROLE_EXECUTE && error_if_removed)
 		{
 			/*
 			 * We might call this on QEs if we're dropping our own

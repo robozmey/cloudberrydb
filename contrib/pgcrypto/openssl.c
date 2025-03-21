@@ -34,6 +34,14 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
+/*
+ * OPENSSL_VERSION_MAJOR isn't defined at all until OpenSSL 3.0.0, but since
+ * OPENSSL_VERSION_NUMBER is used by both OpenSSL and LibreSSL it's safer to
+ * check for the new macro rather than the overloaded old one.
+ */
+#if OPENSSL_VERSION_MAJOR >= 3
+#include <openssl/provider.h>
+#endif
 
 #include "px.h"
 #include "utils/memutils.h"
@@ -47,6 +55,16 @@
  */
 #define MAX_KEY		(512/8)
 #define MAX_IV		(128/8)
+
+/*
+ * Fips mode
+ */
+static bool fips = false;
+
+#define NOT_FIPS_CERTIFIED \
+	if (fips) \
+		ereport(ERROR, \
+				(errmsg("requested functionality not allowed in FIPS mode")));
 
 /*
  * Hashes
@@ -67,6 +85,10 @@ typedef struct OSSLDigest
 	struct OSSLDigest *prev;
 } OSSLDigest;
 
+#if OPENSSL_VERSION_MAJOR >= 3
+static OSSL_PROVIDER *legacy_provider = NULL;
+static OSSL_PROVIDER *default_provider = NULL;
+#endif
 static OSSLDigest *open_digests = NULL;
 static bool digest_resowner_callback_registered = false;
 
@@ -193,8 +215,20 @@ px_find_digest(const char *name, PX_MD **res)
 
 	if (!px_openssl_initialized)
 	{
-		px_openssl_initialized = 1;
+#if OPENSSL_VERSION_MAJOR >= 3
+		if (legacy_provider == NULL)
+			legacy_provider = OSSL_PROVIDER_load(NULL, "legacy");
+		if (default_provider == NULL)
+			default_provider = OSSL_PROVIDER_load(NULL, "default");
+#endif
+
+		/*
+		 * OpenSSL_add_all_algorithms is deprecated in OpenSSL 1.1.0 and no
+		 * longer required in 1.1.0 and later versions as initialization is
+		 * performed automatically.
+		 */
 		OpenSSL_add_all_algorithms();
+		px_openssl_initialized = 1;
 	}
 
 	if (!digest_resowner_callback_registered)
@@ -656,7 +690,7 @@ ossl_aes_cbc_init(PX_Cipher *c, const uint8 *key, unsigned klen, const uint8 *iv
  * aliases
  */
 
-static PX_Alias ossl_aliases[] = {
+static PX_Alias ossl_aliases_all[] = {
 	{"bf", "bf-cbc"},
 	{"blowfish", "bf-cbc"},
 	{"blowfish-cbc", "bf-cbc"},
@@ -673,6 +707,8 @@ static PX_Alias ossl_aliases[] = {
 	{"rijndael-ecb", "aes-ecb"},
 	{NULL}
 };
+
+static PX_Alias *ossl_aliases = ossl_aliases_all;
 
 static const struct ossl_cipher ossl_bf_cbc = {
 	bf_init,
@@ -751,7 +787,7 @@ struct ossl_cipher_lookup
 	const struct ossl_cipher *ciph;
 };
 
-static const struct ossl_cipher_lookup ossl_cipher_types[] = {
+static const struct ossl_cipher_lookup ossl_cipher_types_all[] = {
 	{"bf-cbc", &ossl_bf_cbc},
 	{"bf-ecb", &ossl_bf_ecb},
 	{"bf-cfb", &ossl_bf_cfb},
@@ -766,6 +802,8 @@ static const struct ossl_cipher_lookup ossl_cipher_types[] = {
 	{NULL}
 };
 
+static const struct ossl_cipher_lookup *ossl_cipher_types = ossl_cipher_types_all;
+
 /* PUBLIC functions */
 
 int
@@ -775,6 +813,14 @@ px_find_cipher(const char *name, PX_Cipher **res)
 	PX_Cipher  *c = NULL;
 	EVP_CIPHER_CTX *ctx;
 	OSSLCipher *od;
+
+#if OPENSSL_VERSION_MAJOR >= 3
+	if (legacy_provider == NULL)
+		legacy_provider = OSSL_PROVIDER_load(NULL, "legacy");
+	if (default_provider == NULL)
+		default_provider = OSSL_PROVIDER_load(NULL, "default");
+#endif
+	NOT_FIPS_CERTIFIED
 
 	name = px_resolve_alias(ossl_aliases, name);
 #ifdef OPENSSL_ALLOW_REDIRECT
@@ -834,3 +880,75 @@ px_find_cipher(const char *name, PX_Cipher **res)
 	*res = c;
 	return 0;
 }
+
+void
+px_disable_fipsmode(void)
+{
+#ifndef OPENSSL_FIPS
+	/*
+	 * If this build doesn't support FIPS mode at all, we shouldn't be able
+	 * to reach this point, so Assert that and return to handle production
+	 * builds gracefully.
+	 */
+	Assert(!fips);
+#else
+	ossl_aliases = ossl_aliases_all;
+	ossl_cipher_types = ossl_cipher_types_all;
+	fips = false;
+
+	FIPS_mode_set(0);
+#endif
+
+	return;
+}
+
+void
+px_enable_fipsmode(void)
+{
+#ifndef OPENSSL_FIPS
+	ereport(ERROR,
+			(errmsg("FIPS enabled OpenSSL is required for strict FIPS mode"),
+			 errhint("Recompile OpenSSL with the FIPS module, or install a FIPS enabled OpenSSL distribution.")));
+#else
+
+	/*
+	 * While AES and 3DES are allowed ciphers under FIPS-140 level 2, pgcrypto
+	 * is calling the lowlevel API for these which is disallowed under FIPS.
+	 * However, rather than returning NULL as is done when calling the high
+	 * level functions, the lowlevel API throws a SIGABORT so we need to avoid
+	 * calling this altogether.
+	 */
+	ossl_aliases = NULL;
+	ossl_cipher_types = NULL;
+	/*
+	 * A non-zero return value means that FIPS mode was enabled, but the
+	 * full range of possible non-zero return values is not documented so
+	 * rather than checking for success we check for failure.
+	 */
+	if (FIPS_mode_set(1) == 0)
+	{
+		char		errbuf[128];
+
+		ERR_load_crypto_strings();
+		ERR_error_string_n(ERR_get_error(), errbuf, sizeof(errbuf));
+		ERR_free_strings();
+
+		ereport(ERROR,
+				(errmsg("unable to enable FIPS mode: %lx, %s",
+						ERR_get_error(), errbuf)));
+	}
+
+	fips = true;
+#endif
+}
+
+void
+px_check_fipsmode(void)
+{
+#ifndef OPENSSL_FIPS
+	ereport(ERROR,
+			(errmsg("FIPS enabled OpenSSL is required for strict FIPS mode"),
+			 errhint("Recompile OpenSSL with the FIPS module, or install a FIPS enabled OpenSSL distribution.")));
+#endif
+}
+

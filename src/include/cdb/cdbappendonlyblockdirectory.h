@@ -138,7 +138,7 @@ typedef struct AppendOnlyBlockDirectory
 }	AppendOnlyBlockDirectory;
 
 
-typedef struct CurrentBlock
+typedef struct AOFetchBlockMetadata
 {
 	/*
 	 * Current cached block directory entry.
@@ -157,20 +157,17 @@ typedef struct CurrentBlock
 	int64 firstRowNum;
 	int64 lastRowNum;
 	
-	bool isCompressed;
-	bool isLargeContent;
-	
 	bool		gotContents;
-} CurrentBlock;
+} AOFetchBlockMetadata;
 
-typedef struct CurrentSegmentFile
+typedef struct AOFetchSegmentFile
 {
 	bool isOpen;
 	
 	int num;
 	
 	int64 logicalEof;
-} CurrentSegmentFile;
+} AOFetchSegmentFile;
 
 typedef struct AppendOnlyBlockDirectorySeqScan {
 	AppendOnlyBlockDirectory blkdir;
@@ -233,19 +230,6 @@ extern bool AppendOnlyBlockDirectory_InsertEntry(
 	int64 fileOffset,
 	int64 rowCount,
 	bool addColAction);
-extern bool AppendOnlyBlockDirectory_addCol_InsertEntry(
-	AppendOnlyBlockDirectory *blockDirectory,
-	int columnGroupNo,
-	int64 firstRowNum,
-	int64 fileOffset,
-	int64 rowCount);
-extern bool AppendOnlyBlockDirectory_DeleteEntry(
-	AppendOnlyBlockDirectory *blockDirectory,
-	AOTupleId *aoTupleId);
-extern bool AppendOnlyBlockDirectory_DeleteEntryForUpdate(
-	AppendOnlyBlockDirectory *visibilityBlockDirectory,
-	AppendOnlyBlockDirectory *insertBlockDirectory,
-	AOTupleId* aoTupleId);
 extern void AppendOnlyBlockDirectory_End_forInsert(
 	AppendOnlyBlockDirectory *blockDirectory);
 extern void AppendOnlyBlockDirectory_End_forSearch(

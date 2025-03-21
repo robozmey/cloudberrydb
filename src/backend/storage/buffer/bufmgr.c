@@ -3,7 +3,6 @@
  * bufmgr.c
  *	  buffer manager interface routines
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2009, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -3169,19 +3168,6 @@ RelationGetNumberOfBlocksInFork(Relation relation, ForkNumber forkNum)
 }
 
 /*
- * GPDB: it is possible to need to calculate the number of blocks from the table
- * size. An example use case is when we are the dispatcher and we need to
- * acquire the number of blocks from all segments.
- *
- * Use the same calculation that RelationGetNumberOfBlocksInFork is using.
- */
-BlockNumber
-RelationGuessNumberOfBlocksFromSize(uint64 szbytes)
-{
-	return (szbytes + (BLCKSZ - 1)) / BLCKSZ;
-}
-
-/*
  * BufferIsPermanent
  *		Determines whether a buffer will potentially still be around after
  *		a crash.  Caller must hold a buffer pin.
@@ -4243,7 +4229,15 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 		UnlockBufHdr(bufHdr, buf_state);
 
 		if (delayChkpt)
+		{
 			MyProc->delayChkpt = false;
+			/*
+			 * Wait for wal replication only after checkpoiter is no longer
+			 * delayed by us. Otherwise, we might end up in a deadlock situation
+			 * if mirror is marked down while we are waiting for wal replication
+			 */
+			wait_to_avoid_large_repl_lag();
+		}
 
 		if (dirtied)
 		{

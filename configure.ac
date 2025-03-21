@@ -20,7 +20,7 @@ m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 dnl The PACKAGE_VERSION from upstream PostgreSQL is maintained in the
 dnl PG_PACKAGE_VERSION variable, when merging make sure to update this
 dnl variable with the merge conflict from the AC_INIT() statement.
-AC_INIT([Cloudberry Database], [1.0.0], [info@cloudberrydb.org], [], [https://www.cloudberrydb.org/])
+AC_INIT([Apache Cloudberry], [1.0.0], [dev@cloudberry.apache.org], [], [https://cloudberry.apache.org/])
 [PG_PACKAGE_VERSION=14.4]
 AC_SUBST(PG_PACKAGE_VERSION)
 
@@ -45,7 +45,7 @@ AC_DEFINE_UNQUOTED(PG_MINORVERSION_NUM, $PG_MINORVERSION, [PostgreSQL minor vers
 
 [PG_VERSION="$PG_PACKAGE_VERSION"]
 PGAC_ARG_REQ(with, extra-version, [STRING], [append STRING to version], [], [])
-AC_DEFINE_UNQUOTED(PG_VERSION, "$PG_PACKAGE_VERSION", [Postgres version Cloudberry Database is based on])
+AC_DEFINE_UNQUOTED(PG_VERSION, "$PG_PACKAGE_VERSION", [Postgres version Apache Cloudberry is based on])
 
 AC_CANONICAL_HOST
 
@@ -606,11 +606,19 @@ if test "$GCC" = yes -a "$ICC" = no; then
     CFLAGS="$CFLAGS -Wno-unused-command-line-argument"
   fi
   # Remove clang 12+'s compound-token-split-by-macro, as this causes a lot
-  # of warnings when building plperl because of usages in the Perl headers.
+  # of warnings when building plperl because of Perl.  Like previously, test
+  # for the positive form and add the negative form
   NOT_THE_CFLAGS=""
   PGAC_PROG_CC_VAR_OPT(NOT_THE_CFLAGS, [-Wcompound-token-split-by-macro])
   if test -n "$NOT_THE_CFLAGS"; then
     CFLAGS="$CFLAGS -Wno-compound-token-split-by-macro"
+  fi
+  # Similarly remove clang 15+'s deprecated-non-prototype, as it warns about
+  # tree-walking APIs that we can't reasonably change in the back branches.
+  NOT_THE_CFLAGS=""
+  PGAC_PROG_CC_VAR_OPT(NOT_THE_CFLAGS, [-Wdeprecated-non-prototype])
+  if test -n "$NOT_THE_CFLAGS"; then
+    CFLAGS="$CFLAGS -Wno-deprecated-non-prototype"
   fi
   # Similarly disable useless truncation warnings from gcc 8+
   NOT_THE_CFLAGS=""
@@ -622,18 +630,6 @@ if test "$GCC" = yes -a "$ICC" = no; then
   PGAC_PROG_CC_VAR_OPT(NOT_THE_CFLAGS, [-Wstringop-truncation])
   if test -n "$NOT_THE_CFLAGS"; then
     CFLAGS="$CFLAGS -Wno-stringop-truncation"
-  fi
-  # GPDB_12_MERGE_FIXME: there's a chance we can rearrange our #include's to
-  # avoid the specific headers that use "register" once we merge with Postgres
-  # 12
-
-  # Cloudberry's ORCA translator includes a lot of C headers, and Clang will
-  # warn us about the use of the "register" keyword in Postgres' inline
-  # functions which we can do nothing about. Silence it.
-  NOT_THE_CXXFLAGS=""
-  PGAC_PROG_CXX_VAR_OPT(NOT_THE_CXXFLAGS, [-Wdeprecated-register])
-  if test -n "$NOT_THE_CXXFLAGS"; then
-    CXXFLAGS="$CXXFLAGS -Wno-deprecated-register"
   fi
 elif test "$ICC" = yes; then
   # Intel's compiler has a bug/misoptimization in checking for
@@ -684,6 +680,11 @@ if test "$with_llvm" = yes ; then
   PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, NOT_THE_CFLAGS, [-Wcompound-token-split-by-macro])
   if test -n "$NOT_THE_CFLAGS"; then
     BITCODE_CFLAGS="$BITCODE_CFLAGS -Wno-compound-token-split-by-macro"
+  fi
+  NOT_THE_CFLAGS=""
+  PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, NOT_THE_CFLAGS, [-Wdeprecated-non-prototype])
+  if test -n "$NOT_THE_CFLAGS"; then
+    BITCODE_CFLAGS="$BITCODE_CFLAGS -Wno-deprecated-non-prototype"
   fi
   NOT_THE_CFLAGS=""
   PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, NOT_THE_CFLAGS, [-Wformat-truncation])
@@ -1263,8 +1264,8 @@ AC_MSG_RESULT([$with_zstd])
 AC_SUBST(with_zstd)
 
 if test "$with_zstd" = yes; then
-  dnl zstd_errors.h was renamed from error_public.h in v1.1.1
-  PKG_CHECK_MODULES([ZSTD], [libzstd >= 1.1.1])
+  dnl zstd_errors.h was renamed from error_public.h in v1.4.0
+  PKG_CHECK_MODULES([ZSTD], [libzstd >= 1.4.0])
 fi
 
 #
@@ -1629,7 +1630,7 @@ if test "$with_ssl" = openssl ; then
   # defines OPENSSL_VERSION_NUMBER to claim version 2.0.0, even though it
   # doesn't have these OpenSSL 1.1.0 functions. So check for individual
   # functions.
-  AC_CHECK_FUNCS([OPENSSL_init_ssl BIO_get_data BIO_meth_new ASN1_STRING_get0_data HMAC_CTX_new HMAC_CTX_free])
+  AC_CHECK_FUNCS([OPENSSL_init_ssl BIO_meth_new ASN1_STRING_get0_data HMAC_CTX_new HMAC_CTX_free])
   # OpenSSL versions before 1.1.0 required setting callback functions, for
   # thread-safety. In 1.1.0, it's no longer required, and CRYPTO_lock()
   # function was removed.
@@ -2972,7 +2973,7 @@ else
 fi
 
 AC_DEFINE_UNQUOTED(PG_VERSION_STR,
-                   ["PostgreSQL $PG_VERSION (Cloudberry Database $GP_VERSION) on $host, compiled by $cc_string, `expr $ac_cv_sizeof_void_p \* 8`-bit"],
+                   ["PostgreSQL $PG_VERSION (Apache Cloudberry $GP_VERSION) on $host, compiled by $cc_string, `expr $ac_cv_sizeof_void_p \* 8`-bit"],
                    [A string containing the version number, platform, and C compiler])
 
 # Supply a numeric version string for use by 3rd party add-ons

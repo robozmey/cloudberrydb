@@ -3,7 +3,6 @@
  * pg_attribute_encoding.c
  *	  Routines to manipulation and retrieve column encoding information.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) EMC, 2011
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -42,20 +41,22 @@
  * Add a single attribute encoding entry.
  */
 static void
-add_attribute_encoding_entry(Oid relid, AttrNumber attnum, Datum attoptions)
+add_attribute_encoding_entry(Oid relid, AttrNumber attnum, FileNumber filenum, Datum attoptions)
 {
 	Relation	rel;
 	Datum values[Natts_pg_attribute_encoding];
 	bool nulls[Natts_pg_attribute_encoding];
 	HeapTuple tuple;
-	
+
 	Assert(attnum != InvalidAttrNumber);
+	Assert(filenum != InvalidFileNumber);
 
 	rel = heap_open(AttributeEncodingRelationId, RowExclusiveLock);
 
 	MemSet(nulls, 0, sizeof(nulls));
 	values[Anum_pg_attribute_encoding_attrelid - 1] = ObjectIdGetDatum(relid);
 	values[Anum_pg_attribute_encoding_attnum - 1] = Int16GetDatum(attnum);
+	values[Anum_pg_attribute_encoding_filenum - 1] = Int16GetDatum(filenum);
 	values[Anum_pg_attribute_encoding_attoptions - 1] = attoptions;
 
 	tuple = heap_form_tuple(RelationGetDescr(rel), values, nulls);
@@ -101,48 +102,41 @@ get_funcs_for_compression(char *compresstype)
 Datum *
 get_rel_attoptions(Oid relid, AttrNumber max_attno)
 {
-	Form_pg_attribute attform;
-	ScanKeyData skey;
-	SysScanDesc scan;
-	HeapTuple		tuple;
-	Datum		   *dats;
-	Relation 		pgae = heap_open(AttributeEncodingRelationId,
-									 AccessShareLock);
+	HeapTuple 			atttuple;
+	Form_pg_attribute 		attform;
+	Datum				*dats;
+	CatCList 			*attenclist;
 
 	/* used for attbyval and len below */
-	attform = TupleDescAttr(pgae->rd_att, Anum_pg_attribute_encoding_attoptions - 1);
+	atttuple = SearchSysCache2(ATTNUM,
+							ObjectIdGetDatum(AttributeEncodingRelationId),
+							Int16GetDatum(Anum_pg_attribute_encoding_attoptions));
+	attform = (Form_pg_attribute) GETSTRUCT(atttuple);
 
 	dats = palloc0(max_attno * sizeof(Datum));
 
-	ScanKeyInit(&skey,
-				Anum_pg_attribute_encoding_attrelid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(relid));
-	scan = systable_beginscan(pgae, AttributeEncodingAttrelidIndexId, true,
-							  NULL, 1, &skey);
-
-	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	attenclist = SearchSysCacheList1(ATTENCODINGNUM, relid);
+	for (int i = 0; i < attenclist->n_members; i++)
 	{
-		Form_pg_attribute_encoding a = 
-			(Form_pg_attribute_encoding)GETSTRUCT(tuple);
-		int16 attnum = a->attnum;
-		Datum attoptions;
-		bool isnull;
+		HeapTuple	tuple = &attenclist->members[i]->tuple;
+		Form_pg_attribute_encoding	form = 
+					(Form_pg_attribute_encoding)GETSTRUCT(tuple);
+		AttrNumber 	attnum = form->attnum;
+		Datum 		attoptions;
+		bool 		isnull;
 
 		Assert(attnum > 0 && attnum <= max_attno);
 
-		attoptions = heap_getattr(tuple, Anum_pg_attribute_encoding_attoptions,
-								  RelationGetDescr(pgae), &isnull);
-		Assert(!isnull);
-
-		dats[attnum - 1] = datumCopy(attoptions,
-									 attform->attbyval,
-									 attform->attlen);
+		attoptions = SysCacheGetAttr(ATTENCODINGNUM, tuple, Anum_pg_attribute_encoding_attoptions,
+                                                                   &isnull);
+		if (!isnull)
+			dats[attnum - 1] = datumCopy(attoptions,
+										 attform->attbyval,
+										 attform->attlen);
 	}
+	ReleaseSysCacheList(attenclist);
 
-	systable_endscan(scan);
-
-	heap_close(pgae, AccessShareLock);
+	ReleaseSysCache(atttuple);
 
 	return dats;
 
@@ -192,6 +186,7 @@ cloneAttributeEncoding(Oid oldrelid, Oid newrelid, AttrNumber max_attno)
 	{
 		if (DatumGetPointer(attoptions[n]) != NULL)
 			add_attribute_encoding_entry(newrelid,
+										 n + 1,
 										 n + 1,
 										 attoptions[n]);
 	}
@@ -254,26 +249,46 @@ RelationGetAttributeOptions(Relation rel)
  *
  * Simply adds user specified ENCODING () clause information to
  * pg_attribute_encoding. Should be absolutely valid at this point.
+ *
+ * Note that we need to take dropped columns into consideration
+ * as well so we cannot use get_attnum().
  */
 void
 AddRelationAttributeEncodings(Relation rel, List *attr_encodings)
 {
 	Oid relid = RelationGetRelid(rel);
 	ListCell *lc;
+	ListCell *lc_filenum;
+	List *filenums = GetNextNAvailableFilenums(relid, attr_encodings->length);
 
-	foreach(lc, attr_encodings)
+	if (filenums->length != attr_encodings->length)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+					errmsg("filenums exhausted for relid %u", relid),
+					errhint("recreate the table")));
+
+	forboth(lc, attr_encodings, lc_filenum, filenums)
 	{
 		Datum attoptions;
 		ColumnReferenceStorageDirective *c = lfirst(lc);
 		List *encoding;
 		AttrNumber attnum;
+		HeapTuple	tuple;
+		Form_pg_attribute att_tup;
 
 		Assert(IsA(c, ColumnReferenceStorageDirective));
 
-		attnum = get_attnum(relid, c->column);
-
-		if (attnum == InvalidAttrNumber)
+		tuple = SearchSysCache2(ATTNAME,
+								ObjectIdGetDatum(relid),
+								CStringGetDatum(c->column));
+		if (!HeapTupleIsValid(tuple))
 			elog(ERROR, "column \"%s\" does not exist", c->column);
+
+		att_tup = (Form_pg_attribute) GETSTRUCT(tuple);
+		attnum = att_tup->attnum;
+		Assert(attnum != InvalidAttrNumber);
+
+		ReleaseSysCache(tuple);
 
 		if (attnum < 0)
 			elog(ERROR, "column \"%s\" is a system column", c->column);
@@ -290,8 +305,9 @@ AddRelationAttributeEncodings(Relation rel, List *attr_encodings)
 										 true,
 										 false);
 
-		add_attribute_encoding_entry(relid, attnum, attoptions);
+		add_attribute_encoding_entry(relid, attnum, lfirst_int(lc_filenum), attoptions);
 	}
+	list_free(filenums);
 }
 
 void
@@ -318,4 +334,87 @@ RemoveAttributeEncodingsByRelid(Oid relid)
 	systable_endscan(scan);
 
 	heap_close(rel, RowExclusiveLock);
+}
+
+/*
+ * Returns the filenum value for a relation/attnum entry in pg_attribute_encoding
+ */
+FileNumber
+GetFilenumForAttribute(Oid relid, AttrNumber attnum)
+{
+	HeapTuple	tup;
+	FileNumber  filenum;
+	bool        isnull;
+
+	Assert(OidIsValid(relid));
+	Assert(AttributeNumberIsValid(attnum));
+
+	tup = SearchSysCache2(ATTENCODINGNUM, 
+							ObjectIdGetDatum(relid),
+							Int16GetDatum(attnum));
+	if (!HeapTupleIsValid(tup))
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+					errmsg("unable to find pg_attribute_encoding entry for attribute %d of relation %u",
+								attnum, relid)));
+
+	filenum = SysCacheGetAttr(ATTENCODINGNUM,
+							tup,
+							Anum_pg_attribute_encoding_filenum,
+							&isnull);
+	Assert(!isnull);
+	ReleaseSysCache(tup);
+	return filenum;
+}
+
+/*
+ * Returns a sorted list of first n unused filenums in pg_attribute_encoding
+ * for the relation
+ * In the outside chance that filenums have been exhausted,
+ * the list may contain < n unused filenums
+ */
+List *
+GetNextNAvailableFilenums(Oid relid, int n)
+{
+	Relation    rel;
+	SysScanDesc scan;
+	ScanKeyData skey[1];
+	HeapTuple	tup;
+	bool        isnull;
+	bool        used[MaxFileNumber];
+	List        *newfilenums = NIL;
+
+	Assert(OidIsValid(relid));
+
+	MemSet(used, false, sizeof(used));
+	rel = heap_open(AttributeEncodingRelationId, AccessShareLock);
+
+	ScanKeyInit(&skey[0],
+				Anum_pg_attribute_encoding_attrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(relid));
+	scan = systable_beginscan(rel, AttributeEncodingAttrelidIndexId, true,
+							  NULL, 1, skey);
+
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		FileNumber usedfilenum = heap_getattr(tup, Anum_pg_attribute_encoding_filenum,
+							   RelationGetDescr(rel), &isnull);
+		Assert(!isnull);
+		used[usedfilenum-1] = true;
+	}
+
+	systable_endscan(scan);
+	heap_close(rel, AccessShareLock);
+
+	for (int i = 0; i < MaxFileNumber; ++i)
+	{
+		if(!used[i])
+		{
+			newfilenums = lappend_int(newfilenums, i + 1);
+			if (newfilenums->length == n)
+				break;
+		}
+	}
+	return newfilenums;
 }

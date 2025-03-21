@@ -1825,17 +1825,23 @@ cleanup:
 /*
  *	RecordDistributedForgetCommitted
  */
-void
+XLogRecPtr
 RecordDistributedForgetCommitted(DistributedTransactionId gxid)
 {
 	xl_xact_distributed_forget xlrec;
+	XLogRecPtr recptr;
 
 	xlrec.gxid = gxid;
 
 	XLogBeginInsert();
 	XLogRegisterData((char *) &xlrec, sizeof(xl_xact_distributed_forget));
 
-	XLogInsert(RM_XACT_ID, XLOG_XACT_DISTRIBUTED_FORGET);
+	recptr = XLogInsert(RM_XACT_ID, XLOG_XACT_DISTRIBUTED_FORGET);
+	/* only flush immediately if we want to wait for remote_apply */
+	if (synchronous_commit >= SYNCHRONOUS_COMMIT_REMOTE_APPLY)
+		XLogFlush(recptr);
+
+	return recptr;
 }
 
 /*
@@ -2467,7 +2473,7 @@ StartTransaction(void)
 	/*
 	 * Transactions may be started while recovery is in progress, if
 	 * hot standby is enabled.  This mode is not supported in
-	 * CloudberryDB yet.
+	 * Cloudberry yet.
 	 */
 	AssertImply(DistributedTransactionContext != DTX_CONTEXT_LOCAL_ONLY,
 				!s->startedInRecovery);
@@ -2933,11 +2939,6 @@ CommitTransaction(void)
 	 * signals (which may attempt to abort our now partially-completed
 	 * transaction) until we've notified the QEs.
 	 *
-	 * Very important that PGPROC still thinks the transaction is still in progress so
-	 * SnapshotNow reader don't jump to the conclusion this distributed transaction is
-	 * finished.  So, notifyCommittedDtxTransaction will take responsbility to clear
-	 * PGPROC under the ProcArrayLock after the broadcast.  MPP-16087.
-	 *
 	 * And, that we have not master released locks, yet, too.
 	 *
 	 * Note:  do this BEFORE clearing the resource owner, as the dispatch
@@ -3000,6 +3001,8 @@ CommitTransaction(void)
 
 	AtEOXact_MultiXact();
 
+	AtCommit_TablespaceStorage();
+
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_LOCKS,
 						 true, true);
@@ -3030,8 +3033,6 @@ CommitTransaction(void)
 	 */
 	if(Gp_role == GP_ROLE_DISPATCH || IS_SINGLENODE())
 		MoveDbSessionLockRelease();
-
-	AtCommit_TablespaceStorage();
 
 	/*
 	 * Send out notification signals to other backends (and do other
@@ -3628,7 +3629,20 @@ AbortTransaction(void)
 		AtEOXact_ComboCid_Dsm_Detach();
 		AtEOXact_Buffers(false);
 		AtEOXact_RelationCache(false);
-		AtEOXact_Inval(false);
+		/*
+		 * Greenplum specific behavior:
+		 *   We pass is_commit to true even we are here Aborting Transaction.
+		 *   Greenplum has writer gang and reader gangs, only writer gang can
+		 *   modify database (like catalog ...), and gang can be reused in
+		 *   Greenplum in the same session. Thus when we abort a transaction,
+		 *   we still have to tell other reader gangs to abort those catcaches.
+		 *   EntryDB is reader gang in coordinator, we also want to tell them
+		 *   to invalidate catcache when QD abort.
+		 *   Discussion: https://groups.google.com/a/greenplum.org/g/gpdb-dev/c/u3-D7isdvmM
+		 */
+		bool need_inval_even_for_abort = ((Gp_role == GP_ROLE_EXECUTE && Gp_is_writer) ||
+										  Gp_role == GP_ROLE_DISPATCH); /* test QD to invalidate entryDB's catcache */
+		AtEOXact_Inval(need_inval_even_for_abort);
 		AtEOXact_MultiXact();
 
 		ResourceOwnerRelease(TopTransactionResourceOwner,
@@ -3978,6 +3992,9 @@ CommitTransactionCommand(void)
 			s->blockState = TBLOCK_DEFAULT;
 			if (s->chain)
 			{
+				if (Gp_role == GP_ROLE_DISPATCH)
+					setupRegularDtxContext();
+
 				StartTransaction();
 				s->blockState = TBLOCK_INPROGRESS;
 				s->chain = false;
@@ -4004,6 +4021,9 @@ CommitTransactionCommand(void)
 			s->blockState = TBLOCK_DEFAULT;
 			if (s->chain)
 			{
+				if (Gp_role == GP_ROLE_DISPATCH)
+					setupRegularDtxContext();
+
 				StartTransaction();
 				s->blockState = TBLOCK_INPROGRESS;
 				s->chain = false;
@@ -4022,6 +4042,9 @@ CommitTransactionCommand(void)
 			s->blockState = TBLOCK_DEFAULT;
 			if (s->chain)
 			{
+				if (Gp_role == GP_ROLE_DISPATCH)
+					setupRegularDtxContext();
+
 				StartTransaction();
 				s->blockState = TBLOCK_INPROGRESS;
 				s->chain = false;
@@ -4089,6 +4112,9 @@ CommitTransactionCommand(void)
 				s->blockState = TBLOCK_DEFAULT;
 				if (s->chain)
 				{
+					if (Gp_role == GP_ROLE_DISPATCH)
+						setupRegularDtxContext();
+
 					StartTransaction();
 					s->blockState = TBLOCK_INPROGRESS;
 					s->chain = false;
@@ -4375,6 +4401,9 @@ AbortCurrentTransaction(void)
  *	could issue more commands and possibly cause a failure after the statement
  *	completes).  Subtransactions are verboten too.
  *
+ *	We must also set XACT_FLAGS_NEEDIMMEDIATECOMMIT in MyXactFlags, to ensure
+ *	that postgres.c follows through by committing after the statement is done.
+ *
  *	isTopLevel: passed down from ProcessUtility to determine whether we are
  *	inside a function.  (We will always fail if this is false, but it's
  *	convenient to centralize the check here instead of making callers do it.)
@@ -4416,7 +4445,9 @@ PreventInTransactionBlock(bool isTopLevel, const char *stmtType)
 	if (CurrentTransactionState->blockState != TBLOCK_DEFAULT &&
 		CurrentTransactionState->blockState != TBLOCK_STARTED)
 		elog(FATAL, "cannot prevent transaction chain");
-	/* all okay */
+
+	/* All okay.  Set the flag to make sure the right thing happens later. */
+	MyXactFlags |= XACT_FLAGS_NEEDIMMEDIATECOMMIT;
 }
 
 /*
@@ -4513,6 +4544,13 @@ IsInTransactionBlock(bool isTopLevel)
 		CurrentTransactionState->blockState != TBLOCK_STARTED)
 		return true;
 
+	/*
+	 * If we tell the caller we're not in a transaction block, then inform
+	 * postgres.c that it had better commit when the statement is done.
+	 * Otherwise our report could be a lie.
+	 */
+	MyXactFlags |= XACT_FLAGS_NEEDIMMEDIATECOMMIT;
+
 	return false;
 }
 
@@ -4569,6 +4607,7 @@ CallXactCallbacks(XactEvent event)
 
 	for (item = Xact_callbacks; item; item = item->next)
 		item->callback(event, item->arg);
+
 }
 
 /* Register or deregister callback functions for start/end Xact.  Call only once. */
@@ -5540,6 +5579,7 @@ void
 BeginInternalSubTransaction(const char *name)
 {
 	TransactionState s = CurrentTransactionState;
+	SIMPLE_FAULT_INJECTOR("begin_internal_sub_transaction");
 
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
@@ -5748,7 +5788,7 @@ AbortOutOfAnyTransaction(void)
 	AtAbort_Memory();
 
 	/*
-	 * CloudberryDB specific behavior:
+	 * Cloudberry specific behavior:
 	 * Some QEs might already be in Abort State, they still need
 	 * to reset Extension related global vars, so we invoke them
 	 * here (not AbortTransction).
@@ -6830,8 +6870,8 @@ XactLogCommitRecord(TimestampTz commit_time,
 	xl_xact_distrib xl_distrib;
 	xl_xact_deldbs xl_deldbs;
 	XLogRecPtr recptr;
-	bool isOnePhaseQE = (Gp_role == GP_ROLE_EXECUTE && MyTmGxactLocal->isOnePhaseCommit);
 	bool isDtxPrepared = isPreparedDtxTransaction();
+	DistributedTransactionId distrib_xid = getDistributedTransactionId();
 
 	uint8		info;
 
@@ -6921,10 +6961,11 @@ XactLogCommitRecord(TimestampTz commit_time,
 		xl_origin.origin_timestamp = replorigin_session_origin_timestamp;
 	}
 
-	if (isDtxPrepared || isOnePhaseQE)
+	/* include distributed xid if there's one */
+	if (distrib_xid != InvalidDistributedTransactionId)
 	{
 		xl_xinfo.xinfo |= XACT_XINFO_HAS_DISTRIB;
-		xl_distrib.distrib_xid = getDistributedTransactionId();
+		xl_distrib.distrib_xid = distrib_xid;
 	}
 
 #if 0

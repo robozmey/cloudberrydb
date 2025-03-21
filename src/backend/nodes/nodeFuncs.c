@@ -3,7 +3,6 @@
  * nodeFuncs.c
  *		Various general-purpose manipulations of Node trees
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -4290,6 +4289,8 @@ raw_expression_tree_walker(Node *node,
 		case T_CommonTableExpr:
 			/* search_clause and cycle_clause are not interesting here */
 			return walker(((CommonTableExpr *) node)->ctequery, context);
+		case T_TableValueExpr:
+			return walker(((TableValueExpr *) node)->subquery, context);
 		default:
 			elog(ERROR, "unrecognized node type: %d",
 				 (int) nodeTag(node));
@@ -4360,7 +4361,6 @@ planstate_tree_walker(PlanState *planstate,
 									   walker, context))
 				return true;
 			break;
-		/* GPDB_96_MERGE_FIXME: verify walker works on Sequence node */
 		case T_Sequence:
 			if (planstate_walk_members(((SequenceState *) planstate)->subplans,
 									   ((SequenceState *) planstate)->numSubplans,

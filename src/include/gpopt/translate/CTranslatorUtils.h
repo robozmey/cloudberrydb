@@ -48,7 +48,7 @@ namespace gpopt
 class CMDAccessor;
 
 // dynamic array of bitsets
-typedef CDynamicPtrArray<CBitSet, CleanupRelease> CBitSetArray;
+using CBitSetArray = CDynamicPtrArray<CBitSet, CleanupRelease>;
 }  // namespace gpopt
 
 namespace gpdxl
@@ -109,8 +109,17 @@ private:
 		CMemoryPool *mp, const GroupingSet *grouping_set, ULONG num_cols,
 		CBitSet *group_cols, UlongToUlongMap *group_col_pos);
 
+	// create a set of grouping sets for a cube
+	static CBitSetArray *CreateGroupingSetsForCube(
+		CMemoryPool *mp, const GroupingSet *grouping_set, ULONG num_cols,
+		CBitSet *group_cols, UlongToUlongMap *group_col_pos);
+
 	// create a set of grouping sets for a grouping sets subclause
 	static CBitSetArray *CreateGroupingSetsForSets(
+		CMemoryPool *mp, const GroupingSet *grouping_set_node, ULONG num_cols,
+		CBitSet *group_cols, UlongToUlongMap *group_col_pos);
+
+	static CBitSetArray *CreateGroupingSetsForSimple(
 		CMemoryPool *mp, const GroupingSet *grouping_set_node, ULONG num_cols,
 		CBitSet *group_cols, UlongToUlongMap *group_col_pos);
 
@@ -125,24 +134,9 @@ public:
 	static ScanDirection GetScanDirection(
 		EdxlIndexScanDirection idx_scan_direction);
 
-	// get the oid of comparison operator
-	static OID OidCmpOperator(Expr *expr);
-
-	// get the opfamily for index key
-	static OID GetOpFamilyForIndexQual(INT attno, OID oid_index);
-
-	// return the type for the system column with the given number
-	static CMDIdGPDB *GetSystemColType(CMemoryPool *mp, AttrNumber attno);
-
 	// find the n-th column descriptor in the table descriptor
 	static const CDXLColDescr *GetColumnDescrAt(
 		const CDXLTableDescr *table_descr, ULONG pos);
-
-	// return the name for the system column with given number
-	static const CWStringConst *GetSystemColName(AttrNumber attno);
-
-	// returns the length for the system column with given attno number
-	static ULONG GetSystemColLength(AttrNumber attno);
 
 	// translate the join type from its GPDB representation into the DXL one
 	static EdxlJoinType ConvertToDXLJoinType(JoinType jt);
@@ -160,6 +154,7 @@ public:
 										 CMDAccessor *md_accessor,
 										 CIdGenerator *id_generator,
 										 const RangeTblEntry *rte,
+										 ULONG assigned_query_id_for_target_rel,
 										 BOOL *is_distributed_table = nullptr);
 
 	// translate a RangeTableEntry into a CDXLLogicalTVF
@@ -199,7 +194,7 @@ public:
 	// construct a dynamic array of sets of column attnos corresponding
 	// to the group by clause
 	static CBitSetArray *GetColumnAttnosForGroupBy(
-		CMemoryPool *mp, List *group_clause, List *grouping_set_list,
+		CMemoryPool *mp, List *group_clause, List *grouping_set_list, bool grouping_distinct,
 		ULONG num_cols, UlongToUlongMap *group_col_pos, CBitSet *group_cold);
 
 	// return a copy of the query with constant of unknown type being coerced
@@ -260,6 +255,9 @@ public:
 	// check to see if the target list entry is used in the window reference
 	static BOOL IsReferencedInWindowSpec(const TargetEntry *target_entry,
 										 List *window_clause_list);
+
+	// check if the project list contains AggRef with ORDER BY
+	static BOOL HasOrderedAggRefInProjList(CDXLNode *proj_list_dxlnode);
 
 	// extract a matching target entry that is a window spec
 	static TargetEntry *GetWindowSpecTargetEntry(Node *node,
@@ -380,6 +378,14 @@ public:
 
 	// return agg kind as a CHAR
 	static CHAR GetAggKind(EdxlAggrefKind aggkind);
+
+	// check if const func returns composite type
+	static BOOL IsCompositeConst(CMemoryPool *mp, CMDAccessor *md_accessor,
+								 const RangeTblFunction *rtfunc);
+
+	// check if rel contains foreign partitions
+	static BOOL RelContainsForeignPartitions(const IMDRelation *rel,
+											 CMDAccessor *md_accessor);
 };
 }  // namespace gpdxl
 

@@ -21,7 +21,6 @@
  * single row error handling the first error will raise an error and the
  * query will terminate.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2007-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -273,6 +272,10 @@ external_beginscan(Relation relation, uint32 scancounter,
 	 * don't append to entry->options directly, we only store the encoding in
 	 * entry->encoding (and ftoptions)
 	 */
+	if (fmttype_is_custom(fmtType))
+	{
+		extOptions = NIL;
+	}
 	extOptions = appendCopyEncodingOption(list_copy(extOptions), encoding);
 
 	/*
@@ -283,7 +286,7 @@ external_beginscan(Relation relation, uint32 scancounter,
 									external_getdata_callback,
 									(void *) scan,
 									NIL,
-									(fmttype_is_custom(fmtType) ? NIL : extOptions));
+									extOptions);
 
 	if (scan->fs_pstate->opts.header_line && Gp_role == GP_ROLE_DISPATCH)
 	{

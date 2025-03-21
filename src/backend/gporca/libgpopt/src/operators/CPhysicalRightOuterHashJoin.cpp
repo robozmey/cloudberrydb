@@ -32,9 +32,9 @@ using namespace gpopt;
 CPhysicalRightOuterHashJoin::CPhysicalRightOuterHashJoin(
 	CMemoryPool *mp, CExpressionArray *pdrgpexprOuterKeys,
 	CExpressionArray *pdrgpexprInnerKeys, IMdIdArray *hash_opfamilies,
-	CXform::EXformId origin_xform)
+	BOOL is_null_aware, CXform::EXformId origin_xform)
 	: CPhysicalHashJoin(mp, pdrgpexprOuterKeys, pdrgpexprInnerKeys,
-						hash_opfamilies, origin_xform)
+						hash_opfamilies, is_null_aware, origin_xform)
 {
 	ULONG ulDistrReqs = 1 + NumDistrReq();
 	SetDistrRequests(ulDistrReqs);
@@ -52,9 +52,17 @@ CPhysicalRightOuterHashJoin::CPhysicalRightOuterHashJoin(
 //---------------------------------------------------------------------------
 CPhysicalRightOuterHashJoin::~CPhysicalRightOuterHashJoin() = default;
 
+CDistributionSpec *
+CPhysicalRightOuterHashJoin::PdsDerive(CMemoryPool *mp,
+									   CExpressionHandle &exprhdl) const
+{
+	return PdsDeriveForOuterJoin(mp, exprhdl);
+}
+
+
 //---------------------------------------------------------------------------
 //	@function:
-//		CPhysicalRightOuterHashJoin::PdsRequired
+//		CPhysicalRightOuterHashJoin::Ped
 //
 //	@doc:
 //		Compute required distribution of the n-th child
@@ -65,42 +73,8 @@ CPhysicalRightOuterHashJoin::Ped(CMemoryPool *mp, CExpressionHandle &exprhdl,
 								 CReqdPropPlan *prppInput, ULONG child_index,
 								 CDrvdPropArray *pdrgpdpCtxt, ULONG ulOptReq)
 {
-	// create the following requests:
-	// 1) hash-hash (provided by CPhysicalHashJoin::Ped)
-	// 2) singleton-singleton
-	//
-	// We also could create a replicated-hashed and replicated-non-singleton request, but that isn't a promising
-	// alternative as we would be broadcasting the outer side. In that case, an LOJ would be better.
-
-	CDistributionSpec *const pdsInput = prppInput->Ped()->PdsRequired();
-	CEnfdDistribution::EDistributionMatching dmatch =
-		Edm(prppInput, child_index, pdrgpdpCtxt, ulOptReq);
-
-	if (exprhdl.NeedsSingletonExecution() || exprhdl.HasOuterRefs())
-	{
-		return GPOS_NEW(mp) CEnfdDistribution(
-			PdsRequireSingleton(mp, exprhdl, pdsInput, child_index), dmatch);
-	}
-
-	const ULONG ulHashDistributeRequests = NumDistrReq();
-
-	if (ulOptReq < ulHashDistributeRequests)
-	{
-		// requests 1 .. N are (redistribute, redistribute)
-		CDistributionSpec *pds = PdsRequiredRedistribute(
-			mp, exprhdl, pdsInput, child_index, pdrgpdpCtxt, ulOptReq);
-		if (CDistributionSpec::EdtHashed == pds->Edt())
-		{
-			CDistributionSpecHashed *pdsHashed =
-				CDistributionSpecHashed::PdsConvert(pds);
-			pdsHashed->ComputeEquivHashExprs(mp, exprhdl);
-		}
-		return GPOS_NEW(mp) CEnfdDistribution(pds, dmatch);
-	}
-	GPOS_ASSERT(ulOptReq == NumDistrReq());
-	return GPOS_NEW(mp) CEnfdDistribution(
-		PdsRequiredSingleton(mp, exprhdl, pdsInput, child_index, pdrgpdpCtxt),
-		dmatch);
+	return PedRightOrFullJoin(mp, exprhdl, prppInput, child_index, pdrgpdpCtxt,
+							  ulOptReq);
 }
 
 void
@@ -119,5 +93,24 @@ CPhysicalRightOuterHashJoin::CreateOptRequests(CMemoryPool *mp)
 	SetDistrRequests(ulDistrReqs);
 
 	SetPartPropagateRequests(2);
+}
+
+CPartitionPropagationSpec *
+CPhysicalRightOuterHashJoin::PppsRequired(
+	CMemoryPool *mp, CExpressionHandle &exprhdl,
+	CPartitionPropagationSpec *pppsRequired, ULONG child_index,
+	CDrvdPropArray *pdrgpdpCtxt, ULONG ulOptReq) const
+{
+	return PppsRequiredForJoins(mp, exprhdl, pppsRequired, child_index,
+								pdrgpdpCtxt, ulOptReq);
+}
+
+// In the following function, we are generating the Derived property :
+// "Partition Propagation Spec" of Right Outer Hash join.
+CPartitionPropagationSpec *
+CPhysicalRightOuterHashJoin::PppsDerive(CMemoryPool *mp,
+										CExpressionHandle &exprhdl) const
+{
+	return PppsDeriveForJoins(mp, exprhdl);
 }
 // EOF

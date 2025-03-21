@@ -3,7 +3,6 @@
  * parse_relation.c
  *	  parser support routines dealing with relations
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -1462,7 +1461,7 @@ addRangeTableEntry(ParseState *pstate,
 	 * (for update | no key update | share | key share) in postgres
 	 * is to hold RowShareLock on tables during parsing stage, and
 	 * generate a LockRows plan node for executor to lock the tuples.
-	 * It is not easy to lock tuples in Cloudberry database, since
+	 * It is not easy to lock tuples in Apache Cloudberry, since
 	 * tuples may be fetched through motion nodes.
 	 *
 	 * But when Global Deadlock Detector is enabled, and the select
@@ -1496,7 +1495,7 @@ addRangeTableEntry(ParseState *pstate,
 		lockmode = pstate->p_canOptSelectLockingClause ? RowShareLock : ExclusiveLock;
 		if (lockmode == ExclusiveLock && locking->waitPolicy != LockWaitBlock)
 			ereport(WARNING,
-					(errmsg("Upgrade the lockmode to ExclusiveLock on table(%s) and ingore the wait policy.",
+					(errmsg("Upgrade the lockmode to ExclusiveLock on table(%s) and ignore the wait policy.",
 					 RelationGetRelationName(rel))));
 
 		heap_close(rel, NoLock);
@@ -2017,8 +2016,16 @@ addRangeTableEntryForFunction(ParseState *pstate,
 
 			/*
 			 * Use the column definition list to construct a tupdesc and fill
-			 * in the RangeTblFunction's lists.
+			 * in the RangeTblFunction's lists.  Limit number of columns to
+			 * MaxHeapAttributeNumber, because CheckAttributeNamesTypes will.
 			 */
+			if (list_length(coldeflist) > MaxHeapAttributeNumber)
+				ereport(ERROR,
+						(errcode(ERRCODE_TOO_MANY_COLUMNS),
+						 errmsg("column definition lists can have at most %d entries",
+								MaxHeapAttributeNumber),
+						 parser_errposition(pstate,
+											exprLocation((Node *) coldeflist))));
 			tupdesc = CreateTemplateTupleDesc(list_length(coldeflist));
 			i = 1;
 			foreach(col, coldeflist)
@@ -2097,6 +2104,15 @@ addRangeTableEntryForFunction(ParseState *pstate,
 	{
 		if (rangefunc->ordinality)
 			totalatts++;
+
+		/* Disallow more columns than will fit in a tuple */
+		if (totalatts > MaxTupleAttributeNumber)
+			ereport(ERROR,
+					(errcode(ERRCODE_TOO_MANY_COLUMNS),
+					 errmsg("functions in FROM can return at most %d columns",
+							MaxTupleAttributeNumber),
+					 parser_errposition(pstate,
+										exprLocation((Node *) funcexprs))));
 
 		/* Merge the tuple descs of each function into a composite one */
 		tupdesc = CreateTemplateTupleDesc(totalatts);
@@ -2181,6 +2197,18 @@ addRangeTableEntryForTableFunc(ParseState *pstate,
 	int			numaliases;
 
 	Assert(pstate != NULL);
+
+	/* Disallow more columns than will fit in a tuple */
+	if (list_length(tf->colnames) > MaxTupleAttributeNumber)
+		ereport(ERROR,
+				(errcode(ERRCODE_TOO_MANY_COLUMNS),
+				 errmsg("functions in FROM can return at most %d columns",
+						MaxTupleAttributeNumber),
+				 parser_errposition(pstate,
+									exprLocation((Node *) tf))));
+	Assert(list_length(tf->coltypes) == list_length(tf->colnames));
+	Assert(list_length(tf->coltypmods) == list_length(tf->colnames));
+	Assert(list_length(tf->colcollations) == list_length(tf->colnames));
 
 	rte->rtekind = RTE_TABLEFUNC;
 	rte->relid = InvalidOid;

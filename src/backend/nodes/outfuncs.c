@@ -3,7 +3,6 @@
  * outfuncs.c
  *	  Output functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -505,6 +504,7 @@ _outModifyTable(StringInfo str, const ModifyTable *node)
 	WRITE_NODE_FIELD(onConflictWhere);
 	WRITE_UINT_FIELD(exclRelRTI);
 	WRITE_NODE_FIELD(exclRelTlist);
+	WRITE_BOOL_FIELD(forceTupleRouting);
 }
 
 static void
@@ -624,6 +624,17 @@ _outSeqScan(StringInfo str, const SeqScan *node)
 }
 
 static void
+_outDynamicSeqScan(StringInfo str, const DynamicSeqScan *node)
+{
+	WRITE_NODE_TYPE("DYNAMICSEQSCAN");
+
+	_outScanInfo(str, (Scan *)node);
+	WRITE_NODE_FIELD(partOids);
+	WRITE_NODE_FIELD(part_prune_info);
+	WRITE_NODE_FIELD(join_prune_paramids);
+}
+
+static void
 _outSampleScan(StringInfo str, const SampleScan *node)
 {
 	WRITE_NODE_TYPE("SAMPLESCAN");
@@ -634,10 +645,8 @@ _outSampleScan(StringInfo str, const SampleScan *node)
 }
 
 static void
-_outIndexScan(StringInfo str, const IndexScan *node)
+outIndexScanFields(StringInfo str, const IndexScan *node)
 {
-	WRITE_NODE_TYPE("INDEXSCAN");
-
 	_outScanInfo(str, (const Scan *) node);
 
 	WRITE_OID_FIELD(indexid);
@@ -650,10 +659,16 @@ _outIndexScan(StringInfo str, const IndexScan *node)
 }
 
 static void
-_outIndexOnlyScan(StringInfo str, const IndexOnlyScan *node)
+_outIndexScan(StringInfo str, const IndexScan *node)
 {
-	WRITE_NODE_TYPE("INDEXONLYSCAN");
+	WRITE_NODE_TYPE("INDEXSCAN");
 
+	outIndexScanFields(str, node);
+}
+
+static void
+outIndexOnlyScanFields(StringInfo str, const IndexOnlyScan *node)
+{
 	_outScanInfo(str, (const Scan *) node);
 
 	WRITE_OID_FIELD(indexid);
@@ -665,11 +680,39 @@ _outIndexOnlyScan(StringInfo str, const IndexOnlyScan *node)
 }
 
 static void
-_outBitmapIndexScan(StringInfo str, const BitmapIndexScan *node)
+_outIndexOnlyScan(StringInfo str, const IndexOnlyScan *node)
 {
-	WRITE_NODE_TYPE("BITMAPINDEXSCAN");
+	WRITE_NODE_TYPE("INDEXONLYSCAN");
 
-	_outScanInfo(str, (const Scan *) node);
+	outIndexOnlyScanFields(str, node);
+}
+
+static void
+_outDynamicIndexScan(StringInfo str, const DynamicIndexScan *node)
+{
+	WRITE_NODE_TYPE("DYNAMICINDEXSCAN");
+
+	outIndexScanFields(str, &node->indexscan);
+	WRITE_NODE_FIELD(partOids);
+	WRITE_NODE_FIELD(part_prune_info);
+	WRITE_NODE_FIELD(join_prune_paramids);
+}
+
+static void
+_outDynamicIndexOnlyScan(StringInfo str, const DynamicIndexOnlyScan *node)
+{
+	WRITE_NODE_TYPE("DYNAMICINDEXONLYSCAN");
+
+	outIndexOnlyScanFields(str, &node->indexscan);
+	WRITE_NODE_FIELD(partOids);
+	WRITE_NODE_FIELD(part_prune_info);
+	WRITE_NODE_FIELD(join_prune_paramids);
+}
+
+static void
+_outBitmapIndexScanFields(StringInfo str, const BitmapIndexScan *node)
+{
+	_outScanInfo(str, (Scan *) node);
 
 	WRITE_OID_FIELD(indexid);
 	WRITE_BOOL_FIELD(isshared);
@@ -678,13 +721,46 @@ _outBitmapIndexScan(StringInfo str, const BitmapIndexScan *node)
 }
 
 static void
+_outBitmapIndexScan(StringInfo str, const BitmapIndexScan *node)
+{
+	WRITE_NODE_TYPE("BITMAPINDEXSCAN");
+
+	_outBitmapIndexScanFields(str, node);
+}
+
+static void
+_outDynamicBitmapIndexScan(StringInfo str, const DynamicBitmapIndexScan *node)
+{
+	WRITE_NODE_TYPE("DYNAMICBITMAPINDEXSCAN");
+
+	_outBitmapIndexScanFields(str, &node->biscan);
+}
+
+static void
+outBitmapHeapScanFields(StringInfo str, const BitmapHeapScan *node)
+{
+	_outScanInfo(str, (const Scan *) node);
+
+	WRITE_NODE_FIELD(bitmapqualorig);
+}
+
+static void
 _outBitmapHeapScan(StringInfo str, const BitmapHeapScan *node)
 {
 	WRITE_NODE_TYPE("BITMAPHEAPSCAN");
 
-	_outScanInfo(str, (const Scan *) node);
+	outBitmapHeapScanFields(str, node);
+}
 
-	WRITE_NODE_FIELD(bitmapqualorig);
+static void
+_outDynamicBitmapHeapScan(StringInfo str, const DynamicBitmapHeapScan *node)
+{
+	WRITE_NODE_TYPE("DYNAMICBITMAPHEAPSCAN");
+
+	outBitmapHeapScanFields(str, &node->bitmapheapscan);
+	WRITE_NODE_FIELD(partOids);
+	WRITE_NODE_FIELD(part_prune_info);
+	WRITE_NODE_FIELD(join_prune_paramids);
 }
 
 static void
@@ -773,10 +849,8 @@ _outWorkTableScan(StringInfo str, const WorkTableScan *node)
 }
 
 static void
-_outForeignScan(StringInfo str, const ForeignScan *node)
+outForeignScanFields(StringInfo str, const ForeignScan *node)
 {
-	WRITE_NODE_TYPE("FOREIGNSCAN");
-
 	_outScanInfo(str, (const Scan *) node);
 
 	WRITE_ENUM_FIELD(operation, CmdType);
@@ -788,6 +862,26 @@ _outForeignScan(StringInfo str, const ForeignScan *node)
 	WRITE_NODE_FIELD(fdw_recheck_quals);
 	WRITE_BITMAPSET_FIELD(fs_relids);
 	WRITE_BOOL_FIELD(fsSystemCol);
+}
+
+static void
+_outForeignScan(StringInfo str, const ForeignScan *node)
+{
+	WRITE_NODE_TYPE("FOREIGNSCAN");
+
+	outForeignScanFields(str, node);
+}
+
+static void
+_outDynamicForeignScan(StringInfo str, const DynamicForeignScan *node)
+{
+	WRITE_NODE_TYPE("DYNAMICFOREIGNSCAN");
+
+	outForeignScanFields(str, &node->foreignscan);
+	WRITE_NODE_FIELD(partOids);
+	WRITE_NODE_FIELD(part_prune_info);
+	WRITE_NODE_FIELD(join_prune_paramids);
+	WRITE_NODE_FIELD(fdw_private_list);
 }
 
 #ifndef COMPILING_BINARY_FUNCS
@@ -953,8 +1047,6 @@ _outSortInfo(StringInfo str, const Sort *node)
 	WRITE_OID_ARRAY(sortOperators, node->numCols);
 	WRITE_OID_ARRAY(collations, node->numCols);
 	WRITE_BOOL_ARRAY(nullsFirst, node->numCols);
-	/* CDB */
-    WRITE_BOOL_FIELD(noduplicates);
 }
 
 static void
@@ -1079,7 +1171,6 @@ _outPlanRowMark(StringInfo str, const PlanRowMark *node)
 	WRITE_ENUM_FIELD(strength, LockClauseStrength);
 	WRITE_ENUM_FIELD(waitPolicy, LockWaitPolicy);
 	WRITE_BOOL_FIELD(isParent);
-	WRITE_BOOL_FIELD(canOptSelectLockingClause);
 }
 
 static void
@@ -1210,6 +1301,8 @@ _outIntoClause(StringInfo str, const IntoClause *node)
 	WRITE_BOOL_FIELD(ivm);
 	WRITE_OID_FIELD(matviewOid);
 	WRITE_STRING_FIELD(enrname);
+	WRITE_BOOL_FIELD(dynamicTbl);
+	WRITE_STRING_FIELD(schedule);
 }
 
 static void
@@ -2889,6 +2982,7 @@ _outCreateStmtInfo(StringInfo str, const CreateStmt *node)
 	WRITE_STRING_FIELD(tablespacename);
 	WRITE_STRING_FIELD(accessMethod);
 	WRITE_BOOL_FIELD(if_not_exists);
+	WRITE_ENUM_FIELD(origin, CreateStmtOrigin);
 
 	WRITE_NODE_FIELD(distributedBy);
 	WRITE_NODE_FIELD(partitionBy);
@@ -4033,16 +4127,48 @@ _outCreateDirectoryTableStmt(StringInfo str, const CreateDirectoryTableStmt *nod
 
 	_outCreateStmtInfo(str, (const CreateStmt *) node);
 	WRITE_STRING_FIELD(tablespacename);
+	WRITE_STRING_FIELD(location);
 }
 
 static void
 _outAlterDirectoryTableStmt(StringInfo str, const AlterDirectoryTableStmt *node)
 {
 	WRITE_NODE_TYPE("ALTERDIRECTORYTABLESTMT");
-	
+
 	WRITE_NODE_FIELD(relation);
 	WRITE_NODE_FIELD(tags);
 	WRITE_BOOL_FIELD(unsettag);
+}
+
+static void
+_outCreateTaskStmt(StringInfo str, const CreateTaskStmt *node)
+{
+	WRITE_NODE_TYPE("CREATETASKSTMT");
+
+	WRITE_STRING_FIELD(taskname);
+	WRITE_STRING_FIELD(schedule);
+	WRITE_STRING_FIELD(sql);
+	WRITE_NODE_FIELD(options);
+	WRITE_BOOL_FIELD(if_not_exists);
+}
+
+static void
+_outAlterTaskStmt(StringInfo str, const AlterTaskStmt *node)
+{
+	WRITE_NODE_TYPE("ALTERTASKSTMT");
+
+	WRITE_STRING_FIELD(taskname);
+	WRITE_NODE_FIELD(options);
+	WRITE_BOOL_FIELD(missing_ok);
+}
+
+static void
+_outDropTaskStmt(StringInfo str, const DropTaskStmt *node)
+{
+	WRITE_NODE_TYPE("DROPTASKSTMT");
+
+	WRITE_STRING_FIELD(taskname);
+	WRITE_BOOL_FIELD(missing_ok);
 }
 
 #include "outfuncs_common.c"
@@ -4128,6 +4254,9 @@ outNode(StringInfo str, const void *obj)
 			case T_SeqScan:
 				_outSeqScan(str, obj);
 				break;
+			case T_DynamicSeqScan:
+				_outDynamicSeqScan(str, obj);
+				break;
 			case T_ExternalScanInfo:
 				_outExternalScanInfo(str, obj);
 				break;
@@ -4137,14 +4266,26 @@ outNode(StringInfo str, const void *obj)
 			case T_IndexScan:
 				_outIndexScan(str, obj);
 				break;
+			case T_DynamicIndexScan:
+				_outDynamicIndexScan(str,obj);
+				break;
+			case T_DynamicIndexOnlyScan:
+				_outDynamicIndexOnlyScan(str,obj);
+				break;
 			case T_IndexOnlyScan:
 				_outIndexOnlyScan(str, obj);
 				break;
 			case T_BitmapIndexScan:
 				_outBitmapIndexScan(str, obj);
 				break;
+			case T_DynamicBitmapIndexScan:
+				_outDynamicBitmapIndexScan(str, obj);
+				break;
 			case T_BitmapHeapScan:
 				_outBitmapHeapScan(str, obj);
+				break;
+			case T_DynamicBitmapHeapScan:
+				_outDynamicBitmapHeapScan(str, obj);
 				break;
 			case T_TidScan:
 				_outTidScan(str, obj);
@@ -4175,6 +4316,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_ForeignScan:
 				_outForeignScan(str, obj);
+				break;
+			case T_DynamicForeignScan:
+				_outDynamicForeignScan(str, obj);
 				break;
 			case T_CustomScan:
 				_outCustomScan(str, obj);
@@ -5201,6 +5345,18 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_AlterDirectoryTableStmt:
 				_outAlterDirectoryTableStmt(str, obj);
+				break;
+			case T_DropDirectoryTableStmt:
+				_outDropDirectoryTableStmt(str, obj);
+				break;
+			case T_CreateTaskStmt:
+				_outCreateTaskStmt(str, obj);
+				break;
+			case T_AlterTaskStmt:
+				_outAlterTaskStmt(str, obj);
+				break;
+			case T_DropTaskStmt:
+				_outDropTaskStmt(str, obj);
 				break;
 			default:
 

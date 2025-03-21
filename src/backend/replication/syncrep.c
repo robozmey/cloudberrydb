@@ -63,7 +63,6 @@
  * the standbys which are considered as synchronous at that moment
  * will release waiters from the queue.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -175,11 +174,13 @@ static bool SyncRepQueueIsOrderedByLSN(int mode);
  * to be flushed if synchronous_commit is set to the higher level of
  * remote_apply, because only commit records provide apply feedback.
  *
- * GPDB_12_MERGE_FIXME: we now have quite few hacks for IS_QUERY_DISPATCHER to
- * internally treat it as SYNC rep and not using the GUC to make it
- * happen. All the places in syncrep.c and walsender.c having conditionals for
+ * TODO: Longer term goal is to remove hacks under IS_QUERY_DISPATCHER in
+ * syncrep.c and walsender.c be replaced by synchronous_standby_names GUC. All
+ * the places in syncrep.c and walsender.c having conditionals for
  * IS_QUERY_DISPATCHER should be removed and we should try to use proper GUC
- * mechanism to force sync nature for master-standby as well.
+ * mechanism to force sync nature for master-standby as well. Though that goal
+ * is hard to accomplish without implementing coordinator-standby
+ * autofailover.
  */
 void
 SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
@@ -921,8 +922,6 @@ SyncRepGetCandidateStandbys(SyncRepStandbyData **standbys)
 	/* Collect raw data from shared memory */
 	n = 0;
 
-	/* GPDB_12_MERGE_FIXME: Should this be in SyncRepGetSyncStandbysQuorum()
-	 * instead? */
 	if (IS_QUERY_DISPATCHER())
 	{
 		bool				syncStandbyPresent;

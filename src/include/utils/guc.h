@@ -4,7 +4,6 @@
  * External declarations pertaining to backend/utils/misc/guc.c and
  * backend/utils/misc/guc-file.l
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2007-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Copyright (c) 2000-2021, PostgreSQL Global Development Group
@@ -298,6 +297,7 @@ extern int  gp_appendonly_insert_files_tuples_range;
 extern int  gp_random_insert_segments;
 extern bool enable_answer_query_using_materialized_views;
 extern bool enable_offload_entry_to_qe;
+extern bool	aqumv_allow_foreign_table;
 /*
  * gp_enable_multiphase_limit is not cost based.
  * When set to false, the planner will not use multi-phase limit.
@@ -315,6 +315,7 @@ extern bool gp_enable_multiphase_limit;
  * 10% of the tuples are hidden.
  */
 extern int  gp_appendonly_compaction_threshold;
+extern int  gp_appendonly_compaction_segfile_limit;
 extern bool gp_heap_require_relhasoids_match;
 extern bool	debug_xlog_record_read;
 extern bool Debug_cancel_print;
@@ -342,10 +343,12 @@ extern int rep_lag_avoidance_threshold;
 extern bool gp_maintenance_mode;
 extern bool gp_maintenance_conn;
 extern bool allow_segment_DML;
+extern bool gp_enable_statement_trigger;
 
 extern bool gp_ignore_error_table;
 
 extern bool	Debug_dtm_action_primary;
+extern bool Debug_shareinput_xslice;
 
 extern bool gp_log_optimization_time;
 extern bool log_parser_stats;
@@ -396,6 +399,7 @@ extern bool trace_sort;
 extern bool vmem_process_interrupt;
 extern bool execute_pruned_plan;
 
+extern int gp_max_partition_level;
 extern bool gp_enable_relsize_collection;
 
 /* Debug DTM Action */
@@ -506,6 +510,7 @@ extern bool optimizer_enable_outerjoin_rewrite;
 extern bool optimizer_enable_multiple_distinct_aggs;
 extern bool optimizer_enable_hashjoin_redistribute_broadcast_children;
 extern bool optimizer_enable_broadcast_nestloop_outer_child;
+extern bool optimizer_discard_redistribute_hashjoin;
 extern bool optimizer_enable_streaming_material;
 extern bool optimizer_enable_gather_on_segment_for_dml;
 extern bool optimizer_enable_assert_maxonerow;
@@ -513,25 +518,30 @@ extern bool optimizer_enable_constant_expression_evaluation;
 extern bool optimizer_enable_bitmapscan;
 extern bool optimizer_enable_outerjoin_to_unionall_rewrite;
 extern bool optimizer_enable_ctas;
-extern bool optimizer_enable_partial_index;
 extern bool optimizer_enable_dml;
 extern bool	optimizer_enable_dml_constraints;
 extern bool optimizer_enable_direct_dispatch;
 extern bool optimizer_enable_master_only_queries;
 extern bool optimizer_enable_hashjoin;
 extern bool optimizer_enable_dynamictablescan;
+extern bool optimizer_enable_dynamicindexscan;
+extern bool optimizer_enable_dynamicindexonlyscan;
+extern bool optimizer_enable_dynamicbitmapscan;
 extern bool optimizer_enable_indexscan;
 extern bool optimizer_enable_indexonlyscan;
 extern bool optimizer_enable_tablescan;
 extern bool optimizer_enable_eageragg;
+extern bool optimizer_enable_orderedagg;
 extern bool optimizer_expand_fulljoin;
 extern bool optimizer_enable_hashagg;
 extern bool optimizer_enable_groupagg;
 extern bool optimizer_enable_mergejoin;
-extern bool optimizer_prune_unused_columns;
 extern bool optimizer_enable_redistribute_nestloop_loj_inner_child;
 extern bool optimizer_force_comprehensive_join_implementation;
 extern bool optimizer_enable_replicated_table;
+extern bool optimizer_enable_foreign_table;
+extern bool optimizer_enable_right_outer_join;
+extern bool optimizer_enable_query_parameter;
 
 /* Optimizer plan enumeration related GUCs */
 extern bool optimizer_enumerate_plans;
@@ -565,6 +575,7 @@ extern int optimizer_join_arity_for_associativity_commutativity;
 extern int optimizer_cte_inlining_bound;
 extern int optimizer_push_group_by_below_setop_threshold;
 extern int optimizer_xform_bind_threshold;
+extern int optimizer_skew_factor;
 extern bool optimizer_force_multistage_agg;
 extern bool optimizer_force_three_stage_scalar_dqa;
 extern bool optimizer_force_expanded_distinct_aggs;
@@ -583,6 +594,8 @@ extern bool optimizer_cte_inlining;
 extern bool optimizer_enable_space_pruning;
 extern bool optimizer_enable_associativity;
 extern bool optimizer_enable_range_predicate_dpe;
+extern bool optimizer_enable_use_distribution_in_dqa;
+extern bool optimizer_enable_push_join_below_union_all;
 
 /* Analyze related GUCs for Optimizer */
 extern bool optimizer_analyze_root_partition;
@@ -642,7 +655,6 @@ typedef enum
 extern IndexCheckType gp_indexcheck_insert;
 
 /* Storage option names */
-#define SOPT_APPENDONLY    "appendonly"
 #define SOPT_FILLFACTOR    "fillfactor"
 #define SOPT_BLOCKSIZE     "blocksize"
 #define SOPT_COMPTYPE      "compresstype"
@@ -830,6 +842,7 @@ extern const char *gpvars_show_gp_resource_manager_policy(void);
 extern const char *gpvars_assign_gp_resqueue_memory_policy(const char *newval, bool doit, GucSource source);
 extern const char *gpvars_show_gp_resqueue_memory_policy(void);
 extern bool gpvars_check_statement_mem(int *newval, void **extra, GucSource source);
+extern bool gpvars_check_rg_query_fixed_mem(int *newval, void **extra, GucSource source);
 extern int guc_name_compare(const char *namea, const char *nameb);
 extern void DispatchSyncPGVariable(struct config_generic * gconfig);
 

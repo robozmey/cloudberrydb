@@ -3,7 +3,6 @@
  * pathnode.c
  *	  Routines to manipulate pathlists and create path nodes
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -77,7 +76,7 @@ static List *reparameterize_pathlist_by_child(PlannerInfo *root,
 											  List *pathlist,
 											  RelOptInfo *child_rel);
 
-static void set_append_path_locus(PlannerInfo *root, Path *pathnode, RelOptInfo *rel,
+static bool set_append_path_locus(PlannerInfo *root, Path *pathnode, RelOptInfo *rel,
 					  List *pathkeys, int parallel_workers, bool parallel_aware);
 static CdbPathLocus
 adjust_modifytable_subpath(PlannerInfo *root, CmdType operation,
@@ -1476,7 +1475,8 @@ create_append_path(PlannerInfo *root,
 	else
 		pathnode->limit_tuples = -1.0;
 
-	set_append_path_locus(root, (Path *)pathnode, rel, NIL, parallel_workers, parallel_aware);
+	if (!set_append_path_locus(root, (Path *)pathnode, rel, NIL, parallel_workers, parallel_aware))
+		return NULL;
 
 	foreach(l, pathnode->subpaths)
 	{
@@ -1611,7 +1611,8 @@ create_merge_append_path(PlannerInfo *root,
 	 * Add Motions to the child nodes as needed, and determine the locus
 	 * of the MergeAppend itself.
 	 */
-	set_append_path_locus(root, (Path *) pathnode, rel, pathkeys, 0, false);
+	if (!set_append_path_locus(root, (Path *) pathnode, rel, pathkeys, 0, false))
+		return NULL;
 
 	/*
 	 * Add up the sizes and costs of the input paths.
@@ -1679,8 +1680,9 @@ create_merge_append_path(PlannerInfo *root,
  * Set the locus of an Append or MergeAppend path.
  *
  * This modifies the 'subpaths', costs fields, and locus of 'pathnode'.
+ * It will return false if fails to create motion for parameterized path.
  */
-static void
+static bool
 set_append_path_locus(PlannerInfo *root, Path *pathnode, RelOptInfo *rel,
 					  List *pathkeys, int parallel_workers, bool parallel_aware)
 {
@@ -1712,7 +1714,7 @@ set_append_path_locus(PlannerInfo *root, Path *pathnode, RelOptInfo *rel,
 	if (!subpaths)
 	{
 		CdbPathLocus_MakeGeneral(&pathnode->locus);
-		return;
+		return true;
 	}
 
 	/*
@@ -2110,6 +2112,9 @@ set_append_path_locus(PlannerInfo *root, Path *pathnode, RelOptInfo *rel,
 				subpath = cdbpath_create_motion_path(root, subpath, pathkeys, false, targetlocus);
 			else
 				subpath = cdbpath_create_motion_path(root, subpath, NIL, false, targetlocus);
+
+			if (subpath == NULL)
+				return false;
 		}
 
 		pathnode->sameslice_relids = bms_union(pathnode->sameslice_relids, subpath->sameslice_relids);
@@ -2159,6 +2164,8 @@ set_append_path_locus(PlannerInfo *root, Path *pathnode, RelOptInfo *rel,
 	pathnode->parallel_workers = targetlocus.parallel_workers;
 
 	*subpaths_out = new_subpaths;
+
+	return true;
 }
 
 /*
@@ -3394,23 +3401,14 @@ create_ctescan_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->parallel_aware = false;
 	pathnode->parallel_safe = rel->consider_parallel;
 	pathnode->parallel_workers = 0;
-	// GPDB_96_MERGE_FIXME: Why do we set pathkeys in GPDB, but not in Postgres?
-	// pathnode->pathkeys = NIL;	/* XXX for now, result is always unordered */
 	pathnode->pathkeys = pathkeys;
 	pathnode->locus = locus;
 
-	/*
-	 * We can't extract these two values from the subplan, so we simple set
-	 * them to their worst case here.
-	 *
-	 * GPDB_96_MERGE_FIXME: we do have the subpath, at least if it's not a
-	 * shared cte
-	 */
-	pathnode->motionHazard = true;
-	pathnode->barrierHazard = true;
-	pathnode->rescannable = false;
 	pathnode->sameslice_relids = NULL;
 
+	/*
+	 * GPDB: we do have the subpath, at least if it's not a shared cte.
+	 */
 	if (subpath)
 	{
 		/* copy the cost estimates from the subpath */
@@ -3427,10 +3425,21 @@ create_ctescan_path(PlannerInfo *root, RelOptInfo *rel,
 		/* CBDB_PARALLEL_FIXME: Is it correct to set parallel workers here? */
 		pathnode->parallel_workers = subpath->parallel_workers;
 
+		pathnode->motionHazard = subpath->motionHazard;
+		pathnode->rescannable = subpath->rescannable;
+		pathnode->barrierHazard = subpath->barrierHazard;
+
 		ctepath->subpath = subpath;
 	}
 	else
 	{
+		/*
+	 	 * We can't extract these two values from the subplan, so we simple set
+	 	 * them to their worst case here.
+		 */
+		pathnode->motionHazard = true;
+		pathnode->rescannable = false;
+		pathnode->barrierHazard = true;
 		/* Shared scan. We'll use the cost estimates from the CTE rel. */
 		cost_ctescan(pathnode, root, rel, pathnode->param_info);
 	}
@@ -3494,19 +3503,13 @@ create_resultscan_path(PlannerInfo *root, RelOptInfo *rel,
 		char		exec_location;
 		exec_location = check_execute_on_functions((Node *) rel->reltarget->exprs);
 
-		if (exec_location == PROEXECLOCATION_COORDINATOR)
-			CdbPathLocus_MakeEntry(&pathnode->locus);
-		else if (exec_location == PROEXECLOCATION_ALL_SEGMENTS)
-		{
-			/* CBDB_PARALLEL_FIXME: I'm not sure if this makes sense. This
-			 * would return multiple rows, one for each segment, but usually
-			 * a "SELECT func()" is expected to return just one row.
-			 */
-			CdbPathLocus_MakeStrewn(&pathnode->locus,
-									getgpsegmentCount(), 0);
-		}
-		else
-			CdbPathLocus_MakeGeneral(&pathnode->locus);
+		/*
+		 * A function with EXECUTE ON { COORDINATOR | ALL SEGMENTS } attribute
+		 * must be a set-returning function, a subquery has set-returning 
+		 * functions in tlist can't be pulled up as RTE_RESULT relation.
+		 */
+		Assert(exec_location == PROEXECLOCATION_ANY);
+		CdbPathLocus_MakeGeneral(&pathnode->locus);
 	}
 
 	cost_resultscan(pathnode, root, rel, pathnode->param_info);
@@ -3602,6 +3605,35 @@ path_contains_inner_index(Path *path)
 	return false;
 }
 
+/* Set locus for foreign path node */
+static void
+make_cdbpathlocus_for_foreign_relations(struct PlannerInfo   *root,
+                          struct RelOptInfo    *rel,
+						  ForeignPath *pathnode)
+{
+	ForeignServer *server = NULL;
+	
+	switch (rel->exec_location)
+	{
+		case FTEXECLOCATION_ANY:
+			CdbPathLocus_MakeGeneral(&(pathnode->path.locus));
+			break;
+		case FTEXECLOCATION_ALL_SEGMENTS:
+			server = GetForeignServer(rel->serverid);
+			if (server)
+				CdbPathLocus_MakeStrewn(&(pathnode->path.locus), server->num_segments, 0);
+			else
+				CdbPathLocus_MakeStrewn(&(pathnode->path.locus), getgpsegmentCount(), 0);
+			break;
+		case FTEXECLOCATION_COORDINATOR:
+			CdbPathLocus_MakeEntry(&(pathnode->path.locus));
+			break;
+		default:
+			elog(ERROR, "unrecognized exec_location '%c'", rel->exec_location);
+	}
+	return;
+}
+
 /*
  * create_foreignscan_path
  *	  Creates a path corresponding to a scan of a foreign base table,
@@ -3639,30 +3671,15 @@ create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->path.startup_cost = startup_cost;
 	pathnode->path.total_cost = total_cost;
 	pathnode->path.pathkeys = pathkeys;
-
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		switch (rel->exec_location)
-		{
-			case FTEXECLOCATION_ANY:
-				CdbPathLocus_MakeGeneral(&(pathnode->path.locus));
-				break;
-			case FTEXECLOCATION_ALL_SEGMENTS:
-				CdbPathLocus_MakeStrewn(&(pathnode->path.locus), rel->num_segments, 0);
-				break;
-			case FTEXECLOCATION_COORDINATOR:
-				CdbPathLocus_MakeEntry(&(pathnode->path.locus));
-				break;
-			default:
-				elog(ERROR, "unrecognized exec_location '%c'", rel->exec_location);
-		}
+		make_cdbpathlocus_for_foreign_relations(root, rel, pathnode);
 	}
 	else
 	{
 		/* make entry locus for utility role */
 		CdbPathLocus_MakeEntry(&(pathnode->path.locus));
 	}
-
 	pathnode->fdw_outerpath = fdw_outerpath;
 	pathnode->fdw_private = fdw_private;
 
@@ -3712,22 +3729,15 @@ create_foreign_join_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->path.startup_cost = startup_cost;
 	pathnode->path.total_cost = total_cost;
 	pathnode->path.pathkeys = pathkeys;
-
-	switch (rel->exec_location)
+	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		case FTEXECLOCATION_ANY:
-			CdbPathLocus_MakeGeneral(&(pathnode->path.locus));
-			break;
-		case FTEXECLOCATION_ALL_SEGMENTS:
-			CdbPathLocus_MakeStrewn(&(pathnode->path.locus), rel->num_segments, 0);
-			break;
-		case FTEXECLOCATION_COORDINATOR:
-			CdbPathLocus_MakeEntry(&(pathnode->path.locus));
-			break;
-		default:
-			elog(ERROR, "unrecognized exec_location '%c'", rel->exec_location);
+		make_cdbpathlocus_for_foreign_relations(root, rel, pathnode);
 	}
-
+	else
+	{
+		/* make entry locus for utility role */
+		CdbPathLocus_MakeEntry(&(pathnode->path.locus));
+	}
 	pathnode->fdw_outerpath = fdw_outerpath;
 	pathnode->fdw_private = fdw_private;
 
@@ -3754,7 +3764,6 @@ create_foreign_upper_path(PlannerInfo *root, RelOptInfo *rel,
 						  List *fdw_private)
 {
 	ForeignPath *pathnode = makeNode(ForeignPath);
-
 	/*
 	 * Upper relations should never have any lateral references, since joining
 	 * is complete.
@@ -3772,22 +3781,15 @@ create_foreign_upper_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->path.startup_cost = startup_cost;
 	pathnode->path.total_cost = total_cost;
 	pathnode->path.pathkeys = pathkeys;
-
-	switch (rel->exec_location)
+	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		case FTEXECLOCATION_ANY:
-			CdbPathLocus_MakeGeneral(&(pathnode->path.locus));
-			break;
-		case FTEXECLOCATION_ALL_SEGMENTS:
-			CdbPathLocus_MakeStrewn(&(pathnode->path.locus), rel->num_segments, 0);
-			break;
-		case FTEXECLOCATION_COORDINATOR:
-			CdbPathLocus_MakeEntry(&(pathnode->path.locus));
-			break;
-		default:
-			elog(ERROR, "unrecognized exec_location '%c'", rel->exec_location);
+		make_cdbpathlocus_for_foreign_relations(root, rel, pathnode);
 	}
-
+	else
+	{
+		/* make entry locus for utility role */
+		CdbPathLocus_MakeEntry(&(pathnode->path.locus));
+	}
 	pathnode->fdw_outerpath = fdw_outerpath;
 	pathnode->fdw_private = fdw_private;
 

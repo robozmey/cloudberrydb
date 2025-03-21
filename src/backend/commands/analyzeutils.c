@@ -5,7 +5,6 @@
  *	  Provides utils functions for analyze.c
  *
  * Copyright (c) 2015, VMware, Inc. or its affiliates.
- * Portions Copyright (c) 2023, HashData Technology Limited.
  *
  *-------------------------------------------------------------------------
  */
@@ -227,6 +226,7 @@ aggregate_leaf_partition_MCVs(Oid relationOid,
 												  ndistinct, sumReltuples);
 	if (*result == NULL)
 	{
+		hash_destroy(datumHash);
 		*num_mcv = 0;
 		return mcvpairArray;
 	}
@@ -453,6 +453,7 @@ createDatumHashTable(unsigned int nEntries)
 	hash_ctl.entrysize = sizeof(MCVFreqEntry);
 	hash_ctl.hash = datumHashTableHash;
 	hash_ctl.match = datumHashTableMatch;
+	hash_ctl.hcxt = CurrentMemoryContext; /* VacAttrStats->anl_context */
 
 	return hash_create("DatumHashTable", nEntries, &hash_ctl,
 					   HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
@@ -1036,9 +1037,10 @@ getBucketSizes(const HeapTuple *heaptupleStats, const float4 *relTuples, int nPa
  *	needs_sample() -- checks if the analyze requires sampling the actual data
  */
 bool
-needs_sample(VacAttrStats **vacattrstats, int attr_cnt)
+needs_sample(Relation rel, VacAttrStats **vacattrstats, int attr_cnt)
 {
 	Assert(vacattrstats != NULL);
+	List *statext_oids;
 	int			i;
 
 	for (i = 0; i < attr_cnt; i++)
@@ -1047,6 +1049,15 @@ needs_sample(VacAttrStats **vacattrstats, int attr_cnt)
 		if (!vacattrstats[i]->merge_stats)
 			return true;
 	}
+
+	/* we must acquire sample rows to build extend statisics */
+	statext_oids = RelationGetStatExtList(rel);
+	if (statext_oids != NIL)
+	{
+		list_free(statext_oids);
+		return true;
+	}
+
 	return false;
 }
 

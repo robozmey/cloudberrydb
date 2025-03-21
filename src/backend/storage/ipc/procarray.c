@@ -34,7 +34,6 @@
  * happen, it would tie up KnownAssignedXids indefinitely, so we protect
  * ourselves by pruning the array when a valid list of running XIDs arrives.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -708,12 +707,6 @@ ProcArrayEndGxact(TMGXACT *tmGxact)
  * the caller to pass latestXid, instead of computing it from the PGPROC's
  * contents, because the subxid information in the PGPROC might be
  * incomplete.)
- *
- * GPDB: If this is a global transaction, we might need to do this action
- * later, rather than now. In that case, this function returns true for
- * needNotifyCommittedDtxTransaction, and does *not* change the state of the
- * PGPROC entry. This can only happen for commit; when !isCommit, this always
- * clears the PGPROC entry.
  */
 void
 ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
@@ -726,6 +719,7 @@ ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid)
 			MyProcPort ? MyProcPort->database_name : "",  // databaseName
 			""); // tableName
 #endif
+
 	if (TransactionIdIsValid(latestXid) || TransactionIdIsValid(tmGxact->gxid))
 	{
 		/*
@@ -2884,7 +2878,7 @@ GetSnapshotData(Snapshot snapshot, DtxContext distributedTransactionContext)
 
 	/*
 	 * Support for true serializable isolation is not yet implemented in
-	 * CloudberryDB.  See merge fixme in assign_XactIsoLevel().
+	 * Cloudberry.  See merge fixme in assign_XactIsoLevel().
 	 */
 	Assert(XactIsoLevel < XACT_SERIALIZABLE);
 
@@ -4019,10 +4013,9 @@ HaveVirtualXIDsDelayingChkptGuts(VirtualTransactionId *vxids, int nvxids,
 
 /*
  * MPP: Special code to update the command id in the SharedLocalSnapshot
- * when we are in SERIALIZABLE isolation mode.
  */
 void
-UpdateSerializableCommandId(CommandId curcid)
+UpdateCommandIdInSnapshot(CommandId curcid)
 {
 	if ((DistributedTransactionContext == DTX_CONTEXT_QE_TWO_PHASE_EXPLICIT_WRITER ||
 		 DistributedTransactionContext == DTX_CONTEXT_QE_TWO_PHASE_IMPLICIT_WRITER) &&
@@ -4892,6 +4885,9 @@ ProcArraySetReplicationSlotXmin(TransactionId xmin, TransactionId catalog_xmin,
 
 	if (!already_locked)
 		LWLockRelease(ProcArrayLock);
+
+	elog(DEBUG1, "xmin required by slots: data %u, catalog %u",
+		 xmin, catalog_xmin);
 }
 
 /*
@@ -5028,7 +5024,7 @@ DisplayXidCache(void)
 }
 #endif							/* XIDCACHE_DEBUG */
 
-PGPROC *
+volatile PGPROC *
 FindProcByGpSessionId(long gp_session_id)
 {
 	/* Find the guy who should manage our locks */
@@ -5041,7 +5037,7 @@ FindProcByGpSessionId(long gp_session_id)
 
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
-		PGPROC	   *proc = &allProcs[arrayP->pgprocnos[index]];
+		volatile PGPROC	   *proc = &allProcs[arrayP->pgprocnos[index]];
 			
 		if (proc->pid == MyProc->pid)
 			continue;

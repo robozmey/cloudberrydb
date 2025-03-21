@@ -3,7 +3,6 @@
  * explain_gp.c
  *	  Functions supporting the Cloudberry extensions to EXPLAIN ANALYZE
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -130,7 +129,7 @@ typedef struct CdbExplain_NodeSummary
 	CdbExplain_Agg workmemused;
 	CdbExplain_Agg workmemwanted;
 	CdbExplain_Agg totalWorkfileCreated;
-	/* Used for DynamicSeqScan, DynamicIndexScan and DynamicBitmapHeapScan */
+	/* Used for DynamicSeqScan, DynamicIndexScan, DynamicBitmapHeapScan, and DynamicForeignScan */
 	CdbExplain_Agg totalPartTableScanned;
 	/* Summary of space used by sort */
 	CdbExplain_Agg sortSpaceUsed[NUM_SORT_SPACE_TYPE][NUM_SORT_METHOD];
@@ -1169,35 +1168,8 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 	instr->total = ntuples.max_total;
 	INSTR_TIME_ASSIGN(instr->firststart, ntuples.firststart_of_max_total);
 
-	/* Put winner's stats into qDisp PlanState's Instrument node. */
 	/*
-	 * GPDB_12_MERGE_FIXME: does it make sense to also print 'nfiltered1'
-	 * 'nfiltered2' from the "winner", i.e. the QE that returned most rows?
-	 * There's this test case in the upstream 'partition_prune' test:
-	 *
-	 * explain (analyze, costs off, summary off, timing off) select * from list_part where a = list_part_fn(1) + a;
-	 *                       QUERY PLAN                      
-	 * ------------------------------------------------------
-	 *  Append (actual rows=0 loops=1)
-	 *    ->  Seq Scan on list_part1 (actual rows=0 loops=1)
-	 *          Filter: (a = (list_part_fn(1) + a))
-	 *          Rows Removed by Filter: 1
-	 *    ->  Seq Scan on list_part2 (actual rows=0 loops=1)
-	 *          Filter: (a = (list_part_fn(1) + a))
-	 *          Rows Removed by Filter: 1
-	 *    ->  Seq Scan on list_part3 (actual rows=0 loops=1)
-	 *          Filter: (a = (list_part_fn(1) + a))
-	 *          Rows Removed by Filter: 1
-	 *    ->  Seq Scan on list_part4 (actual rows=0 loops=1)
-	 *          Filter: (a = (list_part_fn(1) + a))
-	 *          Rows Removed by Filter: 1
-	 * (13 rows)
-	 *
-	 * We don't print those "Rows Removed by Filter" rows in GPDB, because
-	 * they don't come from the "winner" QE.
-	 *
-	 * Alough the ntuples is 0, the nloops may be not, as the node
-	 * may has been executed without returning any data.
+	 * Put winner's stats into qDisp PlanState's Instrument node.
 	 */
 
 	if (ntuples.agg.vcnt > 0)
@@ -1534,6 +1506,27 @@ cdbexplain_showExecStatsBegin(struct QueryDesc *queryDesc,
 }								/* cdbexplain_showExecStatsBegin */
 
 /*
+ * cdbexplain_showStatCtxFree
+ *	  Release memory allocated for CdbExplain_ShowStatCtx structure and its
+ *	  internals. Memory for insides of the slices array elements is allocated
+ *	  in ExplainPrintPlan(). If ExplainPrintPlan() is called from the
+ *	  auto_explain extension, then this memory is released in
+ *	  standard_ExecutorEnd() -> FreeExecutorState() to avoid memory leak in the
+ *	  case of queries with multiple call of SQL functions.
+ *	  If ExplainPrintPlan() is called from ExplainOnePlan(), then this memory
+ *	  is released in PortalDrop().
+ */
+void
+cdbexplain_showStatCtxFree(struct CdbExplain_ShowStatCtx *ctx)
+{
+	Assert(ctx != NULL);
+
+	pfree(ctx->extratextbuf.data);
+	pfree(ctx->slices);
+	pfree(ctx);
+}
+
+/*
  * nodeSupportWorkfileCaching
  *	 Return true if a given node supports workfile caching.
  */
@@ -1676,6 +1669,92 @@ cdbexplain_showExecStats(struct PlanState *planstate, ExplainState *es)
 			}
 
 			ExplainCloseGroup("work_mem", "work_mem", true, es);
+		}
+	}
+
+	/*
+	 * Print number of partitioned tables scanned for dynamic scans.
+	 */
+	if (0 <= ns->totalPartTableScanned.vcnt && (T_DynamicSeqScanState == planstate->type
+												|| T_DynamicIndexScanState == planstate->type
+												|| T_DynamicBitmapHeapScanState == planstate->type
+												|| T_DynamicForeignScanState == planstate->type))
+	{
+		/*
+		 * FIXME: Only displayed in TEXT format
+		 * [#159443692]
+		 */
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+		{
+			double		nPartTableScanned_avg = cdbexplain_agg_avg(&ns->totalPartTableScanned);
+
+			if (0 == nPartTableScanned_avg)
+			{
+				if (T_DynamicBitmapHeapScanState == planstate->type)
+				{
+					appendStringInfoSpaces(es->str, es->indent * 2);
+					appendStringInfo(es->str,
+									 "Partitions scanned:  0 .\n");
+				}
+			}
+			else
+			{
+				cdbexplain_formatSeg(segbuf, sizeof(segbuf), ns->totalPartTableScanned.imax, ns->ninst);
+
+				appendStringInfoSpaces(es->str, es->indent * 2);
+
+				/* only 1 segment scans partitions */
+				if (1 == ns->totalPartTableScanned.vcnt)
+				{
+					/* rescan */
+					if (1 < instr->nloops)
+					{
+						double		totalPartTableScannedPerRescan = ns->totalPartTableScanned.vmax / instr->nloops;
+
+						appendStringInfo(es->str,
+										 "Partitions scanned:  %.0f %s of %ld scans.\n",
+										 totalPartTableScannedPerRescan,
+										 segbuf,
+										 instr->nloops);
+					}
+					else
+					{
+						appendStringInfo(es->str,
+										 "Partitions scanned:  %.0f %s.\n",
+										 ns->totalPartTableScanned.vmax,
+										 segbuf);
+					}
+				}
+				else
+				{
+					/* rescan */
+					if (1 < instr->nloops)
+					{
+						double		totalPartTableScannedPerRescan = nPartTableScanned_avg / instr->nloops;
+						double		maxPartTableScannedPerRescan = ns->totalPartTableScanned.vmax / instr->nloops;
+
+						appendStringInfo(es->str,
+										 "Partitions scanned:  Avg %.1f x %d workers of %ld scans."
+										 "  Max %.0f parts%s.\n",
+										 totalPartTableScannedPerRescan,
+										 ns->totalPartTableScanned.vcnt,
+										 instr->nloops,
+										 maxPartTableScannedPerRescan,
+										 segbuf
+							);
+					}
+					else
+					{
+						appendStringInfo(es->str,
+										 "Partitions scanned:  Avg %.1f x %d workers."
+										 "  Max %.0f parts%s.\n",
+										 nPartTableScanned_avg,
+										 ns->totalPartTableScanned.vcnt,
+										 ns->totalPartTableScanned.vmax,
+										 segbuf);
+					}
+				}
+			}
 		}
 	}
 

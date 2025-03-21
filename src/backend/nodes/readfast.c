@@ -3,7 +3,6 @@
  * readfast.c
  *	  Binary Reader functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2008, PostgreSQL Global Development Group
@@ -14,7 +13,7 @@
  *
  * For most node types, these routines are identical to the text reader
  * functions, in readfuncs.c. To avoid code duplication and merge hazards
- * (readfast.c is a CloudberryDB addon), most read routines borrow the source
+ * (readfast.c is a Cloudberry addon), most read routines borrow the source
  * definition from readfuncs.c, we just compile it with different READ_*
  * macros.
  *
@@ -559,6 +558,7 @@ _readAExpr(void)
 			READ_NODE_FIELD(name);
 			break;
 		case AEXPR_NOT_DISTINCT:
+
 			READ_NODE_FIELD(name);
 			break;
 		case AEXPR_NULLIF:
@@ -720,7 +720,7 @@ _readExtensibleNode(void)
 }
 
 /*
- * Cloudberry Database additions for serialization support
+ * Apache Cloudberry additions for serialization support
  */
 #include "nodes/plannodes.h"
 
@@ -751,6 +751,7 @@ _readCreateStmt_common(CreateStmt *local_node)
 	READ_STRING_FIELD(tablespacename);
 	READ_STRING_FIELD(accessMethod);
 	READ_BOOL_FIELD(if_not_exists);
+	READ_ENUM_FIELD(origin, CreateStmtOrigin);
 
 	READ_NODE_FIELD(distributedBy);
 	READ_NODE_FIELD(partitionBy);
@@ -929,6 +930,19 @@ _readSequence(void)
 	READ_DONE();
 }
 
+static DynamicSeqScan *
+_readDynamicSeqScan(void)
+{
+	READ_LOCALS(DynamicSeqScan);
+
+	ReadCommonScan(&local_node->seqscan);
+	READ_NODE_FIELD(partOids);
+	READ_NODE_FIELD(part_prune_info);
+	READ_NODE_FIELD(join_prune_paramids);
+
+	READ_DONE();
+}
+
 /*
  * _readExternalScanInfo
  */
@@ -987,6 +1001,7 @@ _readShareInputScan(void)
 	READ_INT_FIELD(producer_slice_id);
 	READ_INT_FIELD(this_slice_id);
 	READ_INT_FIELD(nconsumers);
+	READ_BOOL_FIELD(discard_output);
 
 	ReadCommonPlan(&local_node->scan.plan);
 
@@ -1039,7 +1054,6 @@ _readSplitUpdate(void)
 	READ_LOCALS(SplitUpdate);
 
 	READ_INT_FIELD(actionColIdx);
-	READ_INT_FIELD(tupleoidColIdx);
 	READ_NODE_FIELD(insertColIdx);
 	READ_NODE_FIELD(deleteColIdx);
 
@@ -1750,27 +1764,40 @@ _readCreateStatsStmt(void)
 	READ_DONE();
 }
 
-static CreateDirectoryTableStmt *
-_readCreateDirectoryTableStmt(void)
+static CreateTaskStmt *
+_readCreateTaskStmt(void)
 {
-	READ_LOCALS(CreateDirectoryTableStmt);
+	READ_LOCALS(CreateTaskStmt);
 
-	_readCreateStmt_common(&local_node->base);
-
-	READ_STRING_FIELD(tablespacename);
+	READ_STRING_FIELD(taskname);
+	READ_STRING_FIELD(schedule);
+	READ_STRING_FIELD(sql);
+	READ_NODE_FIELD(options);
+	READ_BOOL_FIELD(if_not_exists);
 
 	READ_DONE();
 }
 
-static AlterDirectoryTableStmt *
-_readAlterDirectoryTableStmt(void)
+static AlterTaskStmt *
+_readAlterTaskStmt(void)
 {
-	READ_LOCALS(AlterDirectoryTableStmt);
-	
-	READ_NODE_FIELD(relation);
-	READ_NODE_FIELD(tags);
-	READ_BOOL_FIELD(unsettag);
-	
+	READ_LOCALS(AlterTaskStmt);
+
+	READ_STRING_FIELD(taskname);
+	READ_NODE_FIELD(options);
+	READ_BOOL_FIELD(missing_ok);
+
+	READ_DONE();
+}
+
+static DropTaskStmt *
+_readDropTaskStmt(void)
+{
+	READ_LOCALS(DropTaskStmt);
+
+	READ_STRING_FIELD(taskname);
+	READ_BOOL_FIELD(missing_ok);
+
 	READ_DONE();
 }
 
@@ -1813,6 +1840,31 @@ _readAlterDatabaseStmt(void)
 	
 	READ_STRING_FIELD(dbname);
 	READ_NODE_FIELD(options);
+	READ_NODE_FIELD(tags);
+	READ_BOOL_FIELD(unsettag);
+
+	READ_DONE();
+}
+
+static CreateDirectoryTableStmt *
+_readCreateDirectoryTableStmt(void)
+{
+	READ_LOCALS(CreateDirectoryTableStmt);
+
+	_readCreateStmt_common(&local_node->base);
+
+	READ_STRING_FIELD(tablespacename);
+	READ_STRING_FIELD(location);
+
+	READ_DONE();
+}
+
+static AlterDirectoryTableStmt *
+_readAlterDirectoryTableStmt(void)
+{
+	READ_LOCALS(AlterDirectoryTableStmt);
+
+	READ_NODE_FIELD(relation);
 	READ_NODE_FIELD(tags);
 	READ_BOOL_FIELD(unsettag);
 
@@ -1931,6 +1983,9 @@ readNodeBinary(void)
 			case T_SeqScan:
 				return_value = _readSeqScan();
 				break;
+			case T_DynamicSeqScan:
+				return_value = _readDynamicSeqScan();
+				break;
 			case T_ExternalScanInfo:
 				return_value = _readExternalScanInfo();
 				break;
@@ -1940,11 +1995,23 @@ readNodeBinary(void)
 			case T_IndexOnlyScan:
 				return_value = _readIndexOnlyScan();
 				break;
+			case T_DynamicIndexScan:
+				return_value = _readDynamicIndexScan();
+				break;
+			case T_DynamicIndexOnlyScan:
+				return_value = _readDynamicIndexOnlyScan();
+				break;
 			case T_BitmapIndexScan:
 				return_value = _readBitmapIndexScan();
 				break;
+			case T_DynamicBitmapIndexScan:
+				return_value = _readDynamicBitmapIndexScan();
+				break;
 			case T_BitmapHeapScan:
 				return_value = _readBitmapHeapScan();
+				break;
+			case T_DynamicBitmapHeapScan:
+				return_value = _readDynamicBitmapHeapScan();
 				break;
 			case T_CteScan:
 				return_value = _readCteScan();
@@ -1975,6 +2042,9 @@ readNodeBinary(void)
 				break;
 			case T_ForeignScan:
 				return_value = _readForeignScan();
+				break;
+			case T_DynamicForeignScan:
+				return_value = _readDynamicForeignScan();
 				break;
 			case T_CustomScan:
 				return_value = _readCustomScan();
@@ -2857,6 +2927,18 @@ readNodeBinary(void)
 				break;
 			case T_AlterDirectoryTableStmt:
 				return_value = _readAlterDirectoryTableStmt();
+				break;
+			case T_DropDirectoryTableStmt:
+				return_value = _readDropDirectoryTableStmt();
+				break;
+			case T_CreateTaskStmt:
+				return_value = _readCreateTaskStmt();
+				break;
+			case T_AlterTaskStmt:
+				return_value = _readAlterTaskStmt();
+				break;
+			case T_DropTaskStmt:
+				return_value = _readDropTaskStmt();
 				break;
 			default:
 				return_value = NULL; /* keep the compiler silent */

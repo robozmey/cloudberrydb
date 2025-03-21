@@ -1280,6 +1280,7 @@ exec_command_encoding(PsqlScanState scan_state, bool active_branch)
 				/* save encoding info into psql internal data */
 				pset.encoding = PQclientEncoding(pset.db);
 				pset.popt.topt.encoding = pset.encoding;
+				setFmtEncoding(pset.encoding);
 				SetVariable(pset.vars, "ENCODING",
 							pg_encoding_to_char(pset.encoding));
 			}
@@ -3676,6 +3677,8 @@ SyncVariables(void)
 	pset.popt.topt.encoding = pset.encoding;
 	pset.sversion = PQserverVersion(pset.db);
 
+	setFmtEncoding(pset.encoding);
+
 	SetVariable(pset.vars, "DBNAME", PQdb(pset.db));
 	SetVariable(pset.vars, "USER", PQuser(pset.db));
 	SetVariable(pset.vars, "HOST", PQhost(pset.db));
@@ -4992,6 +4995,14 @@ do_watch(PQExpBuffer query_buf, double sleep)
 		}
 		sigint_interrupt_enabled = false;
 	}
+
+	/*
+	 * If the terminal driver echoed "^C", libedit/libreadline might be
+	 * confused about the cursor position.  Therefore, inject a newline
+	 * before the next prompt is displayed.
+	 */
+	fprintf(stdout, "\n");
+	fflush(stdout);
 
 	pg_free(title);
 	return (res >= 0);

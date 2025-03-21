@@ -1,7 +1,6 @@
 //---------------------------------------------------------------------------
 //	Greenplum Database
 //	Copyright (C) 2011 EMC Corp.
-//	Portions Copyright (c) 2023, HashData Technology Limited.
 //
 //	@filename:
 //		CMDTypeGenericGPDB.cpp
@@ -61,13 +60,14 @@ CMDTypeGenericGPDB::CMDTypeGenericGPDB(
 	CMemoryPool *mp, IMDId *mdid, CMDName *mdname, BOOL is_redistributable,
 	BOOL is_fixed_length, ULONG length GPOS_ASSERTS_ONLY,
 	BOOL is_passed_by_value, IMDId *mdid_distr_opfamily,
-	IMDId *mdid_legacy_distr_opfamily, IMDId *mdid_op_eq, IMDId *mdid_op_neq,
-	IMDId *mdid_op_lt, IMDId *mdid_op_leq, IMDId *mdid_op_gt,
-	IMDId *mdid_op_geq, IMDId *mdid_op_cmp, IMDId *mdid_op_min,
-	IMDId *mdid_op_max, IMDId *mdid_op_avg, IMDId *mdid_op_sum,
-	IMDId *mdid_op_count, BOOL is_hashable, BOOL is_merge_joinable,
-	BOOL is_composite_type, BOOL is_text_related, IMDId *mdid_base_relation,
-	IMDId *mdid_type_array, INT gpdb_length)
+	IMDId *mdid_legacy_distr_opfamily, IMDId *mdid_part_opfamily,
+	IMDId *mdid_op_eq, IMDId *mdid_op_neq, IMDId *mdid_op_lt,
+	IMDId *mdid_op_leq, IMDId *mdid_op_gt, IMDId *mdid_op_geq,
+	IMDId *mdid_op_cmp, IMDId *mdid_op_min, IMDId *mdid_op_max,
+	IMDId *mdid_op_avg, IMDId *mdid_op_sum, IMDId *mdid_op_count,
+	BOOL is_hashable, BOOL is_merge_joinable, BOOL is_composite_type,
+	BOOL is_text_related, IMDId *mdid_base_relation, IMDId *mdid_type_array,
+	INT gpdb_length)
 	: m_mp(mp),
 	  m_mdid(mdid),
 	  m_mdname(mdname),
@@ -79,6 +79,7 @@ CMDTypeGenericGPDB::CMDTypeGenericGPDB(
 	  m_is_passed_by_value(is_passed_by_value),
 	  m_distr_opfamily(mdid_distr_opfamily),
 	  m_legacy_distr_opfamily(mdid_legacy_distr_opfamily),
+	  m_part_opfamily(mdid_part_opfamily),
 	  m_mdid_op_eq(mdid_op_eq),
 	  m_mdid_op_neq(mdid_op_neq),
 	  m_mdid_op_lt(mdid_op_lt),
@@ -102,8 +103,6 @@ CMDTypeGenericGPDB::CMDTypeGenericGPDB(
 {
 	GPOS_ASSERT_IMP(m_is_fixed_length, 0 < m_length);
 	GPOS_ASSERT_IMP(!m_is_fixed_length, 0 > m_gpdb_length);
-	m_dxl_str = CDXLUtils::SerializeMDObj(
-		m_mp, this, false /*fSerializeHeader*/, false /*indentation*/);
 
 	m_mdid->AddRef();
 	m_datum_null = GPOS_NEW(m_mp) CDatumGenericGPDB(
@@ -124,6 +123,7 @@ CMDTypeGenericGPDB::~CMDTypeGenericGPDB()
 	m_mdid->Release();
 	CRefCount::SafeRelease(m_distr_opfamily);
 	CRefCount::SafeRelease(m_legacy_distr_opfamily);
+	CRefCount::SafeRelease(m_part_opfamily);
 	m_mdid_op_eq->Release();
 	m_mdid_op_neq->Release();
 	m_mdid_op_lt->Release();
@@ -139,10 +139,23 @@ CMDTypeGenericGPDB::~CMDTypeGenericGPDB()
 	m_mdid_count->Release();
 	CRefCount::SafeRelease(m_mdid_base_relation);
 	GPOS_DELETE(m_mdname);
-	GPOS_DELETE(m_dxl_str);
+	if (nullptr != m_dxl_str)
+	{
+		GPOS_DELETE(m_dxl_str);
+	}
 	m_datum_null->Release();
 }
 
+const CWStringDynamic *
+CMDTypeGenericGPDB::GetStrRepr()
+{
+	if (nullptr == m_dxl_str)
+	{
+		m_dxl_str = CDXLUtils::SerializeMDObj(
+			m_mp, this, false /*fSerializeHeader*/, false /*indentation*/);
+	}
+	return m_dxl_str;
+}
 
 //---------------------------------------------------------------------------
 //	@function:
@@ -388,7 +401,7 @@ CMDTypeGenericGPDB::CreateDXLDatumVal(CMemoryPool *mp, IMDId *mdid,
 									  BOOL is_null, BYTE *pba, ULONG length,
 									  LINT lValue, CDouble dValue)
 {
-	GPOS_ASSERT(IMDId::EmdidGPDB == mdid->MdidType());
+	GPOS_ASSERT(IMDId::EmdidGeneral == mdid->MdidType());
 
 	if (HasByte2DoubleMapping(mdid))
 	{
@@ -494,8 +507,7 @@ CMDTypeGenericGPDB::HasByte2IntMapping(const IMDType *mdtype)
 {
 	IMDId *mdid = mdtype->MDId();
 	return mdtype->IsTextRelated() || mdid->Equals(&CMDIdGPDB::m_mdid_uuid) ||
-		   mdid->Equals(&CMDIdGPDB::m_mdid_cash) ||
-		   IsTimeRelatedTypeMappableToLint(mdid);
+		   mdid->Equals(&CMDIdGPDB::m_mdid_cash);
 }
 
 IDatum *
@@ -523,8 +535,7 @@ CMDTypeGenericGPDB::HasByte2DoubleMapping(const IMDId *mdid)
 {
 	return mdid->Equals(&CMDIdGPDB::m_mdid_numeric) ||
 		   mdid->Equals(&CMDIdGPDB::m_mdid_float4) ||
-		   mdid->Equals(&CMDIdGPDB::m_mdid_float8) ||
-		   IsTimeRelatedTypeMappableToDouble(mdid) ||
+		   mdid->Equals(&CMDIdGPDB::m_mdid_float8) || IsTimeRelatedType(mdid) ||
 		   IsNetworkRelatedType(mdid);
 }
 
@@ -575,6 +586,12 @@ CMDTypeGenericGPDB::GetDistrOpfamilyMdid() const
 	{
 		return m_distr_opfamily;
 	}
+}
+
+IMDId *
+CMDTypeGenericGPDB::GetPartOpfamilyMdid() const
+{
+	return m_part_opfamily;
 }
 
 BOOL

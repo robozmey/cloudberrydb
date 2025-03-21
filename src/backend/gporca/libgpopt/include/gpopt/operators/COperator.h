@@ -20,6 +20,7 @@
 #include "gpopt/base/CFunctionProp.h"
 #include "gpopt/base/CReqdPropPlan.h"
 #include "gpopt/base/CReqdPropRelational.h"
+#include "gpopt/metadata/CTableDescriptor.h"
 
 namespace gpopt
 {
@@ -83,7 +84,7 @@ public:
 	enum EOperatorId
 	{
 		EopLogicalGet,
-		EopLogicalExternalGet,
+		EopLogicalForeignGet,
 		EopLogicalIndexGet,
 		EopLogicalBitmapTableGet,
 		EopLogicalSelect,
@@ -133,7 +134,6 @@ public:
 		EopLogicalUpdate,
 		EopLogicalDML,
 		EopLogicalSplit,
-		EopLogicalRowTrigger,
 		EopLogicalPartitionSelector,
 		EopLogicalAssert,
 		EopLogicalMaxOneRow,
@@ -141,6 +141,7 @@ public:
 		EopScalarCmp,
 		EopScalarIsDistinctFrom,
 		EopScalarIdent,
+		EopScalarParam,
 		EopScalarProjectElement,
 		EopScalarProjectList,
 		EopScalarNAryJoinPredList,
@@ -184,8 +185,10 @@ public:
 		EopScalarBitmapIndexProbe,
 		EopScalarBitmapBoolOp,
 
+		EopScalarFieldSelect,
+
 		EopPhysicalTableScan,
-		EopPhysicalExternalScan,
+		EopPhysicalForeignScan,
 		EopPhysicalIndexScan,
 		EopPhysicalIndexOnlyScan,
 		EopPhysicalBitmapTableScan,
@@ -218,6 +221,7 @@ public:
 		EopPhysicalLeftAntiSemiHashJoin,
 		EopPhysicalLeftAntiSemiHashJoinNotIn,
 		EopPhysicalRightOuterHashJoin,
+		EopPhysicalFullHashJoin,
 
 		EopPhysicalMotionGather,
 		EopPhysicalMotionBroadcast,
@@ -244,7 +248,6 @@ public:
 
 		EopPhysicalDML,
 		EopPhysicalSplit,
-		EopPhysicalRowTrigger,
 
 		EopPhysicalAssert,
 
@@ -257,6 +260,12 @@ public:
 		EopLogicalDynamicBitmapTableGet,
 		EopPhysicalDynamicBitmapTableScan,
 
+		EopLogicalDynamicForeignGet,
+		EopPhysicalDynamicForeignScan,
+		EopPhysicalDynamicIndexOnlyScan,
+
+		EopLogicalIndexOnlyGet,
+		EopLogicalDynamicIndexOnlyGet,
 		EopSentinel
 	};
 
@@ -347,6 +356,9 @@ public:
 	// return a copy of the operator with remapped columns
 	virtual COperator *PopCopyWithRemappedColumns(
 		CMemoryPool *mp, UlongToColRefMap *colref_mapping, BOOL must_exist) = 0;
+
+	virtual CTableDescriptorHashSet *DeriveTableDescriptor(
+		CMemoryPool *mp, CExpressionHandle &exprhdl) const;
 
 	// print
 	virtual IOstream &OsPrint(IOstream &os) const;

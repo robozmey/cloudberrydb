@@ -4,7 +4,6 @@
  *
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Portions Copyright (c) 2023, HashData Technology Limited.
  *
  * IDENTIFICATION
  *	    src/backend/cdb/cdbpath.c
@@ -58,6 +57,18 @@ typedef struct
 	bool		has_wts;		/* Does the rel have WorkTableScan? */
 	bool		isouter;		/* Is at outer table side? */
 } CdbpathMfjRel;
+
+/*
+ * We introduced execute on initplan option for function at
+ * https://github.com/greenplum-db/gpdb/pull/9542, which introduced
+ * a new location option for function: EXECUTE ON INITPLAN and run
+ * the f() on initplan.
+ *
+ * But if f() itself is in initplan, this execution method will cause
+ * problems. Therefore, the variable allow_append_initplan_for_function_scan
+ * is introduced to control this optimization
+ */
+static bool allow_append_initplan_for_function_scan = true;
 
 static bool try_redistribute(PlannerInfo *root, CdbpathMfjRel *g,
 							 CdbpathMfjRel *o, List *redistribution_clauses, bool parallel_aware);
@@ -2185,7 +2196,7 @@ cdbpath_motion_for_join(PlannerInfo *root,
 			CdbPathLocus_MakeReplicated(&small_rel->move_to,
 										CdbPathLocus_NumSegments(large_rel->locus), 0);
 
-		/* Replicate largeer rel if cheaper than redistributing both rels. */
+		/* Replicate larger rel if cheaper than redistributing both rels. */
 		else if (!large_rel->require_existing_order &&
 				 large_rel->ok_to_replicate &&
 				 (large_rel->bytes * CdbPathLocus_NumSegments(small_rel->locus) <
@@ -2231,15 +2242,18 @@ cdbpath_motion_for_join(PlannerInfo *root,
 			CdbPathLocus_MakeReplicated(&large_rel->move_to,
 										CdbPathLocus_NumSegments(small_rel->locus), 0);
 
-		/* Last resort: Move both rels to a single qExec. */
-		else
+		/* Last resort: Move both rels to a single qExec
+		 * only if there is no wts on either rels*/
+		else if (!outer.has_wts && !inner.has_wts)
 		{
 			int numsegments = CdbPathLocus_CommonSegments(outer.locus,
 														  inner.locus);
 			CdbPathLocus_MakeSingleQE(&outer.move_to, numsegments);
 			CdbPathLocus_MakeSingleQE(&inner.move_to, numsegments);
 		}
-	} /* partitioned */
+		else
+			goto fail;
+	}							/* partitioned */
 
 	/*
 	 * Move outer.
@@ -2642,12 +2656,6 @@ create_motion_path_for_upddel(PlannerInfo *root, Index rti, GpPolicy *policy,
 			return subpath;
 		else
 		{
-			/* GPDB_96_MERGE_FIXME: avoid creating the Explicit Motion in
-			 * simple cases, where all the input data is already on the
-			 * same segment.
-			 *
-			 * Is "strewn" correct here? Can we do better?
-			 */
 			CdbPathLocus_MakeStrewn(&targetLocus, policy->numsegments, 0);
 			subpath = cdbpath_create_explicit_motion_path(root,
 														  subpath,
@@ -2706,28 +2714,19 @@ create_motion_path_for_upddel(PlannerInfo *root, Index rti, GpPolicy *policy,
  * consist of a delete and insert. So, if the result relation has update
  * triggers, we should reject and error out because it's not functional.
  *
- * GPDB_96_MERGE_FIXME: the below comment is obsolete. Nowadays, SplitUpdate
- * computes the new row's hash, and the corresponding. target segment. The
- * old segment comes from the gp_segment_id junk column. But ORCA still
- * does it the old way!
- *
- * Third, to support deletion, and hash delete operation to correct segment,
- * we need to get attributes of OLD tuple. The old attributes must therefore
- * be present in the subplan's target list. That is handled earlier in the
- * planner, in expand_targetlist().
  *
  * For example, a typical plan would be as following for statement:
  * update foo set id = l.v + 1 from dep l where foo.v = l.id:
  *
- * |-- join ( targetlist: [ l.v + 1, foo.v, foo.id, foo.ctid, foo.gp_segment_id ] )
+ * |-- join ( targetlist: [ l.v + 1, foo.v, foo.ctid, foo.gp_segment_id ] )
  *       |
  *       |-- motion ( targetlist: [l.id, l.v] )
  *       |    |
  *       |    |-- seqscan on dep ....
  *       |
- *       |-- hash (targetlist [ v, foo.ctid, foo.gp_segment_id ] )
+ *       |-- hash (targetlist [ foo.v, foo.ctid, foo.gp_segment_id ] )
  *            |
- *            |-- seqscan on foo (targetlist: [ v, foo.id, foo.ctid, foo.gp_segment_id ] )
+ *            |-- seqscan on foo (targetlist: [ foo.v, foo.ctid, foo.gp_segment_id ] )
  *
  * From the plan above, the target foo.id is assigned as l.v + 1, and expand_targetlist()
  * ensured that the old value of id, is also available, even though it would not otherwise
@@ -2864,7 +2863,7 @@ make_splitupdate_path(PlannerInfo *root, Path *subpath, Index rti)
 	 * So an update trigger is not allowed when updating the
 	 * distribution key.
 	 */
-	if (has_update_triggers(rte->relid))
+	if (has_update_triggers(rte->relid, false))
 		ereport(ERROR,
 				(errcode(ERRCODE_GP_FEATURE_NOT_YET),
 				 errmsg("UPDATE on distributed key column not allowed on relation with update triggers")));
@@ -3038,7 +3037,7 @@ cdbpath_motion_for_parallel_join(PlannerInfo *root,
 	 * And in the function cdbpathlocus_join there is a rule:
 	 * <any locus type> join <Replicated> => any locus type
 	 * Proof by contradiction, it shows that when code arrives here,
-	 * is is impossible that any of the two input paths' locus
+	 * it is impossible that any of the two input paths' locus
 	 * is Replicated. So we add asserts here.
 	 */
 	Assert(!CdbPathLocus_IsReplicated(outer.locus));
@@ -3895,3 +3894,21 @@ fail:							/* can't do this join */
 	CdbPathLocus_MakeNull(&outer.move_to);
 	return outer.move_to;
 }								/* cdbpath_motion_for_parallel_join */
+
+void
+unset_allow_append_initplan_for_function_scan()
+{
+	allow_append_initplan_for_function_scan = false;
+}
+
+void
+set_allow_append_initplan_for_function_scan()
+{
+	allow_append_initplan_for_function_scan = true;
+}
+
+bool
+get_allow_append_initplan_for_function_scan()
+{
+	return allow_append_initplan_for_function_scan;
+}

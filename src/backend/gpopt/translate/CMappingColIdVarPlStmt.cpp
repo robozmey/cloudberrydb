@@ -1,7 +1,6 @@
 //---------------------------------------------------------------------------
 //	Greenplum Database
 //	Copyright (C) 2011 Greenplum, Inc.
-//	Portions Copyright (c) 2023, HashData Technology Limited.
 //
 //	@filename:
 //		CMappingColIdVarPlStmt.cpp
@@ -110,6 +109,7 @@ CMappingColIdVarPlStmt::ParamFromDXLNodeScId(const CDXLScalarIdent *dxlop)
 		param->paramid = elem->ParamId();
 		param->paramtype = CMDIdGPDB::CastMdid(elem->MdidType())->Oid();
 		param->paramtypmod = elem->TypeModifier();
+		param->paramcollid = gpdb::TypeCollation(param->paramtype);
 	}
 
 	return param;

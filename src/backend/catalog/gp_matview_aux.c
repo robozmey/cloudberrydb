@@ -1,8 +1,23 @@
 /*-------------------------------------------------------------------------
  *
- * gp_matview_aux.c
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * Portions Copyright (c) 2024-Present HashData, Inc. or its affiliates.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ * gp_matview_aux.c
  *
  *
  * IDENTIFICATION
@@ -17,9 +32,11 @@
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "access/genam.h"
+#include "access/xact.h"
 #include "catalog/dependency.h"
 #include "catalog/gp_matview_aux.h"
 #include "catalog/gp_matview_tables.h"
+#include "catalog/partition.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
 #include "catalog/indexing.h"
@@ -32,6 +49,7 @@
 #include "utils/lsyscache.h"
 #include "storage/lockdefs.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/transform.h"
 #include "parser/parsetree.h"
 
 static void InsertMatviewTablesEntries(Oid mvoid, List *relids);
@@ -50,7 +68,7 @@ static void SetMatviewAuxStatus_guts(Oid mvoid, char status);
  * Return NIL if the query we think it's useless.
  */
 List*
-GetViewBaseRelids(const Query *viewQuery)
+GetViewBaseRelids(const Query *viewQuery, bool *has_foreign)
 {
 	List	*relids = NIL;
 	Node	*mvjtnode;
@@ -73,6 +91,11 @@ GetViewBaseRelids(const Query *viewQuery)
 		return NIL;
 	}
 
+	if (tlist_has_srf(viewQuery))
+	{
+		return NIL;
+	}
+
 	/* As we will use views, make it strict to unmutable. */
 	if (contain_mutable_functions((Node*)viewQuery))
 		return NIL;
@@ -88,16 +111,26 @@ GetViewBaseRelids(const Query *viewQuery)
 	if (rte->rtekind != RTE_RELATION)
 		return NIL;
 
-	/* Only support normal relation now. */
-	if (get_rel_relkind(rte->relid) != RELKIND_RELATION)
+	char relkind = get_rel_relkind(rte->relid);
+
+	/*
+	 * Allow foreign table here, however we don't know if the data is
+	 * up to date or not of the view.
+	 * But if users want to query matview instead of query foreign tables
+	 * outside CBDB, let them decide with aqumv_allow_foreign_table.
+	 */
+	if (relkind != RELKIND_RELATION &&
+		relkind != RELKIND_PARTITIONED_TABLE &&
+		relkind != RELKIND_FOREIGN_TABLE)
 		return NIL;
+
+	if (has_foreign)
+		*has_foreign = relkind == RELKIND_FOREIGN_TABLE;
 
 	/*
 	 * inherit tables are not supported.
-	 * FIXME: left a door for partition table which will be supported soon.
 	 */
-	bool can_be_partition = (get_rel_relkind(rte->relid) == RELKIND_PARTITIONED_TABLE) ||
-								get_rel_relispartition(rte->relid);
+	bool can_be_partition = (relkind == RELKIND_PARTITIONED_TABLE) || get_rel_relispartition(rte->relid);
 
 	if (!can_be_partition &&
 		(has_superclass(rte->relid) || has_subclass(rte->relid)))
@@ -132,11 +165,12 @@ InsertMatviewAuxEntry(Oid mvoid, const Query *viewQuery, bool skipdata)
 	Datum		values[Natts_gp_matview_aux];
 	List 		*relids;
 	NameData	mvname;
+	bool		has_foreign = false;
 
 	Assert(OidIsValid(mvoid));
 
 	/* Empty relids means the view is not supported now. */
-	relids = GetViewBaseRelids(viewQuery);
+	relids = GetViewBaseRelids(viewQuery, &has_foreign);
 	if (relids == NIL)
 		return;
 	
@@ -149,6 +183,8 @@ InsertMatviewAuxEntry(Oid mvoid, const Query *viewQuery, bool skipdata)
 
 	namestrcpy(&mvname, get_rel_name(mvoid));
 	values[Anum_gp_matview_aux_mvname - 1] = NameGetDatum(&mvname);
+
+	values[Anum_gp_matview_aux_has_foreign - 1] = BoolGetDatum(has_foreign);
 	
 	if (skipdata)
 		values[Anum_gp_matview_aux_datastatus - 1] = CharGetDatum(MV_DATA_STATUS_EXPIRED);
@@ -165,6 +201,8 @@ InsertMatviewAuxEntry(Oid mvoid, const Query *viewQuery, bool skipdata)
 	InsertMatviewTablesEntries(mvoid, relids);
 
 	table_close(mvauxRel, RowExclusiveLock);
+
+	CommandCounterIncrement();
 
 	return;
 }
@@ -229,6 +267,8 @@ RemoveMatviewAuxEntry(Oid mvoid)
 
 	table_close(mvauxRel, RowExclusiveLock);
 
+	CommandCounterIncrement();
+
 	return;
 }
 
@@ -265,33 +305,57 @@ RemoveMatviewTablesEntries(Oid mvoid)
  * the underlying table's data is changed.
  */
 void
-SetRelativeMatviewAuxStatus(Oid relid, char status)
+SetRelativeMatviewAuxStatus(Oid relid, char status, char direction)
 {
 	Relation	mvauxRel;
 	Relation	mtRel;
 	HeapTuple	tup;
 	ScanKeyData key;
 	SysScanDesc desc;
+	List		*base_oids;
+	ListCell   *cell;
 
 	mvauxRel = table_open(GpMatviewAuxId, RowExclusiveLock);
 
 	/* Find all mvoids have relid */
 	mtRel = table_open(GpMatviewTablesId, AccessShareLock);
-	ScanKeyInit(&key,
-		Anum_gp_matview_tables_relid,
-		BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(relid));
-	desc = systable_beginscan(mtRel,
-								  GpMatviewTablesRelIndexId,
-								  true,
-								  NULL, 1, &key);
-	while (HeapTupleIsValid(tup = systable_getnext(desc)))
+
+	/*
+	 * For partitioned table, transfer status to children.
+	 * For patition, transfer status to all ancestors.
+	 */
+	if (get_rel_relkind(relid) == RELKIND_PARTITIONED_TABLE &&
+		(MV_DATA_STATUS_TRANSFER_DIRECTION_ALL == direction ||
+		MV_DATA_STATUS_TRANSFER_DIRECTION_DOWN == direction))
+		base_oids = find_all_inheritors(relid, NoLock, NULL);
+	else
+		base_oids = list_make1_oid(relid);
+
+	if (get_rel_relispartition(relid) &&
+		(MV_DATA_STATUS_TRANSFER_DIRECTION_ALL == direction ||
+		MV_DATA_STATUS_TRANSFER_DIRECTION_UP == direction))
+		base_oids = list_concat(base_oids, get_partition_ancestors(relid));
+
+	foreach(cell, base_oids)
 	{
-		Form_gp_matview_tables mt = (Form_gp_matview_tables) GETSTRUCT(tup);
-		/* Update mv aux status. */
-		SetMatviewAuxStatus_guts(mt->mvoid, status);
+		Oid base_oid = lfirst_oid(cell);
+		ScanKeyInit(&key,
+			Anum_gp_matview_tables_relid,
+			BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(base_oid));
+		desc = systable_beginscan(mtRel,
+									  GpMatviewTablesRelIndexId,
+									  true,
+									  NULL, 1, &key);
+		while (HeapTupleIsValid(tup = systable_getnext(desc)))
+		{
+			Form_gp_matview_tables mt = (Form_gp_matview_tables) GETSTRUCT(tup);
+			/* Update mv aux status. */
+			SetMatviewAuxStatus_guts(mt->mvoid, status);
+		}
+
+		systable_endscan(desc);
 	}
 
-	systable_endscan(desc);
 	table_close(mtRel, AccessShareLock);
 	table_close(mvauxRel, RowExclusiveLock);
 }
@@ -415,6 +479,9 @@ SetMatviewAuxStatus_guts(Oid mvoid, char status)
 	CatalogTupleUpdate(mvauxRel, &newtuple->t_self, newtuple);
 	heap_freetuple(newtuple);
 	table_close(mvauxRel, NoLock);
+
+	/* For partitioned table, we may insert into same rel multiple times. */
+	CommandCounterIncrement();
 }
 
 /*
@@ -441,6 +508,19 @@ MatviewUsableForAppendAgg(Oid mvoid)
 			(auxform->datastatus == MV_DATA_STATUS_EXPIRED_INSERT_ONLY));
 }
 
+bool
+MatviewHasForeignTables(Oid mvoid)
+{
+	HeapTuple mvauxtup = SearchSysCacheCopy1(MVAUXOID, ObjectIdGetDatum(mvoid));
+
+	/* Not a candidate we recorded. */
+	if (!HeapTupleIsValid(mvauxtup))
+		return false;
+
+	Form_gp_matview_aux auxform = (Form_gp_matview_aux) GETSTRUCT(mvauxtup);
+	return auxform->has_foreign;
+}
+
 /*
  * Is the view data up to date?
  * In most cases, we should use this function to check if view
@@ -461,4 +541,17 @@ MatviewIsGeneralyUpToDate(Oid mvoid)
 	Form_gp_matview_aux auxform = (Form_gp_matview_aux) GETSTRUCT(mvauxtup);
 	return ((auxform->datastatus == MV_DATA_STATUS_UP_TO_DATE) || 
 			(auxform->datastatus == MV_DATA_STATUS_UP_REORGANIZED));
+}
+
+bool
+MatviewIsUpToDate(Oid mvoid)
+{
+	HeapTuple mvauxtup = SearchSysCacheCopy1(MVAUXOID, ObjectIdGetDatum(mvoid));
+
+	/* Not a candidate we recorded. */
+	if (!HeapTupleIsValid(mvauxtup))
+		return false;
+
+	Form_gp_matview_aux auxform = (Form_gp_matview_aux) GETSTRUCT(mvauxtup);
+	return (auxform->datastatus == MV_DATA_STATUS_UP_TO_DATE);
 }

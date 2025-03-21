@@ -19,6 +19,7 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
+#include "common/int.h"
 #include "funcapi.h"
 #include "access/tupmacs.h"
 #include "libpq/pqformat.h"
@@ -2336,22 +2337,38 @@ array_set_element(Datum arraydatum,
 	addedbefore = addedafter = 0;
 
 	/*
-	 * Check subscripts
+	 * Check subscripts.  We assume the existing subscripts passed
+	 * ArrayCheckBounds, so that dim[i] + lb[i] can be computed without
+	 * overflow.  But we must beware of other overflows in our calculations of
+	 * new dim[] values.
 	 */
 	if (ndim == 1)
 	{
 		if (indx[0] < lb[0])
 		{
-			addedbefore = lb[0] - indx[0];
-			dim[0] += addedbefore;
+			/* addedbefore = lb[0] - indx[0]; */
+			/* dim[0] += addedbefore; */
+			if (pg_sub_s32_overflow(lb[0], indx[0], &addedbefore) ||
+				pg_add_s32_overflow(dim[0], addedbefore, &dim[0]))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("array size exceeds the maximum allowed (%d)",
+								(int) MaxArraySize)));
 			lb[0] = indx[0];
 			if (addedbefore > 1)
 				newhasnulls = true; /* will insert nulls */
 		}
 		if (indx[0] >= (dim[0] + lb[0]))
 		{
-			addedafter = indx[0] - (dim[0] + lb[0]) + 1;
-			dim[0] += addedafter;
+			/* addedafter = indx[0] - (dim[0] + lb[0]) + 1; */
+			/* dim[0] += addedafter; */
+			if (pg_sub_s32_overflow(indx[0], dim[0] + lb[0], &addedafter) ||
+				pg_add_s32_overflow(addedafter, 1, &addedafter) ||
+				pg_add_s32_overflow(dim[0], addedafter, &dim[0]))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("array size exceeds the maximum allowed (%d)",
+								(int) MaxArraySize)));
 			if (addedafter > 1)
 				newhasnulls = true; /* will insert nulls */
 		}
@@ -2598,14 +2615,23 @@ array_set_element_expanded(Datum arraydatum,
 	addedbefore = addedafter = 0;
 
 	/*
-	 * Check subscripts (this logic matches original array_set_element)
+	 * Check subscripts (this logic must match array_set_element).  We assume
+	 * the existing subscripts passed ArrayCheckBounds, so that dim[i] + lb[i]
+	 * can be computed without overflow.  But we must beware of other
+	 * overflows in our calculations of new dim[] values.
 	 */
 	if (ndim == 1)
 	{
 		if (indx[0] < lb[0])
 		{
-			addedbefore = lb[0] - indx[0];
-			dim[0] += addedbefore;
+			/* addedbefore = lb[0] - indx[0]; */
+			/* dim[0] += addedbefore; */
+			if (pg_sub_s32_overflow(lb[0], indx[0], &addedbefore) ||
+				pg_add_s32_overflow(dim[0], addedbefore, &dim[0]))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("array size exceeds the maximum allowed (%d)",
+								(int) MaxArraySize)));
 			lb[0] = indx[0];
 			dimschanged = true;
 			if (addedbefore > 1)
@@ -2613,8 +2639,15 @@ array_set_element_expanded(Datum arraydatum,
 		}
 		if (indx[0] >= (dim[0] + lb[0]))
 		{
-			addedafter = indx[0] - (dim[0] + lb[0]) + 1;
-			dim[0] += addedafter;
+			/* addedafter = indx[0] - (dim[0] + lb[0]) + 1; */
+			/* dim[0] += addedafter; */
+			if (pg_sub_s32_overflow(indx[0], dim[0] + lb[0], &addedafter) ||
+				pg_add_s32_overflow(addedafter, 1, &addedafter) ||
+				pg_add_s32_overflow(dim[0], addedafter, &dim[0]))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("array size exceeds the maximum allowed (%d)",
+								(int) MaxArraySize)));
 			dimschanged = true;
 			if (addedafter > 1)
 				newhasnulls = true; /* will insert nulls */
@@ -2897,7 +2930,10 @@ array_set_slice(Datum arraydatum,
 	addedbefore = addedafter = 0;
 
 	/*
-	 * Check subscripts
+	 * Check subscripts.  We assume the existing subscripts passed
+	 * ArrayCheckBounds, so that dim[i] + lb[i] can be computed without
+	 * overflow.  But we must beware of other overflows in our calculations of
+	 * new dim[] values.
 	 */
 	if (ndim == 1)
 	{
@@ -2912,18 +2948,31 @@ array_set_slice(Datum arraydatum,
 					 errmsg("upper bound cannot be less than lower bound")));
 		if (lowerIndx[0] < lb[0])
 		{
-			if (upperIndx[0] < lb[0] - 1)
-				newhasnulls = true; /* will insert nulls */
-			addedbefore = lb[0] - lowerIndx[0];
-			dim[0] += addedbefore;
+			/* addedbefore = lb[0] - lowerIndx[0]; */
+			/* dim[0] += addedbefore; */
+			if (pg_sub_s32_overflow(lb[0], lowerIndx[0], &addedbefore) ||
+				pg_add_s32_overflow(dim[0], addedbefore, &dim[0]))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("array size exceeds the maximum allowed (%d)",
+								(int) MaxArraySize)));
 			lb[0] = lowerIndx[0];
+			if (addedbefore > 1)
+				newhasnulls = true; /* will insert nulls */
 		}
 		if (upperIndx[0] >= (dim[0] + lb[0]))
 		{
-			if (lowerIndx[0] > (dim[0] + lb[0]))
+			/* addedafter = upperIndx[0] - (dim[0] + lb[0]) + 1; */
+			/* dim[0] += addedafter; */
+			if (pg_sub_s32_overflow(upperIndx[0], dim[0] + lb[0], &addedafter) ||
+				pg_add_s32_overflow(addedafter, 1, &addedafter) ||
+				pg_add_s32_overflow(dim[0], addedafter, &dim[0]))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("array size exceeds the maximum allowed (%d)",
+								(int) MaxArraySize)));
+			if (addedafter > 1)
 				newhasnulls = true; /* will insert nulls */
-			addedafter = upperIndx[0] - (dim[0] + lb[0]) + 1;
-			dim[0] += addedafter;
 		}
 	}
 	else
@@ -5112,7 +5161,7 @@ array_insert_slice(ArrayType *destArray,
  * In the older scheme, you start with a NULL ArrayBuildState pointer, and
  * call accumArrayResult once per element.  In this scheme you end up with
  * a NULL pointer if there were no elements, which you need to special-case.
- * In the newer scheme, call initArrayResult and then call accumArrayResult
+ * In the newer scheme, call initArrayResultWithSize and then call accumArrayResult
  * once per element.  In this scheme you always end with a non-NULL pointer
  * that you can pass to makeArrayResult; you get an empty array if there
  * were no elements.  This is preferred if an empty array is what you want.
@@ -5130,8 +5179,26 @@ array_insert_slice(ArrayType *destArray,
  * single memory context is impractical. Instead, pass subcontext=true so that
  * the array build states can be freed individually.
  */
+
 ArrayBuildState *
 initArrayResult(Oid element_type, MemoryContext rcontext, bool subcontext)
+{
+	/*
+	 * When using a subcontext, we can afford to start with a somewhat larger
+	 * initial array size.  Without subcontexts, we'd better hope that most of
+	 * the states stay small ...
+	 */
+	return initArrayResultWithSize(element_type, rcontext, subcontext,
+								   subcontext ? 64 : 8);
+}
+
+/*
+ * initArrayResultWithSize
+ *		As initArrayResult, but allow the initial size of the allocated arrays
+ *		to be specified.
+ */
+ArrayBuildState *
+initArrayResultWithSize(Oid element_type, MemoryContext rcontext, bool subcontext, int initsize)
 {
 	ArrayBuildState *astate;
 	MemoryContext arr_context = rcontext;
@@ -5146,7 +5213,7 @@ initArrayResult(Oid element_type, MemoryContext rcontext, bool subcontext)
 		MemoryContextAlloc(arr_context, sizeof(ArrayBuildState));
 	astate->mcontext = arr_context;
 	astate->private_cxt = subcontext;
-	astate->alen = (subcontext ? 64 : 8);	/* arbitrary starting array size */
+	astate->alen = initsize;
 	astate->dvalues = (Datum *)
 		MemoryContextAlloc(arr_context, astate->alen * sizeof(Datum));
 	astate->dnulls = (bool *)
@@ -5228,7 +5295,7 @@ accumArrayResult(ArrayBuildState *astate,
  * makeArrayResult - produce 1-D final result of accumArrayResult
  *
  * Note: only releases astate if it was initialized within a separate memory
- * context (i.e. using subcontext=true when calling initArrayResult).
+ * context (i.e. using subcontext=true when calling initArrayResultWithSize).
  *
  *	astate is working state (must not be NULL)
  *	rcontext is where to construct result
@@ -5257,7 +5324,7 @@ makeArrayResult(ArrayBuildState *astate,
  * accumulated.
  *
  * Note: if the astate was not initialized within a separate memory context
- * (that is, initArrayResult was called with subcontext=false), then using
+ * (that is, initArrayResultWithSize was called with subcontext=false), then using
  * release=true is illegal. Instead, release astate along with the rest of its
  * context when appropriate.
  *
@@ -5303,7 +5370,7 @@ makeMdArrayResult(ArrayBuildState *astate,
 
 /*
  * The following three functions provide essentially the same API as
- * initArrayResult/accumArrayResult/makeArrayResult, but instead of accepting
+ * initArrayResultWithSize/accumArrayResult/makeArrayResult, but instead of accepting
  * inputs that are array elements, they accept inputs that are arrays and
  * produce an output array having N+1 dimensions.  The inputs must all have
  * identical dimensionality as well as element type.
@@ -5584,7 +5651,7 @@ makeArrayResultArr(ArrayBuildStateArr *astate,
 
 /*
  * The following three functions provide essentially the same API as
- * initArrayResult/accumArrayResult/makeArrayResult, but can accept either
+ * initArrayResultWithSize/accumArrayResult/makeArrayResult, but can accept either
  * scalar or array inputs, invoking the appropriate set of functions above.
  */
 

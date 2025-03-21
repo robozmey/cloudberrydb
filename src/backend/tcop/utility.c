@@ -5,7 +5,6 @@
  *	  commands.  At one time acted as an interface between the Lisp and C
  *	  systems.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -261,6 +260,7 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 		case T_AlterTagStmt:
 		case T_CreateDirectoryTableStmt:
 		case T_AlterDirectoryTableStmt:
+		case T_DropDirectoryTableStmt:
 		case T_CreateProfileStmt:
 		case T_CreateQueueStmt:
 		case T_CreateResourceGroupStmt:
@@ -738,7 +738,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 						if (Gp_role == GP_ROLE_DISPATCH || IS_SINGLENODE())
 						{
 							ereport(ERROR, (errcode(ERRCODE_GP_COMMAND_ERROR),
-									errmsg("PREPARE TRANSACTION is not yet supported in Cloudberry Database")));
+									errmsg("PREPARE TRANSACTION is not yet supported in Apache Cloudberry")));
 
 						}
 						PreventCommandDuringRecovery("PREPARE TRANSACTION");
@@ -754,7 +754,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 						if (Gp_role == GP_ROLE_DISPATCH)
 						{
 							ereport(ERROR, (errcode(ERRCODE_GP_COMMAND_ERROR),
-									errmsg("COMMIT PREPARED is not yet supported in Cloudberry Database")));
+									errmsg("COMMIT PREPARED is not yet supported in Apache Cloudberry")));
 						}
 						PreventInTransactionBlock(isTopLevel, "COMMIT PREPARED");
 						PreventCommandDuringRecovery("COMMIT PREPARED");
@@ -765,7 +765,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 						if (Gp_role == GP_ROLE_DISPATCH)
 						{
 							ereport(ERROR, (errcode(ERRCODE_GP_COMMAND_ERROR),
-									errmsg("ROLLBACK PREPARED is not yet supported in Cloudberry Database")));
+									errmsg("ROLLBACK PREPARED is not yet supported in Apache Cloudberry")));
 						}
 						PreventInTransactionBlock(isTopLevel, "ROLLBACK PREPARED");
 						PreventCommandDuringRecovery("ROLLBACK PREPARED");
@@ -1261,6 +1261,19 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 			}
 			break;
 
+		case T_DropDirectoryTableStmt:
+			{
+				DropStmt	*stmt = (DropStmt *) &((DropDirectoryTableStmt *) parsetree)->base;
+
+				if (EventTriggerSupportsObjectType(stmt->removeType))
+					ProcessUtilitySlow(pstate, pstmt, queryString,
+									   context, params, queryEnv,
+									   dest, qc);
+				else
+					ExecDropStmt(stmt, isTopLevel);
+			}
+			break;
+
 		case T_RenameStmt:
 			{
 				RenameStmt *stmt = (RenameStmt *) parsetree;
@@ -1468,8 +1481,6 @@ ProcessUtilitySlow(ParseState *pstate,
 							char		relKind = RELKIND_RELATION;
 							Datum		toast_options;
 							static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
-							List *options = NIL;
-							char *accessmethod = NULL;
 
 							/*
 							 * If this T_CreateStmt was dispatched and we're a QE
@@ -1484,6 +1495,7 @@ ProcessUtilitySlow(ParseState *pstate,
 							else
 								cstmt->relKind = relKind;
 
+#if 0
 							/*
 							 * Upstream postgres does not support user specified
 							 * RelOptions and TableAM for a parent partitioned
@@ -1500,9 +1512,9 @@ ProcessUtilitySlow(ParseState *pstate,
 							{
 								options = cstmt->options;
 								cstmt->options = NIL;
-								accessmethod = cstmt->accessMethod;
 								cstmt->accessMethod = NULL;
 							}
+#endif
 
 							/*
 							 * GPDB: Don't dispatch it yet, as we haven't
@@ -1523,9 +1535,10 @@ ProcessUtilitySlow(ParseState *pstate,
 								parts = generatePartitions(address.objectId,
 														   cstmt->partspec->gpPartDef,
 														   cstmt->partspec->subPartSpec,
-														   queryString, options,
-														   accessmethod,
-														   cstmt->attr_encodings, false);
+														   queryString, cstmt->options,
+														   cstmt->accessMethod,	
+														   cstmt->attr_encodings,
+														   ORIGIN_GP_CLASSIC_CREATE_GEN);
 								stmts = list_concat(stmts, parts);
 							}
 
@@ -2371,6 +2384,12 @@ ProcessUtilitySlow(ParseState *pstate,
 
 			case T_DropStmt:
 				ExecDropStmt((DropStmt *) parsetree, isTopLevel);
+				/* no commands stashed for DROP */
+				commandCollected = true;
+				break;
+
+			case T_DropDirectoryTableStmt:
+				ExecDropStmt((DropStmt *) &((DropDirectoryTableStmt *) parsetree)->base, isTopLevel);
 				/* no commands stashed for DROP */
 				commandCollected = true;
 				break;
@@ -3269,6 +3288,10 @@ CreateCommandTag(Node *parsetree)
 			tag = CMDTAG_ALTER_DIRECTORY_TABLE;
 			break;
 
+		case T_DropDirectoryTableStmt:
+			tag = CMDTAG_DROP_DIRECTORY_TABLE;
+			break;
+
 		case T_DropStmt:
 			switch (((DropStmt *) parsetree)->removeType)
 			{
@@ -3282,8 +3305,14 @@ CreateCommandTag(Node *parsetree)
 					tag = CMDTAG_DROP_VIEW;
 					break;
 				case OBJECT_MATVIEW:
-					tag = CMDTAG_DROP_MATERIALIZED_VIEW;
+				{
+					if (((DropStmt *) parsetree)->isdynamic)
+						tag = CMDTAG_DROP_DYNAMIC_TABLE;
+					else
+						tag = CMDTAG_DROP_MATERIALIZED_VIEW;
+
 					break;
+				}
 				case OBJECT_INDEX:
 					tag = CMDTAG_DROP_INDEX;
 					break;
@@ -3643,15 +3672,26 @@ CreateCommandTag(Node *parsetree)
 						tag = CMDTAG_CREATE_TABLE_AS;
 					break;
 				case OBJECT_MATVIEW:
-					tag = CMDTAG_CREATE_MATERIALIZED_VIEW;
+				{
+					if (((CreateTableAsStmt *) parsetree)->into->dynamicTbl)
+						tag = CMDTAG_CREATE_DYNAMIC_TABLE;
+					else
+						tag = CMDTAG_CREATE_MATERIALIZED_VIEW;
+
 					break;
+				}
 				default:
 					tag = CMDTAG_UNKNOWN;
 			}
 			break;
 
 		case T_RefreshMatViewStmt:
-			tag = CMDTAG_REFRESH_MATERIALIZED_VIEW;
+			{
+				if (((RefreshMatViewStmt*) parsetree)->isdynamic)
+					tag = CMDTAG_REFRESH_DYNAMIC_TABLE;
+				else
+					tag = CMDTAG_REFRESH_MATERIALIZED_VIEW;
+			}
 			break;
 
 		case T_AlterSystemStmt:
@@ -4140,6 +4180,7 @@ GetCommandLogLevel(Node *parsetree)
 		case T_ImportForeignSchemaStmt:
 		case T_CreateDirectoryTableStmt:
 		case T_AlterDirectoryTableStmt:
+		case T_DropDirectoryTableStmt:
 			lev = LOGSTMT_DDL;
 			break;
 
@@ -4596,6 +4637,15 @@ GetCommandLogLevel(Node *parsetree)
 				}
 
 			}
+			break;
+
+		case T_CreateResourceGroupStmt:
+		case T_AlterResourceGroupStmt:
+		case T_DropResourceGroupStmt:
+		case T_CreateQueueStmt:
+		case T_AlterQueueStmt:
+		case T_DropQueueStmt:
+			lev = LOGSTMT_DDL;
 			break;
 
 		default:

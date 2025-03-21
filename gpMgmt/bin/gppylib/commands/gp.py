@@ -83,6 +83,32 @@ def getPostmasterPID(hostname, datadir):
     except:
         return -1
 
+
+"""
+Given the segment data directory and the hostname,
+return all the postgres processes associated
+with that segment as a list.
+Returns an empty list if there is any error.
+"""
+def get_postgres_segment_processes(datadir, host):
+    postmaster_pid = getPostmasterPID(host, datadir)
+    if postmaster_pid == -1:
+        return []
+
+    postgres_pids = [postmaster_pid]
+    cmd = Command("get children pids", ("pgrep -P {0}".format(postmaster_pid)), ctxt=REMOTE, remoteHost=host)
+    cmd.run()
+
+    if cmd.get_results().rc == 0:
+        pids = cmd.get_results().stdout.split()
+        for pid in pids:
+            try:
+                postgres_pids.append(int(pid))
+            except ValueError:
+                pass # Ignore any error while converting to int from str
+
+    return postgres_pids
+
 #-----------------------------------------------
 
 class CmdArgs(list):
@@ -317,7 +343,7 @@ class CoordinatorStart(Command):
 
         # build pg_ctl command
         c = PgCtlStartArgs(dataDir, b, era, wrapper, wrapper_args, wait, timeout)
-        logger.info("CoordinatorStart pg_ctl cmd is %s", c);
+        logger.info("CoordinatorStart pg_ctl cmd is %s", c)
         self.cmdStr = str(c)
 
         Command.__init__(self, name, self.cmdStr, ctxt, remoteHost)
@@ -374,7 +400,7 @@ class SegmentStart(Command):
 
         # build pg_ctl command
         c = PgCtlStartArgs(datadir, b, era, wrapper, wrapper_args, pg_ctl_wait, timeout)
-        logger.info("SegmentStart pg_ctl cmd is %s", c);
+        logger.info("SegmentStart pg_ctl cmd is %s", c)
         self.cmdStr = str(c) + ' 2>&1'
 
         Command.__init__(self, name, self.cmdStr, ctxt, remoteHost)
@@ -1002,7 +1028,7 @@ class GpSegSetupRecovery(Command):
     """
     def __init__(self, name, confinfo, logdir, batchSize, verbose, remoteHost, forceoverwrite):
         cmdStr = _get_cmd_for_recovery_wrapper('gpsegsetuprecovery', confinfo, logdir, batchSize, verbose,forceoverwrite)
-        Command.__init__(self, name, cmdStr, REMOTE, remoteHost)
+        Command.__init__(self, name, cmdStr, REMOTE, remoteHost, start_new_session=True)
 
 
 class GpSegRecovery(Command):
@@ -1011,7 +1037,7 @@ class GpSegRecovery(Command):
     """
     def __init__(self, name, confinfo, logdir, batchSize, verbose, remoteHost, forceoverwrite, era):
         cmdStr = _get_cmd_for_recovery_wrapper('gpsegrecovery', confinfo, logdir, batchSize, verbose, forceoverwrite, era)
-        Command.__init__(self, name, cmdStr, REMOTE, remoteHost)
+        Command.__init__(self, name, cmdStr, REMOTE, remoteHost, start_new_session=True)
 
 
 def _get_cmd_for_recovery_wrapper(wrapper_filename, confinfo, logdir, batchSize, verbose, forceoverwrite, era=None):
@@ -1189,16 +1215,31 @@ def get_gphome():
         raise GpError('Environment Variable GPHOME not set')
     return gphome
 
+'''
+gprecoverseg, gpstart, gpstate, gpstop, gpaddmirror have -d option to give the coordinator data directory.
+but its value was not used throughout the utilities. to fix this the best possible way is
+to set and retrieve that set coordinator dir when we call get_coordinatordatadir().
+'''
+option_coordinator_datadir = None
+def set_coordinatordatadir(coordinator_datadir=None):
+    global option_coordinator_datadir
+    option_coordinator_datadir = coordinator_datadir
 
 ######
 # Support both COORDINATOR_DATA_DIRECTORY and MASTER_DATA_DIRECTORY for backwards compatibility.
 # If both are set, the former is used and the latter is ignored.
+# if -d <coordinator_datadir> is provided with utility, it will be prioritiese over other options.
 def get_coordinatordatadir():
-    coordinator_datadir = os.environ.get('COORDINATOR_DATA_DIRECTORY')
-    if not coordinator_datadir:
-        coordinator_datadir = os.environ.get('MASTER_DATA_DIRECTORY')
+    if option_coordinator_datadir is not None:
+        coordinator_datadir = option_coordinator_datadir
+    else:
+        coordinator_datadir = os.environ.get('COORDINATOR_DATA_DIRECTORY')
+        if not coordinator_datadir:
+            coordinator_datadir = os.environ.get('MASTER_DATA_DIRECTORY')
+
     if not coordinator_datadir:
         raise GpError("Environment Variable COORDINATOR_DATA_DIRECTORY not set!")
+
     return coordinator_datadir
 
 ######
@@ -1208,7 +1249,7 @@ def get_coordinatorport(datadir):
 
 ######
 def check_permissions(username):
-    logger.debug("--Checking that current user can use CloudberryDB binaries")
+    logger.debug("--Checking that current user can use Cloudberry binaries")
     chk_gpdb_id(username)
 
 
@@ -1528,7 +1569,7 @@ def chk_gpdb_id(username):
     path="%s/bin/initdb" % GPHOME
     if not os.access(path,os.X_OK):
         raise GpError("File permission mismatch.  The current user %s does not have sufficient"
-                      " privileges to run the CloudberryDB binaries and management utilities." % username )
+                      " privileges to run the Cloudberry binaries and management utilities." % username )
 
 
 def chk_local_db_running(datadir, port):
@@ -1564,19 +1605,19 @@ def chk_local_db_running(datadir, port):
     tmpfile_exists = os.path.exists("/tmp/.s.PGSQL.%d" % port)
     lockfile_exists = os.path.exists(get_lockfile_name(port))
 
-    netstat_port_active = PgPortIsActive.local('check ss for postmaster port',"/tmp/.s.PGSQL.%d" % port, port)
+    ss_port_active = PgPortIsActive.local('check ss for postmaster port',"/tmp/.s.PGSQL.%d" % port, port)
 
     logger.debug("postmaster_pid_exists: %s tmpfile_exists: %s lockfile_exists: %s ss port: %s  pid: %s" %\
-                (postmaster_pid_exists, tmpfile_exists, lockfile_exists, netstat_port_active, pid_value))
+                (postmaster_pid_exists, tmpfile_exists, lockfile_exists, ss_port_active, pid_value))
 
-    return (postmaster_pid_exists, tmpfile_exists, lockfile_exists, netstat_port_active, pid_value)
+    return (postmaster_pid_exists, tmpfile_exists, lockfile_exists, ss_port_active, pid_value)
 
 def get_lockfile_name(port):
     return "/tmp/.s.PGSQL.%d.lock" % port
 
 
 def get_local_db_mode(coordinator_data_dir):
-    """ Gets the mode CloudberryDB is running in.
+    """ Gets the mode Cloudberry is running in.
         Possible return values are:
             'NORMAL'
             'RESTRICTED'
@@ -1585,7 +1626,7 @@ def get_local_db_mode(coordinator_data_dir):
     mode = 'NORMAL'
 
     if not os.path.exists(coordinator_data_dir + '/postmaster.pid'):
-        raise Exception('Cloudberry database appears to be stopped')
+        raise Exception('Apache Cloudberry appears to be stopped')
 
     try:
         fp = open(coordinator_data_dir + '/postmaster.opts', 'r')
@@ -1595,7 +1636,7 @@ def get_local_db_mode(coordinator_data_dir):
         elif optline.find('gp_role=utility') > 0:
             mode = 'UTILITY'
     except OSError:
-        raise Exception('Failed to open %s.  Is Cloudberry Database running?' % coordinator_data_dir + '/postmaster.opts')
+        raise Exception('Failed to open %s.  Is Apache Cloudberry running?' % coordinator_data_dir + '/postmaster.opts')
     except IOError:
         raise Exception('Failed to read options from %s' % coordinator_data_dir + '/postmaster.opts')
     finally:
@@ -1651,11 +1692,13 @@ class IfAddrs:
         cmd = ["echo 'START_CMD_OUTPUT'; %s/libexec/ifaddrs" % GPHOME]
         if not include_loopback:
             cmd.append('--no-loopback')
-        if hostname:
+        localhost = socket.gethostname()
+        if hostname and hostname != localhost:
             args = ['ssh', '-n', hostname]
             args.append(' '.join(cmd))
         else:
-            args = cmd
+            args = ['bash', '-c']
+            args.append(' '.join(cmd))
 
         result = subprocess.check_output(args).decode()
         return result.split('START_CMD_OUTPUT\n')[1].splitlines()

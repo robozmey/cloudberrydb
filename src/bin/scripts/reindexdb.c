@@ -201,6 +201,17 @@ main(int argc, char *argv[])
 	cparams.prompt_password = prompt_password;
 	cparams.override_dbname = NULL;
 
+	if (concurrently)
+	{
+		/*
+		 * GPDB_12_MERGE_FEATURE_NOT_SUPPORTED: When we do support this feature,
+		 * a version guard against GP_VERSION_NUM should be introduced here to
+		 * ensure we don't run it against an unsupported version.
+		 */
+		pg_log_error("reindexing a database concurrently is not supported");
+		exit(1);
+	}
+
 	setup_cancel_handler(NULL);
 
 	if (alldb)
@@ -346,14 +357,6 @@ reindex_one_database(ConnParams *cparams, ReindexType type,
 	int			items_count = 0;
 
 	conn = connectDatabase(cparams, progname, echo, false, false);
-
-	if (concurrently && PQserverVersion(conn) < 120000)
-	{
-		PQfinish(conn);
-		pg_log_error("cannot use the \"%s\" option on server versions older than PostgreSQL %s",
-					 "concurrently", "12");
-		exit(1);
-	}
 
 	if (tablespace && PQserverVersion(conn) < 140000)
 	{
@@ -533,7 +536,8 @@ run_reindex_command(PGconn *conn, ReindexType type, const char *name,
 
 	if (tablespace)
 	{
-		appendPQExpBuffer(&sql, "%sTABLESPACE %s", sep, fmtId(tablespace));
+		appendPQExpBuffer(&sql, "%sTABLESPACE %s", sep,
+						  fmtIdEnc(tablespace, PQclientEncoding(conn)));
 		sep = comma;
 	}
 
@@ -573,7 +577,8 @@ run_reindex_command(PGconn *conn, ReindexType type, const char *name,
 	{
 		case REINDEX_DATABASE:
 		case REINDEX_SYSTEM:
-			appendPQExpBufferStr(&sql, fmtId(name));
+			appendPQExpBufferStr(&sql,
+								 fmtIdEnc(name, PQclientEncoding(conn)));
 			break;
 		case REINDEX_INDEX:
 		case REINDEX_TABLE:
@@ -741,8 +746,9 @@ get_parallel_object_list(PGconn *conn, ReindexType type,
 	for (i = 0; i < ntups; i++)
 	{
 		appendPQExpBufferStr(&buf,
-							 fmtQualifiedId(PQgetvalue(res, i, 1),
-											PQgetvalue(res, i, 0)));
+							 fmtQualifiedIdEnc(PQgetvalue(res, i, 1),
+											   PQgetvalue(res, i, 0),
+											   PQclientEncoding(conn)));
 
 		simple_string_list_append(tables, buf.data);
 		resetPQExpBuffer(&buf);

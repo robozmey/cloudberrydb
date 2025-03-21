@@ -8,6 +8,26 @@ Feature: gpstop behave tests
          When the user runs "gpstop -a"
          Then gpstop should return a return code of 0
 
+    @demo_cluster
+    Scenario: gpstop runs with given coordinator data directory option
+        Given the database is running
+          And running postgres processes are saved in context
+          And "COORDINATOR_DATA_DIRECTORY" environment variable is not set
+         Then the user runs utility "gpstop" with coordinator data directory and "-a"
+          And gpstop should return a return code of 0
+          And "COORDINATOR_DATA_DIRECTORY" environment variable should be restored
+          And verify no postgres process is running on all hosts
+
+    @demo_cluster
+    Scenario: gpstop priorities given coordinator data directory over env option
+        Given the database is running
+          And running postgres processes are saved in context
+          And the environment variable "COORDINATOR_DATA_DIRECTORY" is set to "/tmp/"
+         Then the user runs utility "gpstop" with coordinator data directory and "-a"
+          And gpstop should return a return code of 0
+          And "COORDINATOR_DATA_DIRECTORY" environment variable should be restored
+          And verify no postgres process is running on all hosts
+
     @concourse_cluster
     @demo_cluster
     Scenario: when there are user connections gpstop waits to shutdown until user switches to fast mode
@@ -37,3 +57,11 @@ Feature: gpstop behave tests
          Then gpstop should print "Standby is unreachable, skipping shutdown on standby" to stdout
           And gpstop should return a return code of 0
           And the standby host is made reachable
+
+    @concourse_cluster
+    @demo_cluster
+    Scenario: gpstop removes the lock directory when it is empty
+        Given the database is running
+        Then a sample gpstop.lock directory is created using the background pid in coordinator_data_directory
+        And the user runs "gpstop -a"
+        And gpstop should return a return code of 0

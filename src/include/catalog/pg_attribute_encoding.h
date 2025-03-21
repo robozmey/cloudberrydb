@@ -6,7 +6,6 @@
  * GPDB_90_MERGE_FIXME: pg_attribute now has an attoptions field. We should
  * get rid of this table, and start using pg_attribute.attoptions instead.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) EMC, 2011
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -24,6 +23,16 @@
 #include "catalog/pg_attribute_encoding_d.h"
 #include "utils/rel.h"
 
+/*
+ * Shorthand for range of segfiles for a specific attnum.
+ * For eg: filenum = 1 denotes a range of segfiles relfilenode.1 - relfilenode.128.
+ * FileNumbers start at 1
+ */
+typedef int16 FileNumber;
+
+#define InvalidFileNumber		0
+#define MaxFileNumber			2 * MaxHeapAttributeNumber
+
 /* ----------------
  *		pg_attribute_encoding definition.  cpp turns this into
  *		typedef struct FormData_pg_attribute_encoding
@@ -31,8 +40,9 @@
  */
 CATALOG(pg_attribute_encoding,6231,AttributeEncodingRelationId)
 {
-	Oid		attrelid;		
-	int16	attnum;			
+	Oid		attrelid;
+	int16	attnum;
+	int16   filenum;
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 	text	attoptions[1];	
 #endif
@@ -49,6 +59,8 @@ FOREIGN_KEY(attrelid REFERENCES pg_attribute(attrelid));
 typedef FormData_pg_attribute_encoding *Form_pg_attribute_encoding;
 DECLARE_TOAST(pg_attribute_encoding, 6233, 6234);
 
+DECLARE_UNIQUE_INDEX(pg_attribute_encoding_attrelid_filenum_index, 6238, on pg_attribute_encoding using btree(attrelid oid_ops, filenum int2_ops));
+#define AttributeEncodingAttrelidFilenumIndexId        6238
 
 extern PGFunction *get_funcs_for_compression(char *compresstype);
 extern StdRdOptions **RelationGetAttributeOptions(Relation rel);
@@ -57,6 +69,9 @@ extern List **RelationGetUntransformedAttributeOptions(Relation rel);
 extern void AddRelationAttributeEncodings(Relation rel, List *attr_encodings);
 extern void RemoveAttributeEncodingsByRelid(Oid relid);
 extern void cloneAttributeEncoding(Oid oldrelid, Oid newrelid, AttrNumber max_attno);
+extern void UpdateAttributeEncodings(Oid relid, List *new_attr_encodings);
+extern FileNumber GetFilenumForAttribute(Oid relid, AttrNumber attnum);
+extern List *GetNextNAvailableFilenums(Oid relid, int n);
 extern Datum *get_rel_attoptions(Oid relid, AttrNumber max_attno);
 extern List * rel_get_column_encodings(Relation rel);
 

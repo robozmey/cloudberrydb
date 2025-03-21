@@ -536,7 +536,10 @@ PortalDrop(Portal portal, bool isTopCommit)
 	 */
 	PortalHashTableDelete(portal);
 
-	if (IsResQueueLockedForPortal(portal))
+	/*
+	 * GPDB: Cleanup for resource queue associated with the portal (if any).
+	 */
+	if (IsResQueueLockedForPortal(portal) || ResPortalHasDanglingIncrement(portal))
 	{
 		ResUnLockPortal(portal);
 	}
@@ -1044,13 +1047,6 @@ AtSubAbort_Portals(SubTransactionId mySubid,
 				portal->activeSubid = parentSubid;
 
 				/*
-				 * GPDB_96_MERGE_FIXME: We had this different comment here in GPDB.
-				 * Does this scenario happen in GPDB for some reason?
-				 *
-				 * Upper-level portals that failed while running in this
-				 * subtransaction must be forced into FAILED state, for the
-				 * same reasons discussed below.
-				 *
 				 * A MarkPortalActive() caller ran an upper-level portal in
 				 * this subtransaction and left the portal ACTIVE.  This can't
 				 * happen, but force the portal into FAILED state for the same
@@ -1196,7 +1192,14 @@ AtExitCleanup_ResPortals(void)
 	{
 		Portal		portal = hentry->portal;
 
-		if (IsResQueueLockedForPortal(portal))
+		/*
+		 * Note: There is no real need to call ResPortalHasDanglingIncrement()
+		 * here. Only persisted holdable portals are cleaned up here and they
+		 * should already have hasResQueueLock=true.
+		 *
+		 * But we still do so out of paranoia/future-proofing.
+		 */
+		if (IsResQueueLockedForPortal(portal) || ResPortalHasDanglingIncrement(portal))
 			ResUnLockPortal(portal);
 
 	}
@@ -1471,4 +1474,42 @@ ForgetPortalSnapshots(void)
 	if (numPortalSnaps != numActiveSnaps)
 		elog(ERROR, "portal snapshots (%d) did not account for all active snapshots (%d)",
 			 numPortalSnaps, numActiveSnaps);
+}
+
+/* Find all parallel retrieve cursors and return a list of their portals */
+List *
+GetAllParallelRetrieveCursorPortals(void)
+{
+	List			*portals;
+	PortalHashEnt	*hentry;
+	HASH_SEQ_STATUS	status;
+
+	if (PortalHashTable == NULL)
+		return NULL;
+
+	portals = NULL;
+	hash_seq_init(&status, PortalHashTable);
+	while ((hentry = hash_seq_search(&status)) != NULL)
+	{
+		if (PortalIsParallelRetrieveCursor(hentry->portal) &&
+			hentry->portal->queryDesc != NULL)
+			portals = lappend(portals, hentry->portal);
+	}
+
+	return portals;
+}
+
+/* Return the number of active parallel retrieve cursors */
+int
+GetNumOfParallelRetrieveCursors(void)
+{
+	List   *portals;
+	int		sum;
+
+	portals = GetAllParallelRetrieveCursorPortals();
+	sum = list_length(portals);
+
+	list_free(portals);
+
+	return sum;
 }

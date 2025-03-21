@@ -12,7 +12,6 @@ import re
 import collections
 import pgdb
 from contextlib import closing
-
 from gppylib import gparray, gplog
 from gppylib.commands import base, gp
 from gppylib.db import dbconn
@@ -23,6 +22,7 @@ from gppylib.operations.buildMirrorSegments import get_recovery_progress_file, g
 from gppylib.system import configurationInterface as configInterface
 from gppylib.system.environment import GpCoordinatorEnvironment
 from gppylib.utils import TableLogger
+from gppylib.commands.gp import get_coordinatordatadir
 
 logger = gplog.get_default_logger()
 
@@ -188,7 +188,7 @@ class GpStateData:
         self.__currentSegmentData["values"][key] = value
         self.__currentSegmentData["isWarning"][key] = isWarning
 
-        assert key in self.__allValues;
+        assert key in self.__allValues
 
     def isClusterProbablyDown(self, gpArray):
         """
@@ -473,7 +473,7 @@ class GpSystemStateProgram:
         """
         hostNameToResults = self.__fetchAllSegmentData(gpArray)
 
-        logger.info("CloudberryDB instance status summary")
+        logger.info("Cloudberry instance status summary")
 
         # coordinator summary info
         tabLog = TableLogger().setWarnWithArrows(True)
@@ -683,11 +683,12 @@ class GpSystemStateProgram:
         self.__addClusterDownWarning(gpArray, data)
 
         recovery_progress_file = get_recovery_progress_file(gplog)
-        recovery_progress_segs = self._parse_recovery_progress_data(data, recovery_progress_file, gpArray)
-        if recovery_progress_segs:
+        segments_under_recovery = self._parse_recovery_progress_data(data, recovery_progress_file, gpArray)
+        gprecoverseg_lock_dir = os.path.join(get_coordinatordatadir() + '/gprecoverseg.lock')
+        if segments_under_recovery and os.path.exists(gprecoverseg_lock_dir):
             logger.info("----------------------------------------------------")
             logger.info("Segments in recovery")
-            logSegments(recovery_progress_segs, False, [VALUE_RECOVERY_TYPE, VALUE_RECOVERY_COMPLETED_BYTES, VALUE_RECOVERY_TOTAL_BYTES,
+            logSegments(segments_under_recovery, False, [VALUE_RECOVERY_TYPE, VALUE_RECOVERY_COMPLETED_BYTES, VALUE_RECOVERY_TOTAL_BYTES,
                                                           VALUE_RECOVERY_PERCENTAGE])
             exitCode = 1
 
@@ -914,15 +915,15 @@ class GpSystemStateProgram:
         tabLog.info(["Coordinator port", "= %d" % coordinator.getSegmentPort()])
 
         tabLog.info(["Coordinator current role", "= %s" % qdRole])
-        tabLog.info(["CloudberryDB initsystem version", "= %s" % initDbVersion])
+        tabLog.info(["Cloudberry initsystem version", "= %s" % initDbVersion])
 
         if statusFetchWarning is None:
             if coordinatorData[gp.SEGMENT_STATUS__GET_VERSION] is None:
-                tabLog.warn(["CloudberryDB current version", "= Unknown"])
+                tabLog.warn(["Cloudberry current version", "= Unknown"])
             else:
-                tabLog.info(["CloudberryDB current version", "= %s" % coordinatorData[gp.SEGMENT_STATUS__GET_VERSION]])
+                tabLog.info(["Cloudberry current version", "= %s" % coordinatorData[gp.SEGMENT_STATUS__GET_VERSION]])
         else:
-            tabLog.warn(["CloudberryDB current version", "= Error fetching data: %s" % statusFetchWarning])
+            tabLog.warn(["Cloudberry current version", "= Error fetching data: %s" % statusFetchWarning])
         tabLog.info(["Postgres version", "= %s" % pgVersion])
 
         self.__appendStandbySummary(hostNameToResults, gpArray.standbyCoordinator, tabLog)
@@ -992,7 +993,6 @@ class GpSystemStateProgram:
                 data.addValue(VALUE_RECOVERY_PERCENTAGE, percentage)
 
         return recovery_progress_segs
-
 
     @staticmethod
     def _get_unsync_segs_add_wal_remaining_bytes(data, gpArray):
@@ -1299,7 +1299,7 @@ class GpSystemStateProgram:
 
         exitCode = 0
 
-        logger.info("-Quick Cloudberry Database status from Coordinator instance only")
+        logger.info("-Quick Apache Cloudberry status from Coordinator instance only")
         logger.info( "----------------------------------------------------------")
 
         segments = [seg for seg in gpArray.getDbList() if seg.isSegmentQE()]

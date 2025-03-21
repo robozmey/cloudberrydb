@@ -9,7 +9,6 @@
 
 #include "postgres_fe.h"
 
-#include <time.h>
 #ifdef WIN32
 #include <io.h>
 #endif
@@ -67,9 +66,6 @@ parseCommandLine(int argc, char *argv[])
 	int			option;			/* Command line option */
 	int			optindex = 0;	/* used by getopt_long */
 	int			os_user_effective_id;
-	FILE	   *fp;
-	char	  **filename;
-	time_t		run_time = time(NULL);
 
 	user_opts.transfer_mode = TRANSFER_MODE_COPY;
 
@@ -100,7 +96,7 @@ parseCommandLine(int argc, char *argv[])
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			puts("pg_upgrade (Cloudberry Database) " PG_VERSION);
+			puts("pg_upgrade (Apache Cloudberry) " PG_VERSION);
 			exit(0);
 		}
 	}
@@ -216,7 +212,7 @@ parseCommandLine(int argc, char *argv[])
 				break;
 
 			default:
-				if (!process_greenplum_option(option, pg_strdup(optarg)))
+				if (!process_greenplum_option(option))
 				{
 					fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 							os_info.progname);
@@ -229,26 +225,10 @@ parseCommandLine(int argc, char *argv[])
 	if (optind < argc)
 		pg_fatal("too many command-line arguments (first is \"%s\")\n", argv[optind]);
 
-	if ((log_opts.internal = fopen_priv(INTERNAL_LOG_FILE, "a")) == NULL)
-		pg_fatal("could not open log file \"%s\": %m\n", INTERNAL_LOG_FILE);
-
 	if (log_opts.verbose)
 		pg_log(PG_REPORT, "Running in verbose mode\n");
 
-	/* label start of upgrade in logfiles */
-	for (filename = output_files; *filename != NULL; filename++)
-	{
-		if ((fp = fopen_priv(*filename, "a")) == NULL)
-			pg_fatal("could not write to log file \"%s\": %m\n", *filename);
-
-		/* Start with newline because we might be appending to a file. */
-		fprintf(fp, "\n"
-				"-----------------------------------------------------------------\n"
-				"  pg_upgrade run on %s"
-				"-----------------------------------------------------------------\n\n",
-				ctime(&run_time));
-		fclose(fp);
-	}
+	log_opts.isatty = isatty(fileno(stdout));
 
 	/* Turn off read-only mode;  add prefix to PGOPTIONS? */
 	if (getenv("PGOPTIONS"))
@@ -265,19 +245,20 @@ parseCommandLine(int argc, char *argv[])
 	/* Get values from env if not already set */
 	check_required_directory(&old_cluster.bindir, "PGBINOLD", false,
 							 "-b", _("old cluster binaries reside"), false);
-	check_required_directory(&new_cluster.bindir, "PGBINNEW", false,
-							 "-B", _("new cluster binaries reside"), true);
+
+	if(!is_skip_target_check())
+		check_required_directory(&new_cluster.bindir, "PGBINNEW", false,
+					 "-B", "new cluster binaries reside", false);
+
 	check_required_directory(&old_cluster.pgdata, "PGDATAOLD", false,
 							 "-d", _("old cluster data resides"), false);
-	check_required_directory(&new_cluster.pgdata, "PGDATANEW", false,
-							 "-D", _("new cluster data resides"), false);
+
+	if(!is_skip_target_check())
+		check_required_directory(&new_cluster.pgdata, "PGDATANEW", false,
+					 "-D", "new cluster data resides", false);
+
 	check_required_directory(&user_opts.socketdir, "PGSOCKETDIR", true,
 							 "-s", _("sockets will be created"), false);
-
-	/* Ensure we are only adding checksums in copy mode */
-	if (user_opts.transfer_mode != TRANSFER_MODE_COPY &&
-		!is_checksum_mode(CHECKSUM_NONE))
-		pg_fatal("Adding and removing checksums only supported in copy mode.\n");
 
 #ifdef WIN32
 	/*
@@ -327,6 +308,8 @@ usage(void)
 	printf(_("  -v, --verbose                 enable verbose internal logging\n"));
 	printf(_("  -V, --version                 display version information, then exit\n"));
 	printf(_("  --clone                       clone instead of copying files to new cluster\n"));
+	printf(_("  --continue-check-on-fatal     goes through all pg_upgrade checks; should be used with -c\n"));
+	printf(_("  --skip-target-check           skip all checks and comparisons of new cluster; should be used with -c\n"));
 	printf(_("  -?, --help                    show this help, then exit\n"));
 	printf(_("\n"
 			 "Before running pg_upgrade you must:\n"

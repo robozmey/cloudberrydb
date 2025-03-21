@@ -4,7 +4,6 @@
  *	 Greenplum specific code for various C-language functions defined as
  *	 part of the regression tests.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2009, PostgreSQL Global Development Group
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -1167,7 +1166,8 @@ test_consume_xids(PG_FUNCTION_ARGS)
 
 	xid = ReadNextTransactionId();
 
-	targetxid = xid + nxids;
+	/* xid is the "next xid" now, so minus one here */
+	targetxid = xid + nxids - 1;
 	while (targetxid < FirstNormalTransactionId)
 		targetxid++;
 

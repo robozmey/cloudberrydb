@@ -27,6 +27,7 @@
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_appendonly.h"
+#include "catalog/pg_attribute_encoding.h"
 #include "cdb/cdbaocsam.h"
 #include "cdb/cdbvars.h"
 #include "commands/vacuum.h"
@@ -66,16 +67,18 @@ AOCSCompaction_DropSegmentFile(Relation aorel, int segno, AOVacuumRelStats *vacr
 {
 	int			col;
 
-	Assert(RelationIsAoCols(aorel));
+	Assert(RelationStorageIsAoCols(aorel));
 
 	for (col = 0; col < RelationGetNumberOfAttributes(aorel); col++)
 	{
 		char		filenamepath[MAXPGPATH];
 		int			pseudoSegNo;
 		File		fd;
+		/* Filenum for the col */
+		FileNumber  filenum = GetFilenumForAttribute(RelationGetRelid(aorel), col + 1);
 
 		/* Open and truncate the relation segfile */
-		MakeAOSegmentFileName(aorel, segno, col, &pseudoSegNo, filenamepath);
+		MakeAOSegmentFileName(aorel, segno, filenum, &pseudoSegNo, filenamepath);
 
 		elogif(Debug_appendonly_print_compaction, LOG,
 			   "Drop segment file: "
@@ -86,7 +89,7 @@ AOCSCompaction_DropSegmentFile(Relation aorel, int segno, AOVacuumRelStats *vacr
 		if (fd >= 0)
 		{
 			TruncateAOSegmentFile(fd, aorel, pseudoSegNo, 0, vacrelstats);
-			CloseAOSegmentFile(fd);
+			CloseAOSegmentFile(fd, aorel);
 		}
 		else
 		{
@@ -116,9 +119,7 @@ AOCSSegmentFileTruncateToEOF(Relation aorel, int segno, AOCSVPInfo *vpinfo, AOVa
 	const char *relname = RelationGetRelationName(aorel);
 	int			j;
 
-	Assert(RelationIsAoCols(aorel));
-
-	relname = RelationGetRelationName(aorel);
+	Assert(RelationStorageIsAoCols(aorel));
 
 	for (j = 0; j < vpinfo->nEntry; ++j)
 	{
@@ -127,12 +128,14 @@ AOCSSegmentFileTruncateToEOF(Relation aorel, int segno, AOCSVPInfo *vpinfo, AOVa
 		AOCSVPInfoEntry *entry;
 		File		fd;
 		int32		fileSegNo;
+		/* Filenum for the column */
+		FileNumber  filenum = GetFilenumForAttribute(RelationGetRelid(aorel), j + 1);
 
 		entry = &vpinfo->entry[j];
 		segeof = entry->eof;
 
 		/* Open and truncate the relation segfile to its eof */
-		MakeAOSegmentFileName(aorel, segno, j, &fileSegNo, filenamepath);
+		MakeAOSegmentFileName(aorel, segno, filenum, &fileSegNo, filenamepath);
 
 		elogif(Debug_appendonly_print_compaction, LOG,
 			   "Opening AO COL relation \"%s.%s\", relation id %u, relfilenode %lu column #%d, logical segment #%d (physical segment file #%d, logical EOF " INT64_FORMAT ")",
@@ -149,7 +152,7 @@ AOCSSegmentFileTruncateToEOF(Relation aorel, int segno, AOCSVPInfo *vpinfo, AOVa
 		if (fd >= 0)
 		{
 			TruncateAOSegmentFile(fd, aorel, fileSegNo, segeof, vacrelstats);
-			CloseAOSegmentFile(fd);
+			CloseAOSegmentFile(fd, aorel);
 
 			elogif(Debug_appendonly_print_compaction, LOG,
 				   "Successfully truncated AO COL relation \"%s.%s\", relation id %u, relfilenode %lu column #%d, logical segment #%d (physical segment file #%d, logical EOF " INT64_FORMAT ")",
@@ -233,7 +236,6 @@ AOCSSegmentFileFullCompaction(Relation aorel,
 	TupleTableSlot *slot;
 	int			compact_segno;
 	ResultRelInfo *resultRelInfo;
-	MemTupleBinding *mt_bind;
 	EState	   *estate;
 	int64		tupleCount = 0;
 	int64		tuplePerPage = INT_MAX;
@@ -245,7 +247,7 @@ AOCSSegmentFileFullCompaction(Relation aorel,
 	int64		prev_heap_blks_scanned = 0;
 
 	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY);
-	Assert(RelationIsAoCols(aorel));
+	Assert(RelationStorageIsAoCols(aorel));
 	Assert(insertDesc);
 
 	compact_segno = fsinfo->segno;
@@ -272,8 +274,6 @@ AOCSSegmentFileFullCompaction(Relation aorel,
 	tupDesc = RelationGetDescr(aorel);
 	slot = MakeSingleTupleTableSlot(tupDesc, &TTSOpsVirtual);
 	slot->tts_tableOid = RelationGetRelid(aorel);
-
-	mt_bind = create_memtuple_binding(tupDesc);
 
 	/*
 	 * We need a ResultRelInfo and an EState so we can use the regular
@@ -329,7 +329,7 @@ AOCSSegmentFileFullCompaction(Relation aorel,
 		/*
 		 * Report that we are now scanning and compacting segment files.
 		 */
-		curr_num_dead_tuples = scanDesc->cur_seg_row + 1 - tupleCount;
+		curr_num_dead_tuples = scanDesc->segrowsprocessed + 1 - tupleCount;
 		if (curr_num_dead_tuples > prev_num_dead_tuples)
 		{
 			pgstat_progress_update_param(PROGRESS_VACUUM_NUM_DEAD_TUPLES,
@@ -346,7 +346,7 @@ AOCSSegmentFileFullCompaction(Relation aorel,
 		}
 	}
 	/* Accumulate total number dead tuples */
-	vacrelstats->num_dead_tuples += scanDesc->cur_seg_row - tupleCount;
+	vacrelstats->num_dead_tuples += scanDesc->segrowsprocessed - tupleCount;
 
 	MarkAOCSFileSegInfoAwaitingDrop(aorel, compact_segno);
 
@@ -373,7 +373,6 @@ AOCSSegmentFileFullCompaction(Relation aorel,
 	FreeExecutorState(estate);
 
 	ExecDropSingleTupleTableSlot(slot);
-	destroy_memtuple_binding(mt_bind);
 
 	aocs_endscan(scanDesc);
 
@@ -406,7 +405,7 @@ AOCSCompact(Relation aorel,
 	AOCSFileSegInfo *fsinfo;
 	Snapshot	appendOnlyMetaDataSnapshot = RegisterSnapshot(GetCatalogSnapshot(InvalidOid));
 
-	Assert(RelationIsAoCols(aorel));
+	Assert(RelationStorageIsAoCols(aorel));
 	Assert(Gp_role == GP_ROLE_EXECUTE || Gp_role == GP_ROLE_UTILITY);
 
 	relname = RelationGetRelationName(aorel);

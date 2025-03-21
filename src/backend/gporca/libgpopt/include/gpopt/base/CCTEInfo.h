@@ -127,6 +127,9 @@ private:
 		// is this CTE used
 		BOOL m_fUsed;
 
+		// does CTE have outer references outside CTE? If so, force inlining
+		BOOL m_hasOuterReferences;
+
 	public:
 		// ctors
 		CCTEInfoEntry(CMemoryPool *mp, CExpression *pexprCTEProducer);
@@ -160,11 +163,32 @@ private:
 			m_fUsed = false;
 		}
 
+		// mark CTE as used
+		void
+		MarkUsed()
+		{
+			m_fUsed = true;
+		}
+
 		// add given columns to consumers column map
 		void AddConsumerCols(CColRefArray *colref_array);
 
 		// return position of given consumer column in consumer output
 		ULONG UlConsumerColPos(CColRef *colref);
+
+		// check if CTE entry has outer reference
+		BOOL
+		HasOuterReferences() const
+		{
+			return m_hasOuterReferences;
+		}
+
+		// mark cte entry as containing an outer reference
+		void
+		SetHasOuterReferences()
+		{
+			m_hasOuterReferences = true;
+		}
 
 	};	//class CCTEInfoEntry
 
@@ -226,6 +250,12 @@ public:
 
 	// check if given CTE is used
 	BOOL FUsed(ULONG ulCTEId) const;
+
+	// check if given CTE has outer reference
+	BOOL HasOuterReferences(ULONG ulCTEId) const;
+
+	// mark given cte as containing an outer reference
+	void SetHasOuterReferences(ULONG ulCTEId);
 
 	// increment number of CTE consumers
 	void IncrementConsumers(ULONG ulConsumerId,

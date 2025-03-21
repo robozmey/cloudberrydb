@@ -6,7 +6,6 @@
  * with servers of versions 7.4 and up.  It's okay to omit irrelevant
  * information for an old server, but not to fail outright.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Copyright (c) 2000-2021, PostgreSQL Global Development Group
  *
  * src/bin/psql/describe.c
@@ -39,6 +38,7 @@ static bool describeOneTableDetails(const char *schemaname,
 									bool verbose);
 static void add_external_table_footer(printTableContent *const cont, const char *oid);
 static void add_distributed_by_footer(printTableContent *const cont, const char *oid);
+static void add_partition_by_footer(printTableContent *const cont, const char *oid);
 static void add_tablespace_footer(printTableContent *const cont, char relkind,
 								  Oid tablespace, const bool newline);
 static void add_role_attribute(PQExpBuffer buf, const char *const str);
@@ -1332,7 +1332,7 @@ permissionsList(const char *pattern)
 					  " WHEN " CppAsString2(RELKIND_RELATION) " THEN '%s'"
 					  " WHEN " CppAsString2(RELKIND_DIRECTORY_TABLE) " THEN '%s'"
 					  " WHEN " CppAsString2(RELKIND_VIEW) " THEN '%s'"
-					  " WHEN " CppAsString2(RELKIND_MATVIEW) " THEN '%s'"
+					  " WHEN " CppAsString2(RELKIND_MATVIEW) " THEN CASE c.relisdynamic WHEN true THEN '%s' ELSE '%s' END"
 					  " WHEN " CppAsString2(RELKIND_SEQUENCE) " THEN '%s'"
 					  " WHEN " CppAsString2(RELKIND_FOREIGN_TABLE) " THEN '%s'"
 					  " WHEN " CppAsString2(RELKIND_PARTITIONED_TABLE) " THEN '%s'"
@@ -1343,6 +1343,7 @@ permissionsList(const char *pattern)
 					  gettext_noop("table"),
 					  gettext_noop("directory table"),
 					  gettext_noop("view"),
+					  gettext_noop("dynamic table"),
 					  gettext_noop("materialized view"),
 					  gettext_noop("sequence"),
 					  gettext_noop("foreign table"),
@@ -1927,6 +1928,7 @@ describeOneTableDetails(const char *schemaname,
 		char		relreplident;
 		char	   *relam;
 		bool		isivm;
+		bool		isdynamic;
 
 		char	   *compressionType;
 		char	   *compressionLevel;
@@ -1959,7 +1961,8 @@ describeOneTableDetails(const char *schemaname,
 						  "false AS relhasoids, c.relispartition, %s, c.reltablespace, "
 						  "CASE WHEN c.reloftype = 0 THEN '' ELSE c.reloftype::pg_catalog.regtype::pg_catalog.text END, "
 						  "c.relpersistence, c.relreplident, am.amname, "
-						  "c.relisivm\n"
+						  "c.relisivm, "
+						  "c.relisdynamic \n"
 						  "FROM pg_catalog.pg_class c\n "
 						  "LEFT JOIN pg_catalog.pg_class tc ON (c.reltoastrelid = tc.oid)\n"
 						  "LEFT JOIN pg_catalog.pg_am am ON (c.relam = am.oid)\n"
@@ -2155,6 +2158,7 @@ describeOneTableDetails(const char *schemaname,
 	else
 		tableinfo.relam = NULL;
 	tableinfo.isivm = strcmp(PQgetvalue(res, 0, 15), "t") == 0;
+	tableinfo.isdynamic = strcmp(PQgetvalue(res, 0, 16), "t") == 0;
 
 	/* GPDB Only:  relstorage  */
 	if (pset.sversion < 120000 && isGPDB())
@@ -2287,8 +2291,10 @@ describeOneTableDetails(const char *schemaname,
 		goto error_return;		/* not an error, just return early */
 	}
 
-	if (greenplum_is_ao_column(tableinfo.relstorage, tableinfo.relam)
-			|| greenplum_is_ao_row(tableinfo.relstorage, tableinfo.relam))
+	/* if AO reloptions are specified for table, replace the default reloptions */
+	if (tableinfo.relkind != RELKIND_PARTITIONED_TABLE &&
+		(greenplum_is_ao_column(tableinfo.relstorage, tableinfo.relam) ||
+		 greenplum_is_ao_row(tableinfo.relstorage, tableinfo.relam)))
 	{
 		PGresult *result = NULL;
 		/* Get Append Only information
@@ -2482,8 +2488,18 @@ describeOneTableDetails(const char *schemaname,
 				printfPQExpBuffer(&title, _("Unlogged materialized view \"%s.%s\""),
 								  schemaname, relationname);
 			else
-				printfPQExpBuffer(&title, _("Materialized view \"%s.%s\""),
-								  schemaname, relationname);
+			{
+				/*
+				 * Postgres has forbidden UNLOGGED materialized view,
+				 * only consider below cases.
+				 */
+				if (!tableinfo.isdynamic)
+					printfPQExpBuffer(&title, _("Materialized view \"%s.%s\""),
+									schemaname, relationname);
+				else
+					printfPQExpBuffer(&title, _("Dynamic table \"%s.%s\""),
+									schemaname, relationname);
+			}
 			break;
 		case RELKIND_INDEX:
 			if (tableinfo.relpersistence == 'u')
@@ -2525,6 +2541,18 @@ describeOneTableDetails(const char *schemaname,
 			else
 				printfPQExpBuffer(&title, _("Partitioned table \"%s.%s\""),
 								  schemaname, relationname);
+			break;
+		case RELKIND_AOSEGMENTS:
+			printfPQExpBuffer(&title, _("Appendonly segment entry table: \"%s.%s\""),
+							  schemaname, relationname);
+			break;
+		case RELKIND_AOVISIMAP:
+			printfPQExpBuffer(&title, _("Appendonly visibility map table: \"%s.%s\""),
+							  schemaname, relationname);
+			break;
+		case RELKIND_AOBLOCKDIR:
+			printfPQExpBuffer(&title, _("Appendonly block directory table: \"%s.%s\""),
+							  schemaname, relationname);
 			break;
 		default:
 			/* untranslated unknown relkind */
@@ -2932,7 +2960,10 @@ describeOneTableDetails(const char *schemaname,
 			 tableinfo.relkind == RELKIND_FOREIGN_TABLE ||
 			 tableinfo.relkind == RELKIND_PARTITIONED_TABLE ||
 			 tableinfo.relkind == RELKIND_PARTITIONED_INDEX ||
-			 tableinfo.relkind == RELKIND_TOASTVALUE)
+			 tableinfo.relkind == RELKIND_TOASTVALUE ||
+			 tableinfo.relkind == RELKIND_AOSEGMENTS ||
+			 tableinfo.relkind == RELKIND_AOBLOCKDIR ||
+			 tableinfo.relkind == RELKIND_AOVISIMAP)
 	{
 		/* Footer information about a table */
 		PGresult   *result = NULL;
@@ -2948,15 +2979,23 @@ describeOneTableDetails(const char *schemaname,
 		{
 			if (greenplum_is_ao_row(tableinfo.relstorage, tableinfo.relam))
 			{
-				printfPQExpBuffer(&buf, _("Compression Type: %s"), tableinfo.compressionType);
-				printTableAddFooter(&cont, buf.data);
-				printfPQExpBuffer(&buf, _("Compression Level: %s"), tableinfo.compressionLevel);
-				printTableAddFooter(&cont, buf.data);
-				printfPQExpBuffer(&buf, _("Block Size: %s"), tableinfo.blockSize);
-				printTableAddFooter(&cont, buf.data);
+				if (tableinfo.compressionType) {
+				    printfPQExpBuffer(&buf, _("Compression Type: %s"), tableinfo.compressionType);
+				    printTableAddFooter(&cont, buf.data);
+				}
+				if (tableinfo.compressionLevel) {
+				    printfPQExpBuffer(&buf, _("Compression Level: %s"), tableinfo.compressionLevel);
+				    printTableAddFooter(&cont, buf.data);
+				}
+				if (tableinfo.blockSize) {
+				    printfPQExpBuffer(&buf, _("Block Size: %s"), tableinfo.blockSize);
+				    printTableAddFooter(&cont, buf.data);
+				}
 			}
-			printfPQExpBuffer(&buf, _("Checksum: %s"), tableinfo.checksum);
-			printTableAddFooter(&cont, buf.data);
+			if (tableinfo.checksum) {
+			    printfPQExpBuffer(&buf, _("Checksum: %s"), tableinfo.checksum);
+			    printTableAddFooter(&cont, buf.data);
+			}
 		}
 
         /* print indexes */
@@ -4099,6 +4138,9 @@ describeOneTableDetails(const char *schemaname,
 		/* mpp addition start: dump distributed by clause */
 		add_distributed_by_footer(&cont, oid);
 
+		/* Still needed by legacy partitioning to print old version server's 'partition by' clause */
+		if (!isGPDB7000OrLater() && tuples > 0)
+			add_partition_by_footer(&cont, oid);
 
 		/* Tablespace info */
 		add_tablespace_footer(&cont, tableinfo.relkind, tableinfo.tablespace,
@@ -4587,6 +4629,87 @@ add_distributed_by_footer(printTableContent *const cont, const char *oid)
 	}
 }
 
+/*
+ * Add a 'partition by' description to the footer.
+ */
+static void
+add_partition_by_footer(printTableContent *const cont, const char *oid)
+{
+	PGresult   *result;
+	PQExpBufferData buf;
+	int			nRows;
+	int			nPartKey;
+
+	initPQExpBuffer(&buf);
+
+	/* check if current relation is root partition, if it is root partition, at least 1 row returns */
+	printfPQExpBuffer(&buf, "SELECT parrelid FROM pg_catalog.pg_partition WHERE parrelid = '%s'", oid);
+	result = PSQLexec(buf.data);
+
+	if (!result)
+		return;
+	nRows = PQntuples(result);
+
+	PQclear(result);
+
+	if (nRows)
+	{
+		/* query partition key on the root partition */
+		printfPQExpBuffer(&buf,
+			"WITH att_arr AS (SELECT unnest(paratts) \n"
+			"	FROM pg_catalog.pg_partition p \n"
+			"	WHERE p.parrelid = '%s' AND p.parlevel = 0 AND p.paristemplate = false), \n"
+			"idx_att AS (SELECT row_number() OVER() AS idx, unnest AS att_num FROM att_arr) \n"
+			"SELECT attname FROM pg_catalog.pg_attribute, idx_att \n"
+			"	WHERE attrelid='%s' AND attnum = att_num ORDER BY idx ",
+			oid, oid);
+	}
+	else
+	{
+		/* query partition key on the intermediate partition */
+		printfPQExpBuffer(&buf,
+			"WITH att_arr AS (SELECT unnest(paratts) FROM pg_catalog.pg_partition p, \n"
+			"	(SELECT parrelid, parlevel \n"
+			"		FROM pg_catalog.pg_partition p, pg_catalog.pg_partition_rule pr \n"
+			"		WHERE pr.parchildrelid='%s' AND p.oid = pr.paroid) AS v \n"
+			"	WHERE p.parrelid = v.parrelid AND p.parlevel = v.parlevel+1 AND p.paristemplate = false), \n"
+			"idx_att AS (SELECT row_number() OVER() AS idx, unnest AS att_num FROM att_arr) \n"
+			"SELECT attname FROM pg_catalog.pg_attribute, idx_att \n"
+			"	WHERE attrelid='%s' AND attnum = att_num ORDER BY idx ",
+			oid, oid);
+	}
+
+	result = PSQLexec(buf.data);
+	if (!result)
+		return;
+
+	nPartKey = PQntuples(result);
+	if (nPartKey)
+	{
+		char	   *partColName;
+		int			i;
+
+		resetPQExpBuffer(&buf);
+		appendPQExpBuffer(&buf, "Partition by: (");
+		for (i = 0; i < nPartKey; i++)
+		{
+			if (i > 0)
+				appendPQExpBuffer(&buf, ", ");
+			partColName = PQgetvalue(result, i, 0);
+
+			if (!partColName)
+				return;
+			appendPQExpBuffer(&buf, "%s", partColName);
+		}
+		appendPQExpBuffer(&buf, ")");
+		printTableAddFooter(cont, buf.data);
+	}
+
+	PQclear(result);
+
+	termPQExpBuffer(&buf);
+	return;		/* success */
+}
 
 /*
  * Add a tablespace description to a footer.  If 'newline' is true, it is added
@@ -4995,7 +5118,7 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 					  " WHEN " CppAsString2(RELKIND_RELATION) " THEN '%s'"
 					  " WHEN " CppAsString2(RELKIND_DIRECTORY_TABLE) " THEN '%s'"
 					  " WHEN " CppAsString2(RELKIND_VIEW) " THEN '%s'"
-					  " WHEN " CppAsString2(RELKIND_MATVIEW) " THEN '%s'"
+					  " WHEN " CppAsString2(RELKIND_MATVIEW) " THEN CASE c.relisdynamic WHEN true THEN '%s' ELSE '%s' END"
 					  " WHEN " CppAsString2(RELKIND_INDEX) " THEN '%s'"
 					  " WHEN " CppAsString2(RELKIND_SEQUENCE) " THEN '%s'"
 					  " WHEN " CppAsString2(RELKIND_TOASTVALUE) " THEN '%s'"
@@ -5009,6 +5132,7 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 					  gettext_noop("table"),
 					  gettext_noop("directory table"),
 					  gettext_noop("view"),
+					  gettext_noop("dynamic table"),
 					  gettext_noop("materialized view"),
 					  gettext_noop("index"),
 					  gettext_noop("sequence"),
@@ -5025,12 +5149,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 	{
 		if (isGPDB7000OrLater())
 		{
-			appendPQExpBuffer(&buf, ", CASE c.relam");
-			appendPQExpBuffer(&buf, " WHEN %d THEN '%s'", AO_ROW_TABLE_AM_OID, gettext_noop("append only"));
-			appendPQExpBuffer(&buf, " WHEN %d THEN '%s'", AO_COLUMN_TABLE_AM_OID, gettext_noop("append only columnar"));
-			appendPQExpBuffer(&buf, " ELSE (SELECT amname FROM pg_am WHERE pg_am.oid=c.relam)");
-
-			appendPQExpBuffer(&buf, " END as \"%s\"\n", gettext_noop("Storage"));
+			/* In GPDB7, we can have user defined access method, display the access method name directly */
+			appendPQExpBuffer(&buf, ", a.amname as \"%s\"\n", gettext_noop("Storage"));
 		}
 		else
 		{
@@ -5114,6 +5234,9 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 		appendPQExpBufferStr(&buf,
 							 "\n     LEFT JOIN pg_catalog.pg_am am ON am.oid = c.relam");
 
+	if (showTables && isGPDB7000OrLater())
+		appendPQExpBufferStr(&buf,
+							"\n     LEFT JOIN pg_catalog.pg_am a ON a.oid = c.relam");
 	if (showIndexes)
 		appendPQExpBufferStr(&buf,
 							 "\n     LEFT JOIN pg_catalog.pg_index i ON i.indexrelid = c.oid"

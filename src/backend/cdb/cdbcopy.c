@@ -43,7 +43,6 @@
  *
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * 
  *
  * IDENTIFICATION
@@ -726,7 +725,7 @@ cdbCopyEndInternal(CdbCopy *c, char *abort_msg,
 		if (first_error)
 		{
 			FlushErrorState();
-			ReThrowError(first_error);
+			ThrowErrorData(first_error);
 		}
 
 		/* errors that occurred in the COPY itself */

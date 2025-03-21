@@ -3,7 +3,6 @@
  * aocsam.c
  *	  Append only columnar access methods
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2009-2010, Greenplum Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -75,7 +74,7 @@ aocs_delete_hook_type aocs_delete_hook = NULL;
  */
 static void
 open_datumstreamread_segfile(
-							 char *basepath, RelFileNode node,
+							 char *basepath, Relation rel,
 							 AOCSFileSegInfo *segInfo,
 							 DatumStreamRead *ds,
 							 int colNo)
@@ -83,10 +82,15 @@ open_datumstreamread_segfile(
 	int			segNo = segInfo->segno;
 	char		fn[MAXPGPATH];
 	int32		fileSegNo;
+	RelFileNode node = rel->rd_node;
+	Oid         relid = RelationGetRelid(rel);
+
+	/* Filenum for the column */
+	FileNumber	filenum = GetFilenumForAttribute(relid, colNo + 1);
 
 	AOCSVPInfoEntry *e = getAOCSVPEntry(segInfo, colNo);
 
-	FormatAOSegmentFileName(basepath, segNo, colNo, &fileSegNo, fn);
+	FormatAOSegmentFileName(basepath, segNo, filenum, &fileSegNo, fn);
 	Assert(strlen(fn) + 1 <= MAXPGPATH);
 
 	Assert(ds);
@@ -118,9 +122,10 @@ open_all_datumstreamread_segfiles(AOCSScanDesc scan, AOCSFileSegInfo *segInfo)
 	{
 		AttrNumber	attno = proj_atts[i];
 
-		open_datumstreamread_segfile(basepath, rel->rd_node, segInfo, ds[attno], attno);
+		RelationOpenSmgr(rel);
+		open_datumstreamread_segfile(basepath, rel, segInfo, ds[attno], attno);
 		datumstreamread_block(ds[attno], blockDirectory, attno);
-		
+
 		AOCSScanDesc_UpdateTotalBytesRead(scan, attno);
 	}
 
@@ -140,6 +145,7 @@ open_ds_write(Relation rel, DatumStreamWrite **ds, TupleDesc relationTupleDesc, 
 
 	rnode.node = rel->rd_node;
 	rnode.backend = rel->rd_backend;
+
 
 	/* open datum streams.  It will open segment file underneath */
 	for (int i = 0; i < natts; ++i)
@@ -170,18 +176,19 @@ open_ds_write(Relation rel, DatumStreamWrite **ds, TupleDesc relationTupleDesc, 
 		clvl = opts[i]->compresslevel;
 		blksz = opts[i]->blocksize;
 
+		RelationOpenSmgr(rel);
+
 		ds[i] = create_datumstreamwrite(ct,
 										clvl,
 										checksum,
-										 /* safeFSWriteSize */ 0,	/* UNDONE: Need to wire
-																	 * down pg_appendonly
-																	 * column? */
 										blksz,
 										attr,
 										RelationGetRelationName(rel),
+										RelationGetRelid(rel),
 										/* title */ titleBuf.data,
 										XLogIsNeeded() && RelationNeedsWAL(rel),
-										&rnode);
+										&rnode,
+										rel->rd_smgr->smgr_ao);
 
 	}
 }
@@ -262,17 +269,18 @@ open_ds_read(Relation rel, DatumStreamRead **ds, TupleDesc relationTupleDesc,
 						 attno + 1,
 						 NameStr(attr->attname));
 
+		RelationOpenSmgr(rel);
+
 		ds[attno] = create_datumstreamread(ct,
 										   clvl,
 										   checksum,
-										    /* safeFSWriteSize */ 0,	/* UNDONE:Need to wire
-																			 * down pg_appendonly
-																			 * column */
 										   blksz,
 										   attr,
 										   RelationGetRelationName(rel),
+										   RelationGetRelid(rel),
 										    /* title */ titleBuf.data,
-										   &rel->rd_node);
+										   &rel->rd_node,
+										   rel->rd_smgr->smgr_ao);
 	}
 }
 
@@ -337,7 +345,7 @@ initscan_with_colinfo(AOCSScanDesc scan)
 	MemoryContextSwitchTo(oldCtx);
 
 	scan->cur_seg = -1;
-	scan->cur_seg_row = 0;
+	scan->segrowsprocessed = 0;
 
 	ItemPointerSet(&scan->cdb_fake_ctid, 0, 0);
 
@@ -587,7 +595,6 @@ aocs_beginscan_internal(Relation relation,
 	GetAppendOnlyEntryAttributes(RelationGetRelid(relation),
 								 NULL,
 								 NULL,
-								 NULL,
 								 &scan->checksum,
 								 NULL);
 
@@ -630,6 +637,7 @@ aocs_endscan(AOCSScanDesc scan)
 
 		close_ds_read(scan->columnScanInfo.ds, scan->columnScanInfo.relationTupleDesc->natts);
 		pfree(scan->columnScanInfo.ds);
+		scan->columnScanInfo.ds = NULL;
 	}
 
 	if (scan->columnScanInfo.relationTupleDesc)
@@ -801,7 +809,7 @@ ReadNext:
 				scan->cur_seg = -1;
 				return false;
 			}
-			scan->cur_seg_row = 0;
+			scan->segrowsprocessed = 0;
 		}
 
 		Assert(scan->cur_seg >= 0);
@@ -859,10 +867,10 @@ ReadNext:
 					rowNum = scan->columnScanInfo.ds[attno]->blockFirstRowNum +
 						datumstreamread_nth(scan->columnScanInfo.ds[attno]);
 				}
-				scan->cur_seg_row++;
+				scan->segrowsprocessed++;
 				if (rowNum == INT64CONST(-1))
 				{
-					AOTupleIdInit(&aoTupleId, curseginfo->segno, scan->cur_seg_row);
+					AOTupleIdInit(&aoTupleId, curseginfo->segno, scan->segrowsprocessed);
 				}
 				else
 				{
@@ -948,7 +956,10 @@ OpenAOCSDatumStreams(AOCSInsertDesc desc)
 	{
 		AOCSVPInfoEntry *e = getAOCSVPEntry(seginfo, i);
 
-		FormatAOSegmentFileName(basepath, seginfo->segno, i, &fileSegNo, fn);
+		/* Filenum for the column */
+		FileNumber filenum = GetFilenumForAttribute(RelationGetRelid(desc->aoi_rel), i + 1);
+
+		FormatAOSegmentFileName(basepath, seginfo->segno, filenum, &fileSegNo, fn);
 		Assert(strlen(fn) + 1 <= MAXPGPATH);
 
 		datumstreamwrite_open_file(desc->ds[i], fn, e->eof, e->eof_uncompressed,
@@ -1002,7 +1013,6 @@ aocs_insert_init(Relation rel, int segno)
 
     GetAppendOnlyEntryAttributes(rel->rd_id,
                                  &desc->blocksz,
-                                 NULL,
                                  (int16 *)&desc->compLevel,
                                  &desc->checksum,
                                  &nd);
@@ -1308,7 +1318,7 @@ scanToFetchValue(AOCSFetchDesc aocsFetchDesc,
 {
 	DatumStreamFetchDesc 			datumStreamFetchDesc = aocsFetchDesc->datumStreamFetchDesc[colno];
 	DatumStreamRead 				*datumStream = datumStreamFetchDesc->datumStream;
-	CurrentBlock 			*currentBlock = &datumStreamFetchDesc->currentBlock;
+	AOFetchBlockMetadata 			*currentBlock = &datumStreamFetchDesc->currentBlock;
 	AppendOnlyBlockDirectoryEntry 	*entry = &currentBlock->blockDirectoryEntry;
 	bool							found;
 
@@ -1409,7 +1419,8 @@ openFetchSegmentFile(AOCSFetchDesc aocsFetchDesc,
 	if (logicalEof == 0)
 		return false;
 
-	open_datumstreamread_segfile(aocsFetchDesc->basepath, aocsFetchDesc->relation->rd_node,
+	RelationOpenSmgr(aocsFetchDesc->relation);
+	open_datumstreamread_segfile(aocsFetchDesc->basepath, aocsFetchDesc->relation,
 								 fsInfo,
 								 datumStreamFetchDesc->datumStream,
 								 colNo);
@@ -1428,7 +1439,7 @@ openFetchSegmentFile(AOCSFetchDesc aocsFetchDesc,
  * FIXME: reset other fields here.
  */
 static void
-resetCurrentBlockInfo(CurrentBlock *currentBlock)
+resetCurrentBlockInfo(AOFetchBlockMetadata *currentBlock)
 {
 	currentBlock->have = false;
 	currentBlock->firstRowNum = 0;
@@ -1487,7 +1498,6 @@ aocs_fetch_init(Relation relation,
     GetAppendOnlyEntryAttributes(relation->rd_id,
                                  NULL,
                                  NULL,
-                                 NULL,
                                  &checksum,
                                  NULL);
 
@@ -1499,7 +1509,7 @@ aocs_fetch_init(Relation relation,
 	 * rather than all AOTupleId_MultiplierSegmentFileNum ones that introducing
 	 * too many unnecessary calls in most cases.
 	 */
-	memset(aocsFetchDesc->lastSequence, -1, sizeof(aocsFetchDesc->lastSequence));
+	memset(aocsFetchDesc->lastSequence, InvalidAORowNum, sizeof(aocsFetchDesc->lastSequence));
 	for (int i = -1; i < aocsFetchDesc->totalSegfiles; i++)
 	{
 		/* always initailize segment 0 */
@@ -1554,19 +1564,19 @@ aocs_fetch_init(Relation relation,
 
 			aocsFetchDesc->datumStreamFetchDesc[colno] = (DatumStreamFetchDesc)
 				palloc0(sizeof(DatumStreamFetchDescData));
+			
+			RelationOpenSmgr(relation);
 
 			aocsFetchDesc->datumStreamFetchDesc[colno]->datumStream =
 				create_datumstreamread(ct,
 									   clvl,
 									   checksum,
-									    /* safeFSWriteSize */ 0,	/* UNDONE:Need to wire
-																		 * down pg_appendonly
-																		 * column */
 									   blksz,
 									   TupleDescAttr(tupleDesc, colno),
 									   relation->rd_rel->relname.data,
+									   RelationGetRelid(relation),
 									    /* title */ titleBuf.data,
-									   &relation->rd_node);
+									   &relation->rd_node, relation->rd_smgr->smgr_ao);
 
 		}
 		if (opts[colno])
@@ -1807,7 +1817,9 @@ aocs_fetch_finish(AOCSFetchDesc aocsFetchDesc)
 			Assert(datumStreamFetchDesc->datumStream != NULL);
 			datumstreamread_close_file(datumStreamFetchDesc->datumStream);
 			destroy_datumstreamread(datumStreamFetchDesc->datumStream);
+			datumStreamFetchDesc->datumStream = NULL;
 			pfree(datumStreamFetchDesc);
+			aocsFetchDesc->datumStreamFetchDesc[colno] = NULL;
 		}
 	}
 	pfree(aocsFetchDesc->datumStreamFetchDesc);
@@ -1927,7 +1939,6 @@ aocs_begin_headerscan(Relation rel, int colno)
     GetAppendOnlyEntryAttributes(rel->rd_id,
                                  NULL,
                                  NULL,
-                                 NULL,
                                  &ao_attr.checksum,
                                  NULL);
 
@@ -1939,16 +1950,21 @@ aocs_begin_headerscan(Relation rel, int colno)
 	ao_attr.compressType = NULL;
 	ao_attr.compressLevel = 0;
 	ao_attr.overflowSize = 0;
-	ao_attr.safeFSWriteSize = 0;
 	hdesc = palloc(sizeof(AOCSHeaderScanDescData));
+	
+	RelationOpenSmgr(rel);
+
 	AppendOnlyStorageRead_Init(&hdesc->ao_read,
 							   NULL, //current memory context
 							   opts[colno]->blocksize,
 							   RelationGetRelationName(rel),
+							   RelationGetRelid(rel),
 							   "ALTER TABLE ADD COLUMN scan",
 							   &ao_attr,
-							   &rel->rd_node);
+							   &rel->rd_node, rel->rd_smgr->smgr_ao);
 	hdesc->colno = colno;
+	hdesc->relid = RelationGetRelid(rel);
+
 	return hdesc;
 }
 
@@ -1964,10 +1980,13 @@ aocs_headerscan_opensegfile(AOCSHeaderScanDesc hdesc,
 	char		fn[MAXPGPATH];
 	int32		fileSegNo;
 
+	/* Filenum for the column */
+	FileNumber	filenum = GetFilenumForAttribute(hdesc->relid, hdesc->colno + 1);
+
 	/* Close currently open segfile, if any. */
 	AppendOnlyStorageRead_CloseFile(&hdesc->ao_read);
 	FormatAOSegmentFileName(basepath, seginfo->segno,
-							hdesc->colno, &fileSegNo, fn);
+							filenum, &fileSegNo, fn);
 	Assert(strlen(fn) + 1 <= MAXPGPATH);
 	vpe = getAOCSVPEntry(seginfo, hdesc->colno);
 	AppendOnlyStorageRead_OpenFile(&hdesc->ao_read, fn, seginfo->formatversion,
@@ -2027,11 +2046,11 @@ aocs_addcol_init(Relation rel,
     GetAppendOnlyEntryAttributes(rel->rd_id,
                                  NULL,
                                  NULL,
-                                 NULL,
                                  &checksum,
                                  NULL);
 
 	iattr = rel->rd_att->natts - num_newcols;
+
 	for (i = 0; i < num_newcols; ++i, ++iattr)
 	{
 		Form_pg_attribute attr = TupleDescAttr(rel->rd_att, iattr);
@@ -2043,11 +2062,15 @@ aocs_addcol_init(Relation rel,
 		ct = opts[iattr]->compresstype;
 		clvl = opts[iattr]->compresslevel;
 		blksz = opts[iattr]->blocksize;
-		desc->dsw[i] = create_datumstreamwrite(ct, clvl, checksum, 0, blksz /* safeFSWriteSize */ ,
+		RelationOpenSmgr(rel);
+
+		desc->dsw[i] = create_datumstreamwrite(ct, clvl, checksum, blksz,
 											   attr, RelationGetRelationName(rel),
+											   RelationGetRelid(rel),
 											   titleBuf.data,
 											   XLogIsNeeded() && RelationNeedsWAL(rel),
-											   &rnode);
+											   &rnode,
+											   rel->rd_smgr->smgr_ao);
 	}
 	return desc;
 }
@@ -2085,10 +2108,13 @@ aocs_addcol_newsegfile(AOCSAddColumnDesc desc,
 	{
 		int			version;
 
+		/* New filenum for the column */
+		FileNumber  filenum = GetFilenumForAttribute(RelationGetRelid(desc->rel), colno + 1);
+
 		/* Always write in the latest format */
 		version = AOSegfileFormatVersion_GetLatest();
 
-		FormatAOSegmentFileName(basepath, seginfo->segno, colno,
+		FormatAOSegmentFileName(basepath, seginfo->segno, filenum,
 								&fileSegNo, fn);
 		Assert(strlen(fn) + 1 <= MAXPGPATH);
 		datumstreamwrite_open_file(desc->dsw[i], fn,
@@ -2232,6 +2258,7 @@ aocs_addcol_finish(AOCSAddColumnDesc desc)
 	for (i = 0; i < desc->num_newcols; ++i)
 		destroy_datumstreamwrite(desc->dsw[i]);
 	pfree(desc->dsw);
+	desc->dsw = NULL;
 
 	pfree(desc);
 }
@@ -2531,7 +2558,7 @@ ReadNext:
 				scan->cur_seg = -1;
 				return false;
 			}
-			scan->cur_seg_row = 0;
+			scan->segrowsprocessed = 0;
 		}
 
 		Assert(scan->cur_seg >= 0);
@@ -2592,10 +2619,10 @@ ReadNext:
 					rowNum = scan->columnScanInfo.ds[attno]->blockFirstRowNum +
 						datumstreamread_nth(scan->columnScanInfo.ds[attno]);
 				}
-				scan->cur_seg_row++;
+				scan->segrowsprocessed++;
 				if (rowNum == INT64CONST(-1))
 				{
-					AOTupleIdInit(&aoTupleId, curseginfo->segno, scan->cur_seg_row);
+					AOTupleIdInit(&aoTupleId, curseginfo->segno, scan->segrowsprocessed);
 				}
 				else
 				{

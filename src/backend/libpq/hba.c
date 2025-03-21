@@ -5,7 +5,6 @@
  *	  wherein you authenticate a user by seeing what IP address the system
  *	  says he comes from and choosing authentication method based on it).
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -1602,7 +1601,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 		 * make the connection between database and the LDAP server use TLS
 		 * encryption. The scheme 'ldaps' makes LDAP connections over SSL.
 		 */
-		if (parsedline->ldaptls && strcmp(parsedline->ldapscheme, "ldaps") == 0)
+		if (parsedline->ldaptls && parsedline->ldapscheme && strcmp(parsedline->ldapscheme, "ldaps") == 0)
 		{
 			ereport(LOG,
 					(errcode(ERRCODE_CONFIG_FILE_ERROR),

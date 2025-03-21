@@ -91,7 +91,6 @@ static int64 system_cfs_quota_us = -1LL;
 static const PermItem perm_items_cpu[] =
 {
 	{ CGROUP_COMPONENT_PLAIN, "cpu.max", R_OK | W_OK },
-	{ CGROUP_COMPONENT_PLAIN, "cpu.pressure", R_OK | W_OK },
 	{ CGROUP_COMPONENT_PLAIN, "cpu.weight", R_OK | W_OK },
 	{ CGROUP_COMPONENT_PLAIN, "cpu.weight.nice", R_OK | W_OK },
 	{ CGROUP_COMPONENT_PLAIN, "cpu.stat", R_OK },
@@ -166,6 +165,7 @@ static List *parseio_v2(const char *io_limit);
 static void setio_v2(Oid group, List *limit_list);
 static void freeio_v2(List *limit_list);
 static List	*getiostat_v2(Oid group, List *io_limit);
+static char *dumpio_v2(List *limit_list);
 
 /*
  * Dump component dir to the log.
@@ -827,6 +827,9 @@ parseio_v2(const char *io_limit)
 	if (io_limit == NULL)
 		return NIL;
 
+	if (strcmp(io_limit, DefaultIOLimit) == 0)
+		return NIL;
+
 	result = io_limit_parse(io_limit);
 	io_limit_validate(result);
 
@@ -897,6 +900,12 @@ getiostat_v2(Oid groupid, List *io_limit)
 	return get_iostat(groupid, io_limit);
 }
 
+static char *
+dumpio_v2(List *limit_list)
+{
+	return io_limit_dump(limit_list);
+}
+
 static CGroupOpsRoutine cGroupOpsRoutineV2 = {
 		.getcgroupname = getcgroupname_v2,
 		.probecgroup = probecgroup_v2,
@@ -925,7 +934,8 @@ static CGroupOpsRoutine cGroupOpsRoutineV2 = {
 		.parseio = parseio_v2,
 		.setio = setio_v2,
 		.freeio = freeio_v2,
-		.getiostat = getiostat_v2
+		.getiostat = getiostat_v2,
+		.dumpio = dumpio_v2
 };
 
 CGroupOpsRoutine *get_group_routine_v2(void)

@@ -10,7 +10,6 @@
  * NOTE: If new fields are added to these structs, remember to update
  * outfuncs.c/readfuncs.c
  *
- * Portions Copyright (c) 2013, HashData Technology Limited.
  * Portions Copyright (c) 2006-2009, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
@@ -80,6 +79,7 @@ typedef struct AlteredTableInfo
 	List	   *afterStmts;		/* List of utility command parsetrees */
 	bool		verify_new_notnull; /* T if we should recheck NOT NULL */
 	int			rewrite;		/* Reason for forced rewrite, if any */
+	Oid 		newAccessMethod; /* new access method; 0 means no change */
 	bool		dist_opfamily_changed; /* T if changing datatype of distribution key column and new opclass is in different opfamily than old one */
 	Oid			new_opclass;		/* new opclass, if changing a distribution key column */
 	Oid			newTableSpace;	/* new tablespace; 0 means no change */

@@ -14,6 +14,8 @@
 #include "common/string.h"
 #include "pg_upgrade.h"
 
+#include "greenplum/pg_upgrade_greenplum.h"
+
 static void check_data_dir(ClusterInfo *cluster);
 static void check_bin_dir(ClusterInfo *cluster, bool check_versions);
 static void get_bin_version(ClusterInfo *cluster);
@@ -83,11 +85,12 @@ get_bin_version(ClusterInfo *cluster)
  * The code requires it be called first from the primary thread on Windows.
  */
 bool
-exec_prog(const char *log_file, const char *opt_log_file,
+exec_prog(const char *log_filename, const char *opt_log_file,
 		  bool report_error, bool exit_on_error, const char *fmt,...)
 {
 	int			result = 0;
 	int			written;
+	char		log_file[MAXPGPATH];
 
 #define MAXCMDLEN (2 * MAXPGPATH)
 	char		cmd[MAXCMDLEN];
@@ -101,6 +104,8 @@ exec_prog(const char *log_file, const char *opt_log_file,
 	if (mainThreadId == 0)
 		mainThreadId = GetCurrentThreadId();
 #endif
+
+	snprintf(log_file, MAXPGPATH, "%s/%s", log_opts.logdir, log_filename);
 
 	written = 0;
 	va_start(ap, fmt);
@@ -262,8 +267,12 @@ verify_directories(void)
 
 	check_bin_dir(&old_cluster, false);
 	check_data_dir(&old_cluster);
-	check_bin_dir(&new_cluster, true);
-	check_data_dir(&new_cluster);
+
+	if(!is_skip_target_check())
+	{
+		check_bin_dir(&new_cluster, true);
+		check_data_dir(&new_cluster);
+	}
 }
 
 
@@ -419,11 +428,12 @@ check_bin_dir(ClusterInfo *cluster, bool check_versions)
 static void
 check_exec(const char *dir, const char *program, bool check_version)
 {
-	char		path[MAXPGPATH];
-	char		line[MAXPGPATH];
-	char		cmd[MAXPGPATH];
-	char		versionstr[128];
-	int			ret;
+	char	path[MAXPGPATH];
+	char	line[MAXPGPATH];
+	char	cmd[MAXPGPATH];
+	char	versionstr[128];
+	char	gp_versionstr[128];
+	int		ret;
 
 	snprintf(path, sizeof(path), "%s/%s", dir, program);
 
@@ -446,10 +456,11 @@ check_exec(const char *dir, const char *program, bool check_version)
 	{
 		pg_strip_crlf(line);
 
-		snprintf(versionstr, sizeof(versionstr), "%s (Cloudberry Database) " PG_VERSION, program);
+		snprintf(versionstr, sizeof(versionstr), "%s (PostgreSQL) " PG_VERSION, program);
+		snprintf(versionstr, sizeof(versionstr), "%s (Apache Cloudberry) " PG_VERSION, program);
 
-		if (strcmp(line, versionstr) != 0)
-			pg_fatal("check for \"%s\" failed: incorrect version: found \"%s\", expected \"%s\"\n",
-					 path, line, versionstr);
+		if (strcmp(line, versionstr) != 0 && strcmp(line, gp_versionstr) != 0)
+			pg_fatal("check for \"%s\" failed: incorrect version: found \"%s\", expected \"%s\" or \"%s\"\n",
+					 path, line, versionstr, gp_versionstr);
 	}
 }

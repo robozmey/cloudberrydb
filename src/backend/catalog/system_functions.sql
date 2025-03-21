@@ -604,10 +604,7 @@ STRICT IMMUTABLE PARALLEL SAFE
 AS 'unicode_is_normalized';
 
 
--- GPDB_12_MERGE_FIXME: This seems out of place..
--- GPDB_12_MERGE_FIXME: Shouldn't we have a wrapper like this for
--- brin_summarize_range(), too?
-create or replace function brin_summarize_new_values(t regclass) returns bigint as
+create or replace function brin_summarize_new_values(t regclass) returns setof bigint as
 $$
   -- brin_summarize_new_values_internal is marked as EXECUTE ON ALL SEGMENTS.
   select sum(n) from brin_summarize_new_values_internal(t) as n;
@@ -727,6 +724,7 @@ REVOKE EXECUTE ON FUNCTION pg_ls_dir(text) FROM public;
 
 REVOKE EXECUTE ON FUNCTION pg_ls_dir(text,boolean,boolean) FROM public;
 
+REVOKE EXECUTE ON FUNCTION pg_log_backend_memory_contexts(integer) FROM PUBLIC;
 --
 -- We also set up some things as accessible to standard roles.
 --

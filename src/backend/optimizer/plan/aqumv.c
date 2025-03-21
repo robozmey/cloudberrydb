@@ -1,11 +1,24 @@
 /*-------------------------------------------------------------------------
  *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
  * aqumv.c
  *	  Answer Query Using Materialzed Views.
- *
- * Portions Copyright (c) 2023, HashData Technology Limited.
- * 
- * Author: Zhang Mingli <avamingli@gmail.com>
  *
  * IDENTIFICATION
  *	  src/backend/optimizer/plan/aqumv.c
@@ -30,6 +43,7 @@
 #include "optimizer/planner.h"
 #include "optimizer/prep.h"
 #include "optimizer/tlist.h"
+#include "optimizer/transform.h"
 #include "parser/analyze.h"
 #include "parser/parsetree.h"
 #include "parser/parse_node.h"
@@ -42,11 +56,6 @@
 #include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
 #include "nodes/pg_list.h"
-
-RelOptInfo *answer_query_using_materialized_views(PlannerInfo *root,
-												RelOptInfo *current_rel,
-												query_pathkeys_callback qp_callback,
-												void *qp_extra);
 
 typedef struct
 {
@@ -70,6 +79,8 @@ static aqumv_equivalent_transformation_context* aqumv_init_context(List *view_tl
 static bool aqumv_process_targetlist(aqumv_equivalent_transformation_context *context, List *query_tlist, List **mv_final_tlist);
 static void aqumv_sort_targetlist(aqumv_equivalent_transformation_context* context);
 static Node *aqumv_adjust_sub_matched_expr_mutator(Node *node, aqumv_equivalent_transformation_context *context);
+static bool contain_var_or_aggstar_clause_walker(Node *node, void *context);
+static bool check_partition(Query *parse, Oid origin_rel_oid);
 
 typedef struct
 {
@@ -82,16 +93,51 @@ typedef struct
 	int	count;			/* Count of subnodes in this expression */
 } expr_to_sort;
 
+static bool
+contain_var_or_aggstar_clause(Node *node)
+{
+	return contain_var_or_aggstar_clause_walker(node, NULL);
+}
+
+/* Copy from contain_var_clause_walker, but return true with aggstar. */
+static bool
+contain_var_or_aggstar_clause_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, Aggref) && ((Aggref *) node)->aggstar)
+		return true;
+
+	if (IsA(node, Var))
+	{
+		if (((Var *) node)->varlevelsup == 0)
+			return true;		/* abort the tree traversal and return true */
+		return false;
+	}
+	if (IsA(node, CurrentOfExpr))
+		return true;
+	if (IsA(node, PlaceHolderVar))
+	{
+		if (((PlaceHolderVar *) node)->phlevelsup == 0)
+			return true;		/* abort the tree traversal and return true */
+		/* else fall through to check the contained expr */
+	}
+	return expression_tree_walker(node, contain_var_or_aggstar_clause_walker, context);
+}
+
 /*
  * Answer Query Using Materialized Views(AQUMV).
  * This function modifies root(parse and etc.), current_rel in-place.
  */
 RelOptInfo*
-answer_query_using_materialized_views(PlannerInfo *root,
-									RelOptInfo *current_rel,
-									query_pathkeys_callback qp_callback,
-									void *qp_extra)
+answer_query_using_materialized_views(PlannerInfo *root, AqumvContext aqumv_context)
 {
+	RelOptInfo *current_rel = aqumv_context->current_rel;
+	query_pathkeys_callback qp_callback = aqumv_context->qp_callback;
+	void *qp_extra = aqumv_context->qp_extra;
+	Node *raw_havingQual = aqumv_context->raw_havingQual;
+
 	Query   		*parse = root->parse; /* Query of origin SQL. */
 	Query			*viewQuery; /* Query of view. */
 	RelOptInfo 		*mv_final_rel = current_rel; /* Final rel after rewritten. */
@@ -111,6 +157,8 @@ answer_query_using_materialized_views(PlannerInfo *root,
 	List			*mv_final_tlist = NIL; /* Final target list we want to rewrite to. */
 	List 			*post_quals = NIL;
 	aqumv_equivalent_transformation_context	*context;
+	bool			can_be_partition;
+	char			relkind;
 
 	/* Group By without agg could be possible though IMMV doesn't support it yet. */
 	bool can_not_use_mv = (parse->commandType != CMD_SELECT) ||
@@ -128,10 +176,6 @@ answer_query_using_materialized_views(PlannerInfo *root,
 	if (can_not_use_mv)
 		return mv_final_rel;
 
-	/*
-	 * AQUMV_FIXME_MVP:
-	 *	Single relation, excluding catalog/inherit/partition tables.
-	 */
 	if (list_length(parse->jointree->fromlist) != 1)
 		return mv_final_rel;
 
@@ -140,15 +184,37 @@ answer_query_using_materialized_views(PlannerInfo *root,
 		return mv_final_rel;
 
 	varno = ((RangeTblRef *) jtnode)->rtindex;
-	rte = root->simple_rte_array[varno];
-	Assert(rte != NULL);
+	rte = planner_rt_fetch(varno, root);
+	if ((rte->rtekind != RTE_RELATION))
+		return mv_final_rel;
+
 	/* root's stuff like simple_rte_array may be changed during rewrite, fetch oid here. */
 	origin_rel_oid = rte->relid;
+	/* excluding catalog tables. */
+	if (IsSystemClassByRelid(origin_rel_oid))
+		return mv_final_rel;
 
-	if ((rte->rtekind != RTE_RELATION) || 
-		IsSystemClassByRelid(origin_rel_oid) ||
-		has_superclass(origin_rel_oid) ||
-		has_subclass(origin_rel_oid))
+	relkind = get_rel_relkind(rte->relid);
+	if (relkind != RELKIND_RELATION &&
+		relkind != RELKIND_PARTITIONED_TABLE &&
+		relkind != RELKIND_FOREIGN_TABLE)
+		return mv_final_rel;
+
+	/* We don't know what it is. */
+	if ((relkind != RELKIND_PARTITIONED_TABLE) &&
+		(list_length(parse->rtable) > 1))
+		return mv_final_rel;
+
+	/*
+	 * excluding inherit tables.
+	 */
+	can_be_partition = (relkind == RELKIND_PARTITIONED_TABLE) || get_rel_relispartition(rte->relid);
+	if (!can_be_partition &&
+		(has_superclass(origin_rel_oid) ||
+		has_subclass(origin_rel_oid)))
+		return mv_final_rel;
+
+	if (relkind == RELKIND_FOREIGN_TABLE && !aqumv_allow_foreign_table)
 		return mv_final_rel;
 
 	ruleDesc = table_open(RewriteRelationId, AccessShareLock);
@@ -202,18 +268,18 @@ answer_query_using_materialized_views(PlannerInfo *root,
 		 * The Seqscan on a heap-storaged mv seems ordered, but it's a free lunch.
 		 * A Parallel Seqscan breaks that hypothesis.
 		 */
-		if(viewQuery->hasAggs ||
-			viewQuery->hasWindowFuncs ||
+		if(viewQuery->hasWindowFuncs ||
 			viewQuery->hasDistinctOn ||
 			viewQuery->hasModifyingCTE ||
 			viewQuery->hasSubLinks ||
 			(limit_needed(viewQuery)) ||
-			(viewQuery->groupClause != NIL) ||
 			/* IVM doesn't support belows now, just in case. */
 			(viewQuery->rowMarks != NIL) ||
 			(viewQuery->distinctClause != NIL) ||
 			(viewQuery->cteList != NIL) ||
 			(viewQuery->setOperations != NULL) ||
+			(!viewQuery->hasAggs && (viewQuery->groupClause != NIL)) ||
+			((viewQuery->havingQual != NULL) && (viewQuery->groupClause == NIL)) ||
 			(viewQuery->scatterClause != NIL))
 			continue;
 
@@ -245,9 +311,17 @@ answer_query_using_materialized_views(PlannerInfo *root,
 
 		/*
 		 * Check if it actually has children here to match before planning.
+		 * Except for Partitioned tables.
 		 */
-		mvrte->inh = has_subclass(mvrte->relid);
+		if (get_rel_relkind(mvrte->relid) == RELKIND_PARTITIONED_TABLE)
+			mvrte->inh = false;
+		else
+			mvrte->inh = has_subclass(mvrte->relid);
+
 		if (mvrte->inh)
+			continue;
+
+		if (!check_partition(parse, origin_rel_oid))
 			continue;
 
 		subroot = (PlannerInfo *) palloc(sizeof(PlannerInfo));
@@ -293,69 +367,190 @@ answer_query_using_materialized_views(PlannerInfo *root,
 
 		context = aqumv_init_context(viewQuery->targetList, matviewRel->rd_att);
 
-		/*
-		 * Process and rewrite target list, return false if failed.
-		 */
-		if(!aqumv_process_targetlist(context, parse->targetList, &mv_final_tlist))
+		if (!parse->hasAggs && viewQuery->hasAggs)
 			continue;
 
-		viewQuery->targetList = mv_final_tlist;
-
-		/*
-		 * NB: Update processed_tlist again in case that tlist has been changed. 
-		 */
-		preprocess_targetlist(subroot);
-
-		/*
-		 * We have successfully processed target list, and all columns in Aggrefs
-		 * could be computed from viewQuery.
-		 */
-		viewQuery->hasAggs = parse->hasAggs;
-		viewQuery->hasDistinctOn = parse->hasDistinctOn;
-		/*
-		 * For HAVING quals have aggregations, we have already processed them in
-		 * Aggrefs during aqumv_process_targetlist().
-		 * For HAVING quals don't have aggregations, they may be pushed down to
-		 * jointree's quals and would be processed in post_quals later.
-		 * Set havingQual before we preprocess_aggrefs for that.
-		 */
-		viewQuery->havingQual = parse->havingQual;
-		if (viewQuery->hasAggs)
+		if (parse->hasAggs && viewQuery->hasAggs)
 		{
-			preprocess_aggrefs(subroot, (Node *) subroot->processed_tlist);
-			preprocess_aggrefs(subroot, viewQuery->havingQual);
+			if (parse->hasDistinctOn ||
+				parse->distinctClause != NIL ||
+				parse->groupClause != NIL || /* TODO: GROUP BY */
+				parse->groupingSets != NIL ||
+				parse->groupDistinct)
+				continue;
+
+			/* No Group by now. */
+			if (viewQuery->hasDistinctOn ||
+				viewQuery->distinctClause != NIL ||
+				viewQuery->groupClause != NIL ||
+				viewQuery->groupingSets != NIL ||
+				viewQuery->groupDistinct ||
+				viewQuery->havingQual != NULL || /* HAVING clause is not supported on IMMV yet. */
+				limit_needed(viewQuery)) /* LIMIT, OFFSET is not supported on IMMV yet. */
+				continue;
+
+			if (tlist_has_srf(parse))
+				continue;
+
+			/*
+			 * There is a trick for ORDER BY for both origin query and view query.
+			 * As we has no Groupy By here, the aggregation results would be either one or
+			 * zero rows that make the Order By clause pointless, except that there were
+			 * SRF.
+			 */
+			if (parse->sortClause != NIL || viewQuery->sortClause != NIL)
+			{
+				/* Earse view's sort caluse, it's ok to let alone view's target list. */
+				viewQuery->sortClause = NIL;
+			}
+
+			/*
+			 * Process Limit:
+			 * The result would be one row at most.
+			 * View may be useful even Limit clause is different, ex:
+			 * View:
+			 *   create incremental materialized view mv as
+			 *   select count(*) as mc1 from t;
+			 * Query:
+			 *   select count(*) from t limit 1;
+			 * Rewrite to:
+			 *   select mc1 from mv limit 1;
+			 */
+			/* Below logic is based on view has no LIMIT/OFFSET. */
+			Assert(!limit_needed(viewQuery));
+			if (limit_needed(parse))
+			{
+				Node	   *node;
+				/*
+				 * AQUMV don't support sublinks now.
+				 * Use query's LIMIT/OFFSET if they are const in case.
+				 */
+				node = parse->limitCount;
+				if (node && !IsA(node, Const))
+					continue;
+
+				node = parse->limitOffset;
+				if (node && !IsA(node, Const))
+					continue;
+
+				viewQuery->limitCount = copyObject(parse->limitCount);
+				viewQuery->limitOffset = copyObject(parse->limitOffset);
+				viewQuery->limitOption = parse->limitOption;
+			}
+
+			preprocess_qual_conditions(subroot, (Node *) viewQuery->jointree);
+
+			if(!aqumv_process_from_quals(parse->jointree->quals, viewQuery->jointree->quals, &post_quals))
+				continue;
+
+			if (post_quals != NIL)
+				continue;
+
+			/* Move HAVING quals to WHERE quals. */
+			viewQuery->jointree->quals = aqumv_adjust_sub_matched_expr_mutator(copyObject(raw_havingQual), context);
+			if (context->has_unmatched)
+				continue;
+			subroot->hasHavingQual = false;
+
+			if(!aqumv_process_targetlist(context, aqumv_context->raw_processed_tlist, &mv_final_tlist))
+				continue;
+
+			viewQuery->targetList = mv_final_tlist;
+			/* SRF is not supported now, but correct the field. */
+			viewQuery->hasTargetSRFs = parse->hasTargetSRFs;
+			viewQuery->hasAggs = false;
+			subroot->agginfos = NIL;
+			subroot->aggtransinfos = NIL;
+			subroot->hasNonPartialAggs = false;
+			subroot->hasNonSerialAggs = false;
+			subroot->numOrderedAggs = false;
+			/* CBDB specifical */
+			subroot->hasNonCombine = false;
+			subroot->numPureOrderedAggs = false;
+			/*
+			 * NB: Update processed_tlist again in case that tlist has been changed. 
+			 */
+			subroot->processed_tlist = NIL;
+			preprocess_targetlist(subroot);
+
+			/* Select from a mv never have that.*/
+			subroot->append_rel_list = NIL;
 		}
-		viewQuery->groupClause = parse->groupClause;
-		viewQuery->groupingSets = parse->groupingSets;
-		viewQuery->sortClause = parse->sortClause;
-		viewQuery->distinctClause = parse->distinctClause;
-		viewQuery->limitOption = parse->limitOption;
-		viewQuery->limitCount = parse->limitCount;
-		viewQuery->limitOffset = parse->limitOffset;
+		else
+		{
+			/*
+			 * Process and rewrite target list, return false if failed.
+			 */
+			if(!aqumv_process_targetlist(context, parse->targetList, &mv_final_tlist))
+				continue;
 
-		/*
-		 * AQUMV
-		 * Process all quals to conjunctive normal form.
-		 * 
-		 * We assume that the selection predicates of view and query expressions
-		 * have been converted into conjunctive normal form(CNF) before we process
-		 * them.
-		 */
-		preprocess_qual_conditions(subroot, (Node *) viewQuery->jointree);
+			viewQuery->targetList = mv_final_tlist;
 
-		/*
-		 * Process quals, return false if failed. 
-		 * Else, post_quals are filled if there were. 
-		 * Like process target list, post_quals is used later to see if we could
-		 * rewrite and apply it to mv relation.
-		 */
-		if(!aqumv_process_from_quals(parse->jointree->quals, viewQuery->jointree->quals, &post_quals))
-			continue;
+			/*
+			 * NB: Update processed_tlist again in case that tlist has been changed. 
+			 */
+			preprocess_targetlist(subroot);
 
-		/* Rewrite post_quals, return false if failed. */
-		post_quals = (List *)aqumv_adjust_sub_matched_expr_mutator((Node *)post_quals, context);
-		if (context->has_unmatched)
-			continue;
+			/*
+			 * We have successfully processed target list, and all columns in Aggrefs
+			 * could be computed from viewQuery.
+			 */
+			viewQuery->hasAggs = parse->hasAggs;
+			viewQuery->hasDistinctOn = parse->hasDistinctOn;
+			/*
+			 * For HAVING quals don't have aggregations, they may be pushed down to
+			 * jointree's quals and would be processed in post_quals later.
+			 * Set havingQual before we preprocess_aggrefs for that.
+			 */
+			viewQuery->havingQual = parse->havingQual;
+			if (viewQuery->hasAggs)
+			{
+				preprocess_aggrefs(subroot, (Node *) subroot->processed_tlist);
+				preprocess_aggrefs(subroot, viewQuery->havingQual);
+			}
+
+			viewQuery->havingQual = aqumv_adjust_sub_matched_expr_mutator(viewQuery->havingQual, context);
+			if (context->has_unmatched)
+				continue;
+
+			/* SRF is not supported now, but correct the field. */
+			viewQuery->hasTargetSRFs = parse->hasTargetSRFs;
+			viewQuery->groupClause = parse->groupClause;
+			viewQuery->groupingSets = parse->groupingSets;
+			viewQuery->sortClause = parse->sortClause;
+			viewQuery->distinctClause = parse->distinctClause;
+			viewQuery->limitOption = parse->limitOption;
+			viewQuery->limitCount = parse->limitCount;
+			viewQuery->limitOffset = parse->limitOffset;
+
+			/*
+			 * AQUMV
+			 * Process all quals to conjunctive normal form.
+			 * 
+			 * We assume that the selection predicates of view and query expressions
+			 * have been converted into conjunctive normal form(CNF) before we process
+			 * them.
+			 */
+			preprocess_qual_conditions(subroot, (Node *) viewQuery->jointree);
+
+			/*
+			 * Process quals, return false if failed. 
+			 * Else, post_quals are filled if there were. 
+			 * Like process target list, post_quals is used later to see if we could
+			 * rewrite and apply it to mv relation.
+			 */
+			if(!aqumv_process_from_quals(parse->jointree->quals, viewQuery->jointree->quals, &post_quals))
+				continue;
+
+			/* Rewrite post_quals, return false if failed. */
+			post_quals = (List *)aqumv_adjust_sub_matched_expr_mutator((Node *)post_quals, context);
+			if (context->has_unmatched)
+				continue;
+
+			viewQuery->jointree->quals = (Node *)post_quals;
+			/* Select from a mv never have that.*/
+			subroot->append_rel_list = NIL;
+		}
 
 		/*
 		 * AQUMV
@@ -368,7 +563,6 @@ answer_query_using_materialized_views(PlannerInfo *root,
 		mvrte->relkind = RELKIND_MATVIEW;
 		mvrte->relid = matviewRel->rd_rel->oid;
 		viewQuery->rtable = list_make1(mvrte); /* rewrite to SELECT FROM mv itself. */
-		viewQuery->jointree->quals = (Node *)post_quals; /* Could be NULL, but doesn'y matter for now. */
 
 		/*
 		 * Build a plan of new SQL.
@@ -396,6 +590,7 @@ answer_query_using_materialized_views(PlannerInfo *root,
 			/* CBDB specifical */
 			root->hasNonCombine = subroot->hasNonCombine;
 			root->numPureOrderedAggs = subroot->numPureOrderedAggs;
+			root->hasHavingQual = subroot->hasHavingQual;
 
 			/*
 			 * Update pathkeys which may be changed by qp_callback.
@@ -417,6 +612,7 @@ answer_query_using_materialized_views(PlannerInfo *root,
 			 * See more in README.cbdb.aqumv
 			 */
 			root->eq_classes = subroot->eq_classes;
+			root->append_rel_list = subroot->append_rel_list;
 			current_rel = mv_final_rel;
 			table_close(matviewRel, NoLock);
 			need_close = false;
@@ -454,8 +650,8 @@ aqumv_init_context(List *view_tlist, TupleDesc mv_tupledesc)
 		if (tle->resjunk)
 			continue;
 
-		/* Avoid expression has no Vars. */
-		if(!contain_var_clause((Node*)tle))
+		/* Avoid expression has no Vars, excpet for count(*). */
+		if(!contain_var_or_aggstar_clause((Node*)tle))
 			continue;
 
 		/* To be sorted later */
@@ -628,7 +824,7 @@ static Node *aqumv_adjust_sub_matched_expr_mutator(Node *node, aqumv_equivalent_
 	 * And if expr doesn't have Vars, return it to upper.
 	 * Keep TargetEntry expr no changed in case for count(*).
 	 */
-	if (!contain_var_clause((Node *)node_expr))
+	if (!contain_var_or_aggstar_clause((Node *)node_expr))
 		return is_targetEntry ? node : (Node *)node_expr;
 
 	/*
@@ -781,4 +977,39 @@ static Node *aqumv_adjust_varno_mutator(Node *node, aqumv_adjust_varno_context *
 		/* AQUMV_FIXME_MVP: currently we have only one relation */
 		((RangeTblRef*) node)->rtindex = context->varno;
 	return expression_tree_mutator(node, aqumv_adjust_varno_mutator, context);
+}
+
+/*
+ * check_partition - Check if the query's range table entries align with the partitioned table structure.
+ *
+ * This function verifies whether the range table entries in the query (parse->rtable) correspond to
+ * the expected structure of a partitioned table. It ensures that all range table entries beyond the
+ * first one match the name of the underlying relation (origin_rel_oid).
+ * While this behavior is not guaranteed by Postgres, we can rely on it based on our observation of
+ * the internal implementation when expanding partitioned tables.
+ * This approach is admittedly hacky, but it serves as a practical solution for now, allowing us to move forward.
+ *
+ * Parameters:
+ *   - parse: The query parse tree containing the range table entries to be checked.
+ *   - origin_rel_oid: The OID of the original relation (partitioned table) to compare against.
+ *
+ * Returns:
+ *   - true if all range table entries beyond the first match the underlying relation's name.
+ *   - false otherwise.
+ */
+static bool
+check_partition(Query *parse, Oid origin_rel_oid)
+{
+	char *underling_relname;
+
+	if (list_length(parse->rtable) == 1)
+		return true;
+	underling_relname = get_rel_name(origin_rel_oid);
+	for (int i = 2; i <= list_length(parse->rtable); i++)
+	{
+		RangeTblEntry *other_rte = rt_fetch(i, parse->rtable);
+		if (strcmp(underling_relname, other_rte->alias->aliasname) != 0)
+			return false;
+	}
+	return true;
 }

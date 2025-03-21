@@ -91,4 +91,12 @@ OBJS += nodeMotion.o \
        nodeTupleSplit.o \
        nodePartitionSelector.o
 
+OBJS += execDynamicIndexes.o \
+        nodeDynamicSeqscan.o \
+        nodeDynamicIndexscan.o \
+        nodeDynamicIndexOnlyscan.o \
+        nodeDynamicBitmapHeapscan.o \
+        nodeDynamicBitmapIndexscan.o \
+        nodeDynamicForeignscan.o
+
 include $(top_srcdir)/src/backend/common.mk

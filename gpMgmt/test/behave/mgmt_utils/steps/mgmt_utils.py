@@ -386,10 +386,10 @@ def impl(context, content_ids):
         cmd.run(validateAfter=True)
 
 
-@given('the user {action} the walsender on the {segment} on content {content}')
-@when('the user {action} the walsender on the {segment} on content {content}')
-@then('the user {action} the walsender on the {segment} on content {content}')
-def impl(context, action, segment, content):
+@given('the user {action} the walsender on the {segment} on content {content_ids}')
+@when('the user {action} the walsender on the {segment} on content {content_ids}')
+@then('the user {action} the walsender on the {segment} on content {content_ids}')
+def impl(context, action, segment, content_ids):
     if segment == 'mirror':
         role = "'m'"
     elif segment == 'primary':
@@ -400,7 +400,7 @@ def impl(context, action, segment, content):
     create_fault_query = "CREATE EXTENSION IF NOT EXISTS gp_inject_fault;"
     execute_sql('postgres', create_fault_query)
 
-    inject_fault_query = "SELECT gp_inject_fault_infinite('wal_sender_loop', '%s', dbid) FROM gp_segment_configuration WHERE content=%s AND role=%s;" % (action, content, role)
+    inject_fault_query = "SELECT gp_inject_fault_infinite('wal_sender_loop', '%s', dbid) FROM gp_segment_configuration WHERE content IN (%s) AND role=%s;" % (action, content_ids, role)
     execute_sql('postgres', inject_fault_query)
     return
 
@@ -461,7 +461,7 @@ def impl(context, logdir):
 @then('the user waits until recovery_progress.file is created in {logdir} and verifies its format')
 def impl(context, logdir):
     attempt = 0
-    num_retries = 60000
+    num_retries = 6000
     log_dir = _get_gpAdminLogs_directory() if logdir == 'gpAdminLogs' else logdir
     recovery_progress_file = '{}/recovery_progress.file'.format(log_dir)
     while attempt < num_retries:
@@ -481,6 +481,13 @@ def impl(context, logdir):
         if attempt == num_retries:
             raise Exception('Timed out after {} retries'.format(num_retries))
 
+@then( 'verify if the gprecoverseg.lock directory is present in coordinator_data_directory')
+def impl(context):
+    gprecoverseg_lock_file = "%s/gprecoverseg.lock" % gp.get_coordinatordatadir()
+    if not os.path.exists(gprecoverseg_lock_file):
+        raise Exception('gprecoverseg.lock directory does not exist')
+    else:
+        return
 
 @then( 'verify if the gprecoverseg.lock directory is present in coordinator_data_directory')
 def impl(context):
@@ -639,7 +646,7 @@ def impl(context, process_name, secs):
 @when('the user asynchronously sets up to end {process_name} process when {log_msg} is printed in the logs')
 def impl(context, process_name, log_msg):
     command = "while sleep 0.1; " \
-              "do if egrep --quiet %s  ~/gpAdminLogs/%s*log ; " \
+              "do if grep -E --quiet %s  ~/gpAdminLogs/%s*log ; " \
               "then ps ux | grep bin/%s |awk '{print $2}' | xargs kill ;break 2; " \
               "fi; done" % (log_msg, process_name, process_name)
     run_async_command(context, command)
@@ -647,31 +654,26 @@ def impl(context, process_name, log_msg):
 @then('the user asynchronously sets up to end {kill_process_name} process when {log_msg} is printed in the {logfile_name} logs')
 def impl(context, kill_process_name, log_msg, logfile_name):
     command = "while sleep 0.1; " \
-              "do if egrep --quiet %s  ~/gpAdminLogs/%s*log ; " \
+              "do if grep -E --quiet %s  ~/gpAdminLogs/%s*log ; " \
               "then ps ux | grep bin/%s |awk '{print $2}' | xargs kill -2 ;break 2; " \
               "fi; done" % (log_msg, logfile_name, kill_process_name)
     run_async_command(context, command)
 
-@given('the user asynchronously sets up to end {process_name} process with SIGINT')
-@when('the user asynchronously sets up to end {process_name} process with SIGINT')
-@then('the user asynchronously sets up to end {process_name} process with SIGINT')
-def impl(context, process_name):
-    command = "ps ux | grep bin/%s | awk '{print $2}' | xargs kill -2" % (process_name)
+@given('the user asynchronously sets up to end {process_name} process with {signal_name}')
+@when('the user asynchronously sets up to end {process_name} process with {signal_name}')
+@then('the user asynchronously sets up to end {process_name} process with {signal_name}')
+def impl(context, process_name, signal_name):
+    try:
+        sig = getattr(signal, signal_name)
+    except:
+        raise Exception("Unknown signal: {0}".format(signal_name))
+
+    command = "ps ux | grep bin/{0} | awk '{{print $2}}' | xargs kill -{1}".format(process_name, sig.value)
     run_async_command(context, command)
 
-
-@given('the user asynchronously sets up to end {process_name} process with SIGHUP')
 @when('the user asynchronously sets up to end {process_name} process with SIGHUP')
-@then('the user asynchronously sets up to end {process_name} process with SIGHUP')
 def impl(context, process_name):
     command = "ps ux | grep bin/%s | awk '{print $2}' | xargs kill -9" % (process_name)
-    run_async_command(context, command)
-
-@given('the user asynchronously ends {process_name} process with SIGHUP')
-@when('the user asynchronously ends {process_name} process with SIGHUP')
-@then('the user asynchronously ends {process_name} process with SIGHUP')
-def impl(context, process_name):
-    command = "ps ux | grep %s | awk '{print $2}' | xargs kill -9" % (process_name)
     run_async_command(context, command)
 
 @when('the user asynchronously sets up to end gpcreateseg process when it starts')
@@ -1250,10 +1252,19 @@ def impl(context, options):
     context.execute_steps('''Then the user runs command "gpactivatestandby -a %s" from standby coordinator''' % options)
     context.standby_was_activated = True
 
+
+@given('the user runs utility "{utility}" with coordinator data directory and "{options}"')
+@when('the user runs utility "{utility}" with coordinator data directory and "{options}"')
+@then('the user runs utility "{utility}" with coordinator data directory and "{options}"')
+def impl(context, utility, options):
+    cmd = "{} -d {} {}".format(utility, coordinator_data_dir, options)
+    context.execute_steps('''then the user runs command "%s"''' % cmd )
+
+
 @then('gpintsystem logs should {contain} lines about running backout script')
 def impl(context, contain):
     string_to_find = 'Run command bash .*backout_gpinitsystem.* on coordinator to remove these changes$'
-    command = "egrep '{}' ~/gpAdminLogs/gpinitsystem*log".format(string_to_find)
+    command = "grep -E '{}' ~/gpAdminLogs/gpinitsystem*log".format(string_to_find)
     run_command(context, command)
     if contain == "contain":
         if has_exception(context):
@@ -2022,7 +2033,7 @@ def impl(context, type):
         result = curs.fetchall()
         segment_info = [(result[s][0], result[s][1]) for s in range(len(result))]
     except Exception as e:
-        raise Exception("Could not retrieve segment information: %s" % e.message)
+        raise Exception("Could not retrieve segment information: %s" % str(e))
     finally:
         conn.close()
 
@@ -2065,7 +2076,7 @@ def impl(context, filename, some, output):
         result = curs.fetchall()
         segment_info = [(result[s][0], result[s][1]) for s in range(len(result))]
     except Exception as e:
-        raise Exception("Could not retrieve segment information: %s" % e.message)
+        raise Exception("Could not retrieve segment information: %s" % str(e))
     finally:
         conn.close()
 
@@ -2111,7 +2122,7 @@ def impl(context, filename, contain, output):
         result = curs.fetchall()
         segment_info = [(result[s][0], result[s][1]) for s in range(len(result))]
     except Exception as e:
-        raise Exception("Could not retrieve segment information: %s" % e.message)
+        raise Exception("Could not retrieve segment information: %s" % str(e))
     finally:
         conn.close()
 
@@ -2218,14 +2229,20 @@ def impl(context):
 
 @given('there is a "{tabletype}" table "{tablename}" in "{dbname}" with "{numrows}" rows')
 def impl(context, tabletype, tablename, dbname, numrows):
-    populate_regular_table_data(context, tabletype, tablename, 'None', dbname, with_data=True, rowcount=int(numrows))
+    populate_regular_table_data(context, tabletype, tablename, dbname, compression_type=None, with_data=True, rowcount=int(numrows))
 
 
 @given('there is a "{tabletype}" table "{tablename}" in "{dbname}" with data')
 @then('there is a "{tabletype}" table "{tablename}" in "{dbname}" with data')
 @when('there is a "{tabletype}" table "{tablename}" in "{dbname}" with data')
 def impl(context, tabletype, tablename, dbname):
-    populate_regular_table_data(context, tabletype, tablename, 'None', dbname, with_data=True)
+    populate_regular_table_data(context, tabletype, tablename, dbname, compression_type=None, with_data=True)
+
+@given('there is a "{tabletype}" table "{tablename}" in "{dbname}" with data and description')
+@then('there is a "{tabletype}" table "{tablename}" in "{dbname}" with data and description')
+@when('there is a "{tabletype}" table "{tablename}" in "{dbname}" with data and description')
+def impl(context, tabletype, tablename, dbname):
+	populate_regular_table_data(context, tabletype, tablename, dbname, compression_type=None, with_data=True, with_desc=True)
 
 
 @given('there is a "{tabletype}" partition table "{table_name}" in "{dbname}" with data')
@@ -2234,6 +2251,13 @@ def impl(context, tabletype, tablename, dbname):
 def impl(context, tabletype, table_name, dbname):
     create_partition(context, tablename=table_name, storage_type=tabletype, dbname=dbname, with_data=True)
 
+@given('there is a view without columns in "{dbname}"')
+@then('there is a view without columns in "{dbname}"')
+@when('there is a view without columns in "{dbname}"')
+def impl(context, dbname):
+    with dbconn.connect(dbconn.DbURL(dbname=dbname), unsetSearchPath=False) as conn:
+        dbconn.execSQL(conn, "create view v_no_cols as select;")
+        conn.commit()
 
 @then('read pid from file "{filename}" and kill the process')
 @when('read pid from file "{filename}" and kill the process')
@@ -2273,6 +2297,22 @@ def impl(context, table, dbname, segid):
     # Yes, the below line is ugly.  It looks much uglier when done with separate strings, given the multiple levels of escaping required.
     remote_cmd = """
 ssh %s "source %s; export PGUSER=%s; export PGPORT=%s; export PGOPTIONS=\\\"-c gp_role=utility\\\"; psql -d %s -c \\\"SET allow_system_table_mods=true; DELETE FROM pg_attribute where attrelid=\'%s\'::regclass::oid;\\\""
+""" % (host, source_file, user, port, dbname, table)
+    run_command(context, remote_cmd.strip())
+
+@when('a table "{table}" in database "{dbname}" has its relnatts inflated on segment with content id "{segid}"')
+def impl(context, table, dbname, segid):
+    local_cmd = 'psql %s -t -c "SELECT port,hostname FROM gp_segment_configuration WHERE content=%s and role=\'p\';"' % (
+        dbname, segid)
+    run_command(context, local_cmd)
+    port, host = context.stdout_message.split("|")
+    port = port.strip()
+    host = host.strip()
+    user = os.environ.get('USER')
+    source_file = os.path.join(os.environ.get('GPHOME'), 'greenplum_path.sh')
+    # Yes, the below line is ugly.  It looks much uglier when done with separate strings, given the multiple levels of escaping required.
+    remote_cmd = """
+ssh %s "source %s; export PGUSER=%s; export PGPORT=%s; export PGOPTIONS=\\\"-c gp_role=utility\\\"; psql -d %s -c \\\"SET allow_system_table_mods=true; UPDATE pg_class SET relnatts=relnatts + 2 WHERE relname=\'%s\';\\\""
 """ % (host, source_file, user, port, dbname, table)
     run_command(context, remote_cmd.strip())
 
@@ -2737,6 +2777,21 @@ def impl(context, command, target):
     if target not in contents:
         raise Exception("cannot find %s in %s" % (target, filename))
 
+
+@then('{command} should print "{target}" regex to logfile')
+def impl(context, command, target):
+    log_dir = _get_gpAdminLogs_directory()
+    filename = glob.glob('%s/%s_*.log' % (log_dir, command))[0]
+    contents = ''
+    with open(filename) as fr:
+        for line in fr:
+            contents += line
+
+    pat = re.compile(target)
+    if not pat.search(contents):
+        raise Exception("cannot find %s in %s" % (target, filename))
+
+
 @given('verify that a role "{role_name}" exists in database "{dbname}"')
 @then('verify that a role "{role_name}" exists in database "{dbname}"')
 def impl(context, role_name, dbname):
@@ -2902,6 +2957,17 @@ def impl(context, num_of_segments, num_of_hosts, hostnames):
 @given('there are no gpexpand_inputfiles')
 def impl(context):
     list(map(os.remove, glob.glob("gpexpand_inputfile*")))
+
+@given('there are no gpexpand tablespace input configuration files')
+def impl(context):
+    list(map(os.remove, glob.glob("{}/*.ts".format(context.working_directory))))
+    if len(glob.glob('{}/*.ts'.format(context.working_directory))) != 0:
+        raise Exception("expected no gpexpand tablespace input configuration files")
+
+@then('verify if a gpexpand tablespace input configuration file is created')
+def impl(context):
+    if len(glob.glob('{}/*.ts'.format(context.working_directory))) != 1:
+        raise Exception("expected gpexpand tablespace input configuration file to be created")
 
 @when('the user runs gpexpand with the latest gpexpand_inputfile with additional parameters {additional_params}')
 def impl(context, additional_params=''):
@@ -3169,6 +3235,21 @@ def impl(context, num_of_segments):
     raise Exception("Incorrect amount of segments.\nprevious: %s\ncurrent:"
             "%s\ndump of gp_segment_configuration: %s" %
             (context.start_data_segments, end_data_segments, rows))
+
+@when('verify that {table_name} catalog table is present on new segments')
+@then('verify that {table_name} catalog table is present on new segments')
+def impl(context, table_name):
+    dbname = 'gptest'
+    with closing(dbconn.connect(dbconn.DbURL(dbname=dbname), unsetSearchPath=False)) as conn:
+        query = """SELECT count(*) from gp_segment_configuration where -1 < content and role='p'"""
+        no_of_segments = dbconn.querySingleton(conn, query)
+
+        query = """select count(distinct(gp_segment_id)) from gp_dist_random('%s')""" % table_name
+        no_segments_table_present = dbconn.querySingleton(conn, query)
+
+    if no_of_segments != no_segments_table_present:
+        raise Exception("Table %s is not present on newly expanded segments" % table_name)
+
 
 @given('the cluster is setup for an expansion on hosts "{hostnames}"')
 def impl(context, hostnames):
@@ -3971,3 +4052,105 @@ def impl(context, contentids):
 
      if not no_basebackup:
          raise Exception("pg_basebackup entry was found for contents %s in gp_stat_replication after %d retries" % (contentids, retries))
+
+
+@given("create event trigger function")
+def impl(context):
+    dbname = "gptest"
+    query = "create or replace function notcie_ddl() returns event_trigger as $$ begin raise notice 'command % is executed.', tg_tag; end $$ language plpgsql"
+
+    with closing(dbconn.connect(dbconn.DbURL(dbname=dbname), unsetSearchPath=False)) as conn:
+        dbconn.execSQL(conn, query)
+
+
+@given('running postgres processes are saved in context')
+@when('running postgres processes are saved in context')
+@then('running postgres processes are saved in context')
+def impl(context):
+
+    # Store the pids in a dictionary where key will be the hostname and the
+    # value will be the pids of all the postgres processes running on that host
+    host_to_pid_map = dict()
+    segs = GpArray.initFromCatalog(dbconn.DbURL()).getDbList()
+    for seg in segs:
+        pids = gp.get_postgres_segment_processes(seg.datadir, seg.hostname)
+        if seg.hostname not in host_to_pid_map:
+            host_to_pid_map[seg.hostname] = pids
+        else:
+            host_to_pid_map[seg.hostname].extend(pids)
+
+    context.host_to_pid_map = host_to_pid_map
+
+
+@given('verify no postgres process is running on all hosts')
+@when('verify no postgres process is running on all hosts')
+@then('verify no postgres process is running on all hosts')
+def impl(context):
+    host_to_pid_map = context.host_to_pid_map
+
+    for host in host_to_pid_map:
+        for pid in host_to_pid_map[host]:
+            if unix.check_pid_on_remotehost(pid, host):
+                raise Exception("Postgres process {0} not killed on {1}.".format(pid, host))
+
+
+@then('the database segments are in execute mode')
+def impl(context):
+    # Get all primary segments details
+    # For mirror segments, there's no way to distinguish if in execute mode or utility mode
+    with closing(dbconn.connect(dbconn.DbURL(), unsetSearchPath=False)) as conn:
+        sql = "SELECT dbid, hostname, port  FROM gp_segment_configuration WHERE content > -1 and status = 'u' and role = 'p'"
+        rows = dbconn.query(conn, sql).fetchall()
+
+        if len(rows) <= 0:
+            raise Exception("Found no entries in gp_segment_configuration table")
+    # Check for each segment if the process is in
+    for row in rows:
+        dbid = row[0]
+        hostname = row[1].strip()
+        portnum = row[2]
+        cmd = "psql -d template1 -p {0} -h {1} -c \";\"".format(portnum, hostname)
+        run_command(context, cmd)
+        # If node is in execute mode, psql should return value 2 and the print the following error message:
+        # For a primary segment: "FATAL:  connections to primary segments are not allowed"
+        # For a mirror segment, always prints: "FATAL:  the database system is in recovery mode"
+        if context.ret_code == 2 and \
+           "FATAL:  connections to primary segments are not allowed" in context.error_message:
+            continue
+        else:
+            raise Exception("segment process not running in execute mode for DBID:{0}".format(dbid))
+
+
+@when('the user would run "{command}" and terminate the process with SIGINT and selects "{input}" {delay} delay')
+def impl(context, command, input, delay):
+    p = Popen(command.split(), stdout=PIPE, stdin=PIPE, stderr=PIPE)
+
+    context.execute_steps('''Then verify that pg_basebackup is running for content 0''')
+    p.send_signal(signal.SIGINT)
+
+    if delay == "with":
+        context.execute_steps('''When the user waits until mirror on content 0 is up''')
+
+    p.stdin.write(input.encode("utf-8"))
+    p.stdin.flush()
+
+    if input == "n":
+        context.execute_steps('''Then the user reset the walsender on the primary on content 0''')
+
+    stdout, stderr = p.communicate()
+    context.ret_code = p.returncode
+    context.stdout_message = stdout.decode()
+    context.error_message = stderr.decode()
+
+
+@when('the user would run "{command}" and terminate the process with SIGTERM')
+def impl(context, command):
+    p = Popen(command.split(), stdout=PIPE, stdin=PIPE, stderr=PIPE)
+
+    context.execute_steps('''Then the user just waits until recovery_progress.file is created in gpAdminLogs''')
+    p.send_signal(signal.SIGTERM)
+
+    stdout, stderr = p.communicate()
+    context.ret_code = p.returncode
+    context.stdout_message = stdout.decode()
+    context.error_message = stderr.decode()

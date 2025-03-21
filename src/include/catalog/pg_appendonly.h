@@ -3,7 +3,6 @@
  * pg_appendonly.h
  *	  internal specifications of the appendonly relation storage.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2008-2010, Greenplum Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -18,6 +17,7 @@
 
 #include "catalog/genbki.h"
 #include "catalog/pg_appendonly_d.h"
+#include "catalog/pg_class.h"
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
 
@@ -28,7 +28,6 @@ CATALOG(pg_appendonly,6105,AppendOnlyRelationId)
 {
 	Oid				relid;				/* relation id */
 	int32			blocksize;			/* the max block size of this relation */
-	int32			safefswritesize;	/* min write size in bytes to prevent torn-write */
 	int16			compresslevel;		/* the (per seg) total number of varblocks */
 	bool			checksum;			/* true if checksum is stored with data and checked */
 	NameData		compresstype;		/* the compressor used (e.g. zlib) */
@@ -131,7 +130,6 @@ static inline void AOSegfileFormatVersion_CheckValid(int version)
 extern void
 InsertAppendOnlyEntry(Oid relid,
 					  int blocksize,
-					  int safefswritesize,
 					  int compresslevel,
 					  bool checksum,
 					  bool columnstore,
@@ -146,7 +144,6 @@ InsertAppendOnlyEntry(Oid relid,
 void
 GetAppendOnlyEntryAttributes(Oid relid,
 							 int32 *blocksize,
-							 int32 *safefswritesize,
 							 int16 *compresslevel,
 							 bool *checksum,
 							 NameData *compresstype);
@@ -185,6 +182,10 @@ RemoveAppendonlyEntry(Oid relid);
 
 extern void
 SwapAppendonlyEntries(Oid entryRelId1, Oid entryRelId2);
+
+extern void ATAOEntries(Form_pg_class relform1, Form_pg_class relform2, 
+					TransactionId frozenXid,
+					MultiXactId cutoffMulti);
 
 extern int16
 GetAppendOnlySegmentFilesCount(Relation rel);

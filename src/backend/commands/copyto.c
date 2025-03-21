@@ -3,7 +3,6 @@
  * copyto.c
  *		COPY <table> TO file/program/client
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -1664,7 +1663,7 @@ CopyToDispatch(CopyToState cstate)
 	/* XXX: lock all partitions */
 
 	/*
-	 * Start a COPY command in every db of every segment in Cloudberry Database.
+	 * Start a COPY command in every db of every segment in Apache Cloudberry.
 	 *
 	 * From this point in the code we need to be extra careful
 	 * about error handling. ereport() must not be called until
@@ -1812,7 +1811,7 @@ CopyToDispatchDirectoryTable(CopyToState cstate)
 	cdbCopy = makeCdbCopyTo(cstate);
 
 	/*
-	 * Start a COPY command in every db of every segment in Cloudberry Database.
+	 * Start a COPY command in every db of every segment in Apache Cloudberry.
 	 *
 	 * From this point in the code we need to be extra careful
 	 * about error handling. ereport() must not be called until

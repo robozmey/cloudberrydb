@@ -1,14 +1,27 @@
 /*-------------------------------------------------------------------------
  *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
  * tag.c
  *	  Commands to manipulate tag
  *
- * Tags in Cloudberry database are designed to make tag for a given database
+ * Tags in Apache Cloudberry are designed to make tag for a given database
  * object.
- *
- *
- * Portions Copyright (c) 2024	Hashdata Inc
- *
  *
  * IDENTIFICATION
  *	  src/backend/commands/tag.c
@@ -469,16 +482,21 @@ AddTagDescriptions(List *tags,
 		char	*tagvalue;
 		Datum	datum;
 		bool	isnull;
+		bool	has_matching_allowed_val;
 		List	*allowed_values;
-		ListCell	*value_cell;
+		ListCell	*value_cell = NULL;
 		
+		has_matching_allowed_val = false;
 		def = lfirst(cell);
 		tagname = def->defname;
 		tagvalue = defGetString(def);
 		
 		tuple = SearchSysCache1(TAGNAME, CStringGetDatum(tagname));
 		if (!HeapTupleIsValid(tuple))
-			elog(ERROR, "cache lookup failed for tag %s", tagname);
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					errmsg("tag \"%s\" does not exist",
+							tagname)));
 
 		tagform = (Form_pg_tag) GETSTRUCT(tuple);
 		tagId = tagform->oid;
@@ -499,12 +517,13 @@ AddTagDescriptions(List *tags,
 
 				if (strcmp(tagvalue, allowed_value) == 0)
 				{
+					has_matching_allowed_val = true;
 					break;
 				}
 			}
 		}
 
-		if (value_cell || isnull)
+		if (has_matching_allowed_val || isnull)
 		{
 			desc_tuple = SearchSysCache4(TAGDESCRIPTION,
 										 ObjectIdGetDatum(databaseid),
@@ -868,7 +887,7 @@ transformTagValues(int action, Oid tagId, Datum oldvalues,
 				   List *allowed_values, bool unset)
 {
 	List		*resultValues = untransformTagValues(oldvalues);
-	ListCell	*value_cell;
+	ListCell	*value_cell = NULL;
 	Datum		result;
 
 	Assert(!(resultValues && unset));

@@ -4,7 +4,6 @@
  *	  POSTGRES relation descriptor (a/k/a relcache entry) definitions.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2009, Greenplum inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -429,8 +428,7 @@ typedef struct ViewOptions
  *		eval of argument!
  */
 #define RelationIsSecurityView(relation)									\
-	(AssertMacro(relation->rd_rel->relkind == RELKIND_VIEW),				\
-	 (relation)->rd_options ?												\
+	((relation)->rd_options ?												\
 	  ((ViewOptions *) (relation)->rd_options)->security_barrier : false)
 
 /*
@@ -475,10 +473,12 @@ typedef struct ViewOptions
 #define InvalidRelation ((Relation) NULL)
 
 /*
- * We do need the RelationIs* macros because the table access method API is
- * not mature enough and/or the append-optimized design is distinct enough.
+ * CAUTION: this macro is a violation of the absraction that table AM and
+ * index AM interfaces provide.  Use of this macro is discouraged.  If
+ * table/index AM API falls short for your use case, consider enhancing the
+ * interface.
+ *
  */
-
 #define RelationIsHeap(relation) \
 	((relation)->rd_amhandler == F_HEAP_TABLEAM_HANDLER)
 
@@ -503,6 +503,10 @@ typedef struct ViewOptions
 #define RelationIsAoRows(relation) \
 	AMHandlerIsAoRows((relation)->rd_amhandler)
 
+#define RelationStorageIsAoRows(relation) \
+	((relation)->rd_rel->relam == AO_ROW_TABLE_AM_OID && \
+		(relation)->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+
 /*
  * CAUTION: this macro is a violation of the absraction that table AM and
  * index AM interfaces provide.  Use of this macro is discouraged.  If
@@ -514,6 +518,10 @@ typedef struct ViewOptions
  */
 #define RelationIsAoCols(relation) \
 	AMHandlerIsAoCols((relation)->rd_amhandler)
+
+#define RelationStorageIsAoCols(relation) \
+	((relation)->rd_rel->relam == AO_COLUMN_TABLE_AM_OID && \
+		(relation)->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
 
 /*
  * CAUTION: this macro is a violation of the absraction that table AM and
@@ -527,11 +535,19 @@ typedef struct ViewOptions
 #define RelationIsAppendOptimized(relation) \
 	AMHandlerIsAO((relation)->rd_amhandler)
 
+#define RelationStorageIsAO(relation) \
+	((RelationIsAoRows(relation) || RelationIsAoCols(relation)) && \
+		(relation)->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+
 /*
  * FIXME: CBDB should not know the am oid of PAX. We put here because the kernel
  * can't distinguish the PAX and renamed heap(heap_psql) in test `psql`.
  */
 #define PAX_AM_OID 7047
+
+#define RelationIsPax(relation) \
+	((relation)->rd_rel->relam == PAX_AM_OID)
+
 /*
  * CAUTION: this macro is a violation of the absraction that table AM and
  * index AM interfaces provide.  Use of this macro is discouraged.  If
@@ -548,7 +564,7 @@ typedef struct ViewOptions
  */
 #define RelationIsNonblockRelation(relation) \
 	(RelationIsAppendOptimized(relation) || \
-	 (relation)->rd_rel->relam == PAX_AM_OID)
+	 RelationIsPax(relation))
 
 /*
  * RelationIsBitmapIndex
@@ -643,7 +659,7 @@ typedef struct ViewOptions
 			smgrsetowner(&((relation)->rd_smgr), \
 						 smgropen((relation)->rd_node, \
 								  (relation)->rd_backend, \
-								  RelationIsAppendOptimized(relation)?SMGR_AO:SMGR_MD, relation)); \
+								  RelationStorageIsAO(relation)?SMGR_AO:SMGR_MD, relation)); \
 	} while (0)
 
 /*

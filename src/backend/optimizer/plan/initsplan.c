@@ -3,7 +3,6 @@
  * initsplan.c
  *	  Target list, qualification, joininfo initialization routines
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -1269,8 +1268,11 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode, bool below_outer_join,
 				 * semantically correct, see discussion on mailing list here:
 				 * "Regarding postponing quals past an semi join"
 				 * https://groups.google.com/a/greenplum.org/d/msg/gpdb-dev/YHYNIUZnecI/Rlum0VD3FwAJ
+				 *
+				 * MORE: In GPDB, ANTI-JOIN/LASJ_NOTIN-JOIN may come here.
 				 */
-				Assert(j->jointype == JOIN_INNER || j->jointype == JOIN_SEMI);
+				Assert(j->jointype == JOIN_INNER || j->jointype == JOIN_SEMI ||
+					   j->jointype == JOIN_ANTI || j->jointype == JOIN_LASJ_NOTIN);
 				*postponed_qual_list = lappend(*postponed_qual_list, pq);
 			}
 		}

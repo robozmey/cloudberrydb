@@ -4,7 +4,6 @@
  *	  append-only relation access method definitions.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2006, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2007, Greenplum Inc.
@@ -141,7 +140,7 @@ typedef struct AppendOnlyExecutorReadBlock
 
 	int				segmentFileNum;
 
-	int64			totalRowsScannned;
+	int64			totalRowsScanned;
 
 	int64			blockFirstRowNum;
 	int64			headerOffsetInFile;
@@ -207,7 +206,7 @@ typedef struct AppendOnlyScanDescData
 	AppendOnlyExecutorReadBlock	executorReadBlock;
 
 	/* current scan state */
-	bool		bufferDone;
+	bool		needNextBuffer;
 
 	bool	initedStorageRoutines;
 
@@ -259,6 +258,11 @@ typedef struct AppendOnlyScanDescData
 	/* used in predicate pushdown */
 	ExprContext		*aos_pushdown_econtext;
 	ExprState		*aos_pushdown_qual;
+	/*
+	 * The total number of bytes read, compressed, across all segment files, so
+	 * far. This is used for scan progress reporting.
+	 */
+	int64		totalBytesRead;
 
 }	AppendOnlyScanDescData;
 
@@ -350,7 +354,7 @@ typedef struct AppendOnlyFetchDescData
 
 	AppendOnlyExecutorReadBlock executorReadBlock;
 
-	CurrentSegmentFile currentSegmentFile;
+	AOFetchSegmentFile currentSegmentFile;
 	
 	int64		scanNextFileOffset;
 	int64		scanNextRowNum;
@@ -358,7 +362,7 @@ typedef struct AppendOnlyFetchDescData
 	int64		scanAfterFileOffset;
 	int64		scanLastRowNum;
 
-	CurrentBlock currentBlock;
+	AOFetchBlockMetadata currentBlock;
 
 	int64	skipBlockCount;
 
@@ -480,5 +484,34 @@ void finishWriteBlock(AppendOnlyInsertDesc aoInsertDesc);
 extern ExprState* appendonly_predicate_pushdown_prepare(AppendOnlyScanDesc scan,
 												   ExprState *qual,
 												   ExprContext *ecxt);
+
+extern bool AppendOnlyExecutorReadBlock_GetBlockInfo(AppendOnlyStorageRead *storageRead,
+										 AppendOnlyExecutorReadBlock *executorReadBlock);
+
+extern void AppendOnlyStorageRead_CloseFile(AppendOnlyStorageRead *storageRead);
+
+extern bool SetNextFileSegForRead(AppendOnlyScanDesc scan);
+
+extern bool AppendOnlyExecutorReadBlock_ScanNextTuple(AppendOnlyExecutorReadBlock *executorReadBlock,
+										  int nkeys,
+										  ScanKey key,
+										  TupleTableSlot *slot);
+
+extern void AppendOnlyExecutorReadBlock_GetContents(AppendOnlyExecutorReadBlock *executorReadBlock);
+/*
+ * Update total bytes read for the entire scan. If the block was compressed,
+ * update it with the compressed length. If the block was not compressed, update
+ * it with the uncompressed length.
+ */
+static inline void
+AppendOnlyScanDesc_UpdateTotalBytesRead(AppendOnlyScanDesc scan)
+{
+	Assert(scan->storageRead.isActive);
+
+	if (scan->storageRead.current.isCompressed)
+		scan->totalBytesRead += scan->storageRead.current.compressedLen;
+	else
+		scan->totalBytesRead += scan->storageRead.current.uncompressedLen;
+}
 
 #endif   /* CDBAPPENDONLYAM_H */

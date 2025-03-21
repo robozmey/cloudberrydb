@@ -3,7 +3,6 @@
  * relnode.c
  *	  Relation-node lookup/construction routines
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -1114,13 +1113,6 @@ build_join_rel(PlannerInfo *root,
 		bms_del_members(joinrel->direct_lateral_relids, joinrel->relids);
 	if (bms_is_empty(joinrel->direct_lateral_relids))
 		joinrel->direct_lateral_relids = NULL;
-
-	/* GPDB_96_MERGE_FIXME: The 'width' is now in joinrel->reltarget. But I
-	 * don't think this is the right place to set it. Do we actually care
-	 * about doing this? PostgreSQL doesn't bother..
-	 */
-	/* cap width of output row by sum of its inputs */
-	//joinrel->width = Min(joinrel->width, outer_rel->width + inner_rel->width);
 
 	/*
 	 * Construct restrict and join clause lists for the new joinrel. (The

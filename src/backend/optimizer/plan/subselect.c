@@ -6,7 +6,6 @@
  * This module deals with SubLinks and CTEs, but not subquery RTEs (i.e.,
  * not sub-SELECT-in-FROM cases).
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -51,6 +50,7 @@
 #include "cdb/cdbsubselect.h"
 #include "cdb/cdbvars.h"
 #include "cdb/cdbutil.h"
+#include "cdb/cdbpath.h"
 
 typedef struct convert_testexpr_context
 {
@@ -90,7 +90,6 @@ static Node *convert_testexpr_mutator(Node *node,
 
 static bool subplan_is_hashable(Plan *plan);
 static bool subpath_is_hashable(Path *path);
-static bool testexpr_is_hashable(Node *testexpr, List *param_ids);
 static bool test_opexpr_is_hashable(OpExpr *testexpr, List *param_ids);
 static bool hash_ok_operator(OpExpr *expr);
 #if 0
@@ -121,6 +120,9 @@ static bool finalize_primnode(Node *node, finalize_primnode_context *context);
 static bool finalize_agg_primnode(Node *node, finalize_primnode_context *context);
 
 extern	double global_work_mem(void);
+static bool contain_outer_selfref_walker(Node *node, Index *depth);
+
+static bool splan_is_initplan(List *plan_params, SubLinkType subLinkType);
 
 /*
  * Get the datatype/typmod/collation of the first column of the plan's output.
@@ -208,6 +210,15 @@ CorrelatedVarWalker(Node *node, CorrelatedVarWalkerContext *ctx)
 		if (v->varlevelsup > ctx->maxLevelsUp)
 		{
 			ctx->maxLevelsUp = v->varlevelsup;
+		}
+		return false;
+	}
+	else if (IsA(node, PlaceHolderVar))
+	{
+		PlaceHolderVar *phv = (PlaceHolderVar *) node;
+		if (phv->phlevelsup > ctx->maxLevelsUp)
+		{
+			ctx->maxLevelsUp = phv->phlevelsup;
 		}
 		return false;
 	}
@@ -444,9 +455,15 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
 	subroot->curSlice = palloc0(sizeof(PlanSlice));
 	subroot->curSlice->gangType = GANGTYPE_UNALLOCATED;
 
+	if (splan_is_initplan(plan_params, subLinkType))
+		unset_allow_append_initplan_for_function_scan();
+
 	plan = create_plan(subroot, best_path, subroot->curSlice);
 	/* Decorate the top node of the plan with a Flow node. */
 	plan->flow = cdbpathtoplan_create_flow(subroot, best_path->locus);
+
+	set_allow_append_initplan_for_function_scan();
+	Assert(get_allow_append_initplan_for_function_scan() == true);
 
 	/* And convert to SubPlan or InitPlan format. */
 	result = build_subplan(root, plan, subroot, plan_params,
@@ -543,9 +560,7 @@ build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 	Node	   *result;
 	SubPlan    *splan;
 	ListCell   *lc;
-	Bitmapset  *tmpset;
 	Bitmapset  *plan_param_set;
-	int         paramid;
 
 	/*
 	 * Initialize the SubPlan node.  Note plan_id, plan_name, and cost fields
@@ -594,20 +609,6 @@ build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 		splan->parParam = lappend_int(splan->parParam, pitem->paramId);
 		splan->args = lappend(splan->args, arg);
 		plan_param_set = bms_add_member(plan_param_set, pitem->paramId);
-	}
-
-	/*
-	 * For gpdb, we need extParam to evaluate if we can process initplan
-	 * in ExecutorStart.
-	 */
-	if (plan->extParam)
-	{
-		tmpset = bms_difference(plan->extParam, plan_param_set);
-
-		while ((paramid = bms_first_member(tmpset)) >= 0)
-			splan->extParam = lappend_int(splan->extParam, paramid);
-
-		pfree(tmpset);
 	}
 
 	/*
@@ -1015,7 +1016,7 @@ subpath_is_hashable(Path *path)
  * To identify LHS vs RHS of the hash expression, we must be given the
  * list of output Param IDs of the SubLink's subquery.
  */
-static bool
+bool
 testexpr_is_hashable(Node *testexpr, List *param_ids)
 {
 	/*
@@ -1342,11 +1343,11 @@ contain_dml_walker(Node *node, void *context)
 	}
 	return expression_tree_walker(node, contain_dml_walker, context);
 }
-
+#endif
 /*
  * contain_outer_selfref: is there an external recursive self-reference?
  */
-static bool
+bool
 contain_outer_selfref(Node *node)
 {
 	Index		depth = 0;
@@ -1397,7 +1398,7 @@ contain_outer_selfref_walker(Node *node, Index *depth)
 	return expression_tree_walker(node, contain_outer_selfref_walker,
 								  (void *) depth);
 }
-
+#if 0
 /*
  * inline_cte: convert RTE_CTE references to given CTE into RTE_SUBQUERYs
  */
@@ -1536,6 +1537,20 @@ convert_ANY_sublink_to_join(PlannerInfo *root, SubLink *sublink,
 
 	Assert(sublink->subLinkType == ANY_SUBLINK);
 	Assert(IsA(subselect, Query));
+
+	/* Delete ORDER BY and DISTINCT.
+	 *
+	 * There is no need to do the group-by or order-by inside the
+	 * subquery, if we have decided to pull up the sublink. For the
+	 * group-by case, after the sublink pull-up, there will be a semi-join
+	 * plan node generated in top level, which will weed out duplicate
+	 * tuples naturally. For the order-by case, after the sublink pull-up,
+	 * the subquery will become a jointree, inside which the tuples' order
+	 * doesn't matter. In a summary, it's safe to elimate the group-by or
+	 * order-by causes here.
+	*/
+	cdbsubselect_drop_orderby(subselect);
+	cdbsubselect_drop_distinct(subselect);
 
 	/*
 	 * If uncorrelated, and no Var nodes on lhs, the subquery will be executed
@@ -2725,6 +2740,29 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 		{
 			initSetParam = bms_add_member(initSetParam, lfirst_int(l2));
 		}
+
+		/*
+		 * For gpdb, we need extParam to evaluate if we can process initplan
+		 * in ExecutorStart.
+		 */
+		if (initplan->extParam)
+		{
+			int paramid;
+			ListCell *lc;
+			Bitmapset *upperset = NULL;
+			Bitmapset *parentset = NULL;
+			Bitmapset *extset = initplan->extParam;
+
+			foreach(lc, initsubplan->parParam)
+			{
+				int tmpid = lfirst_int(lc);
+				parentset = bms_add_member(parentset, tmpid);
+			}
+
+			upperset = bms_difference(extset, parentset);
+			while ((paramid = bms_first_member(upperset)) >= 0)
+				initsubplan->extParam = lappend_int(initsubplan->extParam, paramid);
+		}
 	}
 
 	/* Any setParams are validly referenceable in this node and children */
@@ -3519,4 +3557,23 @@ SS_make_initplan_from_plan(PlannerInfo *root,
 	 */
 
 	/* NB PostgreSQL calculates subplan cost here, but GPDB does it elsewhere. */
+}
+
+
+bool
+splan_is_initplan(List *plan_params, SubLinkType subLinkType)
+{
+	/*
+	 * un-correlated or undirect correlated plans of EXISTS, EXPR, ARRAY,
+	 * ROWCOMPARE, or MULTIEXPR types can be used as initPlans.
+	 */
+	if (plan_params == NIL && (
+			subLinkType == EXISTS_SUBLINK ||
+			subLinkType == EXPR_SUBLINK ||
+			subLinkType == ARRAY_SUBLINK ||
+			subLinkType == ROWCOMPARE_SUBLINK ||
+			subLinkType == MULTIEXPR_SUBLINK
+	))
+		return true;
+	return false;
 }

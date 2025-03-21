@@ -7,7 +7,6 @@
  *	 ExecProcNode, or ExecEndNode on its subnodes and do the appropriate
  *	 processing.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -81,6 +80,8 @@
 #include "executor/nodeBitmapAnd.h"
 #include "executor/nodeBitmapHeapscan.h"
 #include "executor/nodeBitmapIndexscan.h"
+#include "executor/nodeDynamicBitmapHeapscan.h"
+#include "executor/nodeDynamicBitmapIndexscan.h"
 #include "executor/nodeBitmapOr.h"
 #include "executor/nodeCtescan.h"
 #include "executor/nodeCustom.h"
@@ -127,6 +128,10 @@
 #include "cdb/cdbvars.h"
 #include "cdb/ml_ipc.h"			/* interconnect context */
 #include "executor/nodeAssertOp.h"
+#include "executor/nodeDynamicIndexscan.h"
+#include "executor/nodeDynamicIndexOnlyscan.h"
+#include "executor/nodeDynamicSeqscan.h"
+#include "executor/nodeDynamicForeignscan.h"
 #include "executor/nodeMotion.h"
 #include "executor/nodePartitionSelector.h"
 #include "executor/nodeSequence.h"
@@ -279,6 +284,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 												   estate, eflags);
 			break;
 
+		case T_DynamicSeqScan:
+			result = (PlanState *) ExecInitDynamicSeqScan((DynamicSeqScan *) node,
+												   estate, eflags);
+			break;
+
 		case T_SampleScan:
 			result = (PlanState *) ExecInitSampleScan((SampleScan *) node,
 													  estate, eflags);
@@ -287,6 +297,16 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		case T_IndexScan:
 			result = (PlanState *) ExecInitIndexScan((IndexScan *) node,
 													 estate, eflags);
+			break;
+
+		case T_DynamicIndexScan:
+			result = (PlanState *) ExecInitDynamicIndexScan((DynamicIndexScan *) node,
+													estate, eflags);
+			break;
+
+		case T_DynamicIndexOnlyScan:
+			result = (PlanState *) ExecInitDynamicIndexOnlyScan((DynamicIndexOnlyScan *) node,
+													estate, eflags);
 			break;
 
 		case T_IndexOnlyScan:
@@ -299,9 +319,19 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 														   estate, eflags);
 			break;
 
+		case T_DynamicBitmapIndexScan:
+			result = (PlanState *) ExecInitDynamicBitmapIndexScan((DynamicBitmapIndexScan *) node,
+																  estate, eflags);
+			break;
+
 		case T_BitmapHeapScan:
 			result = (PlanState *) ExecInitBitmapHeapScan((BitmapHeapScan *) node,
 														  estate, eflags);
+			break;
+
+		case T_DynamicBitmapHeapScan:
+			result = (PlanState *) ExecInitDynamicBitmapHeapScan((DynamicBitmapHeapScan *) node,
+																 estate, eflags);
 			break;
 
 		case T_TidScan:
@@ -357,6 +387,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		case T_ForeignScan:
 			result = (PlanState *) ExecInitForeignScan((ForeignScan *) node,
 													   estate, eflags);
+			break;
+
+		case T_DynamicForeignScan:
+			result = (PlanState *) ExecInitDynamicForeignScan((DynamicForeignScan *) node,
+												   estate, eflags);
 			break;
 
 		case T_CustomScan:
@@ -717,6 +752,10 @@ MultiExecProcNode(PlanState *node)
 			result = MultiExecBitmapIndexScan((BitmapIndexScanState *) node);
 			break;
 
+		case T_DynamicBitmapIndexScanState:
+			result = MultiExecDynamicBitmapIndexScan((DynamicBitmapIndexScanState *) node);
+			break;
+
 		case T_BitmapAndState:
 			result = MultiExecBitmapAnd((BitmapAndState *) node);
 			break;
@@ -827,6 +866,10 @@ ExecEndNode(PlanState *node)
 			ExecEndSeqScan((SeqScanState *) node);
 			break;
 
+		case T_DynamicSeqScanState:
+			ExecEndDynamicSeqScan((DynamicSeqScanState *) node);
+			break;
+
 		case T_SampleScanState:
 			ExecEndSampleScan((SampleScanState *) node);
 			break;
@@ -843,6 +886,11 @@ ExecEndNode(PlanState *node)
 			ExecEndIndexScan((IndexScanState *) node);
 			break;
 
+		case T_DynamicIndexScanState:
+		case T_DynamicIndexOnlyScanState:
+			ExecEndDynamicIndexScan((DynamicIndexScanState *) node);
+			break;
+
 		case T_IndexOnlyScanState:
 			ExecEndIndexOnlyScan((IndexOnlyScanState *) node);
 			break;
@@ -851,8 +899,16 @@ ExecEndNode(PlanState *node)
 			ExecEndBitmapIndexScan((BitmapIndexScanState *) node);
 			break;
 
+		case T_DynamicBitmapIndexScanState:
+			ExecEndDynamicBitmapIndexScan((DynamicBitmapIndexScanState *) node);
+			break;
+
 		case T_BitmapHeapScanState:
 			ExecEndBitmapHeapScan((BitmapHeapScanState *) node);
+			break;
+
+		case T_DynamicBitmapHeapScanState:
+			ExecEndDynamicBitmapHeapScan((DynamicBitmapHeapScanState *) node);
 			break;
 
 		case T_TidScanState:
@@ -897,6 +953,10 @@ ExecEndNode(PlanState *node)
 
 		case T_ForeignScanState:
 			ExecEndForeignScan((ForeignScanState *) node);
+			break;
+
+		case T_DynamicForeignScanState:
+			ExecEndDynamicForeignScan((DynamicForeignScanState *) node);
 			break;
 
 		case T_CustomScanState:
@@ -1449,7 +1509,19 @@ ExecSetTupleBound(int64 tuples_needed, PlanState *child_node)
 		 * that condition succeeds it affects nothing, while if it fails, no
 		 * rows will be demanded from the Result child anyway.
 		 */
-		if (outerPlanState(child_node))
+
+		/*
+		* GPDB: The second condition ensures qual is empty.
+		* In case the RESULT node has a filter,
+		* we do not want to push down the tuple bound.
+		* This is because the bound will be applied before the filter,
+		* and could lead to a subset of the actual result being returned.
+		* Postgres doesn't create RESULT node with quals,
+		* whereas GPDB can, hence the deviation.
+		* See ExecResult() and create_projection_path_with_quals().
+		*/
+
+		if (outerPlanState(child_node) && child_node->plan->qual == NULL)
 			ExecSetTupleBound(tuples_needed, outerPlanState(child_node));
 	}
 	else if (IsA(child_node, SubqueryScanState))

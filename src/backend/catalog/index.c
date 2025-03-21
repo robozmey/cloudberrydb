@@ -3,7 +3,6 @@
  * index.c
  *	  code to create and destroy POSTGRES index relations
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2009, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -1074,6 +1073,7 @@ index_create_internal(Relation heapRelation,
 	indexRelation->rd_rel->relam = accessMethodObjectId;
 	indexRelation->rd_rel->relispartition = OidIsValid(parentIndexRelid);
 	indexRelation->rd_rel->relisivm = false;
+	indexRelation->rd_rel->relisdynamic = false;
 
 	/*
 	 * store index's pg_class entry
@@ -1086,6 +1086,7 @@ index_create_internal(Relation heapRelation,
 	/* done with pg_class */
 	table_close(pg_class, RowExclusiveLock);
 
+	if (Gp_role == GP_ROLE_DISPATCH)
 	{							/* MPP-7575: track index creation */
 		bool	 doIt	= true;
 		char	*subtyp = "INDEX";
@@ -2530,8 +2531,9 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 	DeleteInheritsTuple(indexId, InvalidOid, false, NULL);
 	
 	/* MPP-6929: metadata tracking */
-	MetaTrackDropObject(RelationRelationId, 
-						indexId);
+	if (Gp_role == GP_ROLE_DISPATCH)
+		MetaTrackDropObject(RelationRelationId,
+							indexId);
 
 	/*
 	 * We are presently too lazy to attempt to compute the new correct value
@@ -3040,10 +3042,9 @@ index_update_stats(Relation rel,
 		relpages = RelationGetNumberOfBlocks(rel);
 
 		/*
-		 * GPDB: In theory, it is possible to support index only scans with AO
-		 * tables, but disable them for now by setting relallvisible to 0.
+		 * GPDB: We don't maintain relallvisible for AO/CO tables.
 		 */
-		if (rd_rel->relkind != RELKIND_INDEX && !RelationIsAppendOptimized(rel))
+		if (rd_rel->relkind != RELKIND_INDEX && !RelationStorageIsAO(rel))
 			visibilitymap_count(rel, &relallvisible, NULL);
 		else					/* don't bother for indexes */
 			relallvisible = 0;
@@ -3994,6 +3995,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 		table_close(pg_index, RowExclusiveLock);
 	}
 
+	if (Gp_role == GP_ROLE_DISPATCH)
 	{
 		bool	 doIt	= true;
 		char	*subtyp = "REINDEX";
@@ -4130,7 +4132,7 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
 			 get_namespace_name(RelationGetNamespace(rel)),
 			 RelationGetRelationName(rel));
 
-	relIsAO = RelationIsAppendOptimized(rel);
+	relIsAO = RelationStorageIsAO(rel);
 
 	toast_relid = rel->rd_rel->reltoastrelid;
 

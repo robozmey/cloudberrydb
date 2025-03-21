@@ -25,10 +25,10 @@ OBJS = \
 	util.o \
 	version.o
 # Source files specific to Cloudberry
-OBJS += greenplum/aotable.o greenplum/gpdb4_heap_convert.o greenplum/version_gp.o \
-		greenplum/check_gp.o greenplum/file_gp.o greenplum/reporting.o \
+OBJS += greenplum/aotable.o greenplum/version_gp.o \
+		greenplum/check_gp.o greenplum/reporting.o \
 		greenplum/aomd_filehandler.o greenplum/option_gp.o \
-		greenplum/controldata_gp.o version_old_8_3.o
+		greenplum/controldata_gp.o greenplum/util.o
 
 override CPPFLAGS := -DDLSUFFIX=\"$(DLSUFFIX)\" -I$(srcdir) -I$(libpq_srcdir) $(CPPFLAGS)
 LDFLAGS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
@@ -50,20 +50,12 @@ uninstall:
 clean distclean maintainer-clean:
 	rm -f pg_upgrade$(X) $(OBJS)
 	rm -rf delete_old_cluster.sh log/ tmp_check/ \
-	       loadable_libraries.txt reindex_hash.sql \
-	       pg_upgrade_dump_globals.sql \
-	       pg_upgrade_dump_*.custom pg_upgrade_*.log \
+		   reindex_hash.sql \
 		   clusterConfigPostgresAddonsFile clusterConfigFile gpdemo-env.sh \
 		   hostfile regression.diffs aomd_filehandler.c
 
 greenplum/aomd_filehandler.c: $(top_srcdir)/src/backend/access/appendonly/aomd_filehandler.c
 	rm -f $@ && cd greenplum && $(LN_S) ../$< aomd_filehandler.c
-
-# GPDB_95_MERGE_FIXME:
-# GPDB want to run installcheck of pg_upgrade in the end of installcheck-world
-# let installcheck be a no-op, so "make -C src/bin/ installcheck" does nothing on
-# src/bin/pg_upgrade, the real test of pg_upgrade will be triggered by
-# "make check" in the end of installcheck-world, see GNUmakefile.in
 
 # When $(MAKE) is present, make automatically infers that this is a
 # recursive make. which is not actually what we want here, as that
@@ -75,7 +67,7 @@ greenplum/aomd_filehandler.c: $(top_srcdir)/src/backend/access/appendonly/aomd_f
 NOTSUBMAKEMAKE=$(MAKE)
 
 check:
-	# ignore pg_upgarde to make CI happy, issue: https://github.com/cloudberrydb/cloudberrydb/issues/262
+	# ignore pg_upgarde to make CI happy, issue: https://github.com/apache/cloudberry/issues/262
 
 #check: test_gpdb.sh all
 #	bash $< -C -r -s -o $(top_builddir)/gpAux/gpdemo/datadirs/ -b $(DESTDIR)$(bindir)

@@ -442,3 +442,15 @@ explain (costs off) insert into t2_dist_rand select * from t_dist_hash;
 
 reset gp_force_random_redistribution;
 reset optimizer;
+-- Try to set statement_mem > max_statement_mem
+SET statement_mem = '4000MB';
+RESET statement_mem;
+-- Test for resource management commands on log_statement='ddl'
+-- Modify log_statement to 'ddl'.
+SET log_statement = 'ddl';
+-- We don't really modify resources config.
+ALTER RESOURCE GROUP default_group SET concurrency -1;
+ALTER RESOURCE QUEUE pg_default ACTIVE THRESHOLD -10;
+-- Reset
+RESET log_statement;
+

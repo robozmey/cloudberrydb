@@ -95,6 +95,8 @@ void destroy_memtuple_binding(MemTupleBinding *pbind)
  * null attribute.  For all possible combinations of 4 null bit,
  * we index into a short[16] array to get how many space is saved
  * by the nulls.
+ * Null bitmap is spilt into bytes and each byte is spilt into low
+ * and high bits. So each byte will need 2 short[16] arrays. 
  */
 
 /* Compute how much space to store the null save entries.
@@ -429,7 +431,10 @@ MemTupleBinding *create_memtuple_binding(TupleDesc tupdesc)
 		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
 
 		if (attr->attlen > 0 && attr->attalign == 'd')
+		{
 			pbind->column_align = 8;
+			break;
+		}
 	}
 
 	pbind->null_bitmap_extra_size = compute_null_bitmap_extra_size(tupdesc, pbind->column_align); 
@@ -494,7 +499,9 @@ compute_memtuple_size_using_bind(Datum *values,
 		/* We plan to convert to short varlena even if it is not currently */
 		if (bind->flag == MTB_ByRef &&
 			attr->attstorage != 'p' &&
-			value_type_could_short(DatumGetPointer(values[i]), attr->atttypid))
+			!VARATT_IS_EXTERNAL(DatumGetPointer(values[i])) &&
+			(VARATT_IS_SHORT(DatumGetPointer(values[i])) ||
+			VARATT_CAN_MAKE_SHORT(DatumGetPointer(values[i]))))
 		{
 			data_length += VARSIZE_ANY_EXHDR(DatumGetPointer(values[i])) + VARHDRSZ_SHORT;
 		}
@@ -607,30 +614,28 @@ memtuple_form(MemTupleBinding *pbind, Datum *values, bool *isnull)
 	uint32		len;
 	uint32		null_save_len;
 	bool		has_nulls;
-	MemTuple	result;
 
 	len = compute_memtuple_size(pbind, values, isnull, &null_save_len, &has_nulls);
 
-	result = palloc(len);
-
-	memtuple_form_to(pbind, values, isnull, len, null_save_len, has_nulls,
-					 result);
-
-	return result;
+	return memtuple_form_to(pbind, values, isnull, len, null_save_len, has_nulls, NULL);
 }
 
 
 /*
- * Form a memtuple from values and isnull, to a prespecified buffer
+ * Form a memtuple from values and isnull, to a prespecified buffer 'mtup'. This
+ * can act as an alternative to memtuple_form(), when we want close control over
+ * the memory allocation for the memtuple.
  *
  * You must call compute_memtuple_size() before this, and verify that
  * the buffer is large enough. Pass through the 'len', 'null_save_len'
  * and 'hasnull' values that compute_memtuple_size() returned.
  *
  * The tuple is written to 'mtup', which must be large enough to hold
- * 'len' bytes.
+ * 'len' bytes. In case 'mtup' is NULL, the tuple is palloced.
+ * 
+ * Returns 'mtup'.
  */
-void
+MemTuple
 memtuple_form_to(MemTupleBinding *pbind,
 				 Datum *values,
 				 bool *isnull,
@@ -648,7 +653,16 @@ memtuple_form_to(MemTupleBinding *pbind,
 
 	colbind = (len <= MEMTUPLE_LEN_FITSHORT) ? &pbind->bind : &pbind->large_bind;
 
-	memset(mtup, 0, len);
+	if (mtup != NULL)
+	{
+		/*
+		 * Use memset instead of the MemSet macro (optimized for word-aligned structures)
+		 * here as MemTuple may not be word-aligned due to its variable member PRIVATE_mt_bits.
+		 */
+		memset(mtup, 0, len);
+	}
+	else
+		mtup = palloc0(len);
 
 	/* Set mtlen, this set the lead bit, len, and clears hasnull bit 
 	 * because the len returned from compute size is always max aligned
@@ -777,7 +791,7 @@ memtuple_form_to(MemTupleBinding *pbind,
 					memcpy(varlen_start, DatumGetPointer(values[i]), attr_len);
 				}
 				else if(attr->attstorage != 'p' &&
-						value_type_could_short(DatumGetPointer(values[i]), attr->atttypid))
+						VARATT_CAN_MAKE_SHORT(DatumGetPointer(values[i])))
 				{
 					attr_len = VARSIZE(DatumGetPointer(values[i])) - VARHDRSZ + VARHDRSZ_SHORT;
 					*varlen_start = VARSIZE_TO_SHORT_D(values[i]);
@@ -829,6 +843,8 @@ memtuple_form_to(MemTupleBinding *pbind,
 
 	if (hasext)
 		memtuple_set_hasext(mtup);
+
+	return mtup;
 }
 
 bool memtuple_attisnull(MemTuple mtup, MemTupleBinding *pbind, int attnum)

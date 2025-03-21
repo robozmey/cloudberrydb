@@ -12,7 +12,6 @@
  * respective utility commands.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -244,6 +243,16 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	 */
 	if (stmt->if_not_exists && OidIsValid(existing_relid))
 	{
+		/*
+		 * If we are in an extension script, insist that the pre-existing
+		 * object be a member of the extension, to avoid security risks.
+		 */
+		ObjectAddress address;
+
+		ObjectAddressSet(address, RelationRelationId, existing_relid);
+		checkMembershipInCurrentExtension(&address);
+
+		/* OK to skip */
 		ereport(NOTICE,
 				(errcode(ERRCODE_DUPLICATE_TABLE),
 				 errmsg("relation \"%s\" already exists, skipping",
@@ -1274,17 +1283,15 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 		 */
 		oldcontext = MemoryContextSwitchTo(CurTransactionContext);
 
-		if (RelationIsAppendOptimized(relation))
+		if (RelationStorageIsAO(relation))
 		{
-			int32 blocksize;
-			int32 safefswritersize;
-			int16 compresslevel;
-			bool  checksum;
-			NameData compresstype;
+			bool		checksum = true;
+			int32		blocksize = -1;
+			int16		compresslevel = 0;
+			NameData	compresstype;
 
-			GetAppendOnlyEntryAttributes(relation->rd_id, &blocksize,
-										 &safefswritersize,&compresslevel,
-										 &checksum,&compresstype);
+			GetAppendOnlyEntryAttributes(relation->rd_id,&blocksize,
+																	&compresslevel,&checksum,&compresstype);
 
 			stmt->accessMethod = get_am_name(relation->rd_rel->relam);
 
@@ -2780,7 +2787,7 @@ transformDistributedBy(ParseState *pstate,
 		 * if we get here, we haven't a clue what to use for the distribution columns.
 		 * table has one or more attributes and there is still no distribution
 		 * key. pick a default one. the winner is the first attribute that is
-		 * an Cloudberry Database-hashable data type.
+		 * an Apache Cloudberry-hashable data type.
 		 */
 
 		ListCell   *columns;
@@ -2829,7 +2836,7 @@ transformDistributedBy(ParseState *pstate,
 							ereport(NOTICE,
 								(errcode(ERRCODE_SUCCESSFUL_COMPLETION),
 								 errmsg("Table doesn't have 'DISTRIBUTED BY' clause -- Using column "
-										"named '%s' from parent table as the Cloudberry Database data distribution key for this "
+										"named '%s' from parent table as the Apache Cloudberry data distribution key for this "
 										"table. ", inhname),
 								 errhint("The 'DISTRIBUTED BY' clause determines the distribution of data."
 								 		 " Make sure column(s) chosen are the optimal data distribution key to minimize skew.")));
@@ -2852,6 +2859,12 @@ transformDistributedBy(ParseState *pstate,
 				ColumnDef  *column = (ColumnDef *) lfirst(columns);
 				Oid			typeOid;
 
+				if (column->generated == ATTRIBUTE_GENERATED_STORED)
+				{
+					/* generated columns can't in distribution key, skip */
+					continue;
+				}
+
 				typeOid = typenameTypeId(NULL, column->typeName);
 
 				/*
@@ -2871,7 +2884,7 @@ transformDistributedBy(ParseState *pstate,
 						ereport(NOTICE,
 							(errcode(ERRCODE_SUCCESSFUL_COMPLETION),
 							 errmsg("Table doesn't have 'DISTRIBUTED BY' clause -- Using column "
-									"named '%s' as the Cloudberry Database data distribution key for this "
+									"named '%s' as the Apache Cloudberry data distribution key for this "
 									"table. ", column->colname),
 							 errhint("The 'DISTRIBUTED BY' clause determines the distribution of data."
 							 		 " Make sure column(s) chosen are the optimal data distribution key to minimize skew.")));
@@ -2964,6 +2977,20 @@ transformDistributedBy(ParseState *pstate,
 
 					if (strcmp(column->colname, colname) == 0)
 					{
+						if (column->generated == ATTRIBUTE_GENERATED_STORED)
+						{
+							/* The generated columns are computed after distribution.
+							 * If generated columns are used as distribution key, they
+							 * will always use null values to compute the distribution
+							 * key value, and it will cause wrong query results.
+							 */
+							ereport(ERROR,
+									(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+									 errmsg("cannot use generated column in distribution key"),
+									 errdetail("Column \"%s\" is a generated column.",
+												column->colname),
+									 parser_errposition(pstate, column->location)));
+						}
 						found = true;
 						break;
 					}
@@ -3110,6 +3137,13 @@ getPolicyForDistributedBy(DistributedBy *distributedBy, TupleDesc tupdesc)
 					if (strcmp(colname, NameStr(attr->attname)) == 0)
 					{
 						Oid			opclass;
+						Oid			typid;
+
+						typid = getBaseType(attr->atttypid);
+						if (type_is_enum(typid))
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("cannot use ENUM column \"%s\" in DISTRIBUTED BY statement", colname)));
 
 						opclass = cdb_get_opclass_for_column_def(dkelem->opclass, attr->atttypid);
 
@@ -5097,7 +5131,7 @@ setSchemaName(char *context_schema, char **stmt_schema_name)
 /*
  * getLikeDistributionPolicy
  *
- * For Cloudberry Database distributed tables, default to
+ * For Apache Cloudberry distributed tables, default to
  * the same distribution as the first LIKE table, unless
  * we also have INHERITS
  */

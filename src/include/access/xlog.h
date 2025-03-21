@@ -3,7 +3,6 @@
  *
  * PostgreSQL write-ahead log manager
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -165,6 +164,25 @@ extern int  FileEncryptionEnabled;
 /* Hook for plugins to do some startup job */
 typedef void (*Startup_hook_type) (void);
 extern PGDLLIMPORT Startup_hook_type Startup_hook;
+
+/* Hook for extensions to do consistency check */
+typedef void (*ConsistencyCheck_hook_type) (void);
+extern PGDLLIMPORT ConsistencyCheck_hook_type xlog_check_consistency_hook;
+
+/* Hook for extensions to do drop database xlog record
+ *
+ * For custom wal log, when mirror redo xlog, since each restart will start
+ * replaying from the latest checkpoint's REDO location in pg_control, when
+ * processing the xlog of data writing, the entire db directory may be deleted
+ * due to the drop database xlog that has been replayed last time. We need to
+ * provide a hook for the implementation of custom wal log to handle this situation.
+ *
+ * Why can't forget_invalid_pages_db meet the requirements?
+ * Because forget_invalid_pages_db limits the table to be organized in page mode.
+ * For custom Table-Am, their data organization is not necessarily in page mode.
+ */
+typedef void (*XLOGDropDatabase_hook_type)(Oid dbid);
+extern XLOGDropDatabase_hook_type XLOGDropDatabase_hook;
 
 /* Archive modes */
 typedef enum ArchiveMode

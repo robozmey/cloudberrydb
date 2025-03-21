@@ -3,7 +3,6 @@
  * nodeBitmapIndexscan.c
  *	  Routines to support bitmapped index scans of relations
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2007-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -223,9 +222,12 @@ ExecEndBitmapIndexScan(BitmapIndexScanState *node)
 	indexScanDesc = node->biss_ScanDesc;
 
 	/*
-	 * Free the exprcontext ... now dead code, see ExecFreeExprContext
+	 * Free the exprcontext(s) ... now dead code, see ExecFreeExprContext
+	 *
+	 * GPDB: This is not dead code in GPDB, because we don't want to leak
+	 * exprcontexts in a dynamic bitmap index scan.
 	 */
-#ifdef NOT_USED
+#if 1
 	if (node->biss_RuntimeContext)
 		FreeExprContext(node->biss_RuntimeContext, true);
 #endif

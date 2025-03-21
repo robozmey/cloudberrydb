@@ -3,7 +3,6 @@
  * parse_partition_gp.c
  *	  Expand GPDB legacy partition syntax to PostgreSQL commands.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -66,17 +65,20 @@ static List *generateRangePartitions(ParseState *pstate,
 									 GpPartDefElem *elem,
 									 PartitionSpec *subPart,
 									 partname_comp *partnamecomp,
-									 bool *hasImplicitRangeBounds);
+									 bool *hasImplicitRangeBounds,
+									 CreateStmtOrigin origin);
 static List *generateListPartition(ParseState *pstate,
 								   Relation parentrel,
 								   GpPartDefElem *elem,
 								   PartitionSpec *subPart,
-								   partname_comp *partnamecomp);
+								   partname_comp *partnamecomp,
+								   CreateStmtOrigin origin);
 static List *generateDefaultPartition(ParseState *pstate,
 									  Relation parentrel,
 									  GpPartDefElem *elem,
 									  PartitionSpec *subPart,
-									  partname_comp *partnamecomp);
+									  partname_comp *partnamecomp,
+									  CreateStmtOrigin origin);
 
 static char *extract_tablename_from_options(List **options);
 
@@ -324,7 +326,7 @@ consts_to_datums(PartitionKey partkey, List *consts)
  * END, deduce the value and update the corresponding list of CreateStmts.
  */
 static void
-deduceImplicitRangeBounds(ParseState *pstate, Relation parentrel, List *stmts)
+deduceImplicitRangeBounds(ParseState *pstate, Relation parentrel, List *stmts, CreateStmtOrigin origin)
 {
 	PartitionKey key = RelationGetPartitionKey(parentrel);
 	/* GPDB_14_MERGE_FIXEME: most places use true for new api, need to check */
@@ -337,7 +339,7 @@ deduceImplicitRangeBounds(ParseState *pstate, Relation parentrel, List *stmts)
 	 * CREATE TABLE command to create a whole new table, or an ALTER TABLE
 	 * ADD PARTTION to add to an existing table.
 	 */
-	if (desc->nparts == 0)
+	if (origin != ORIGIN_GP_CLASSIC_ALTER_GEN)
 	{
 		/*
 		 * CREATE TABLE, there are no existing partitions. We deduce the
@@ -566,27 +568,79 @@ initPartEveryIterator(ParseState *pstate, PartitionKeyData *partkey, const char 
 	if (end)
 	{
 		Const	   *endConst;
+		Node	*expr = end;
+		PartitionRangeDatum *prd = NULL;
 
-		endConst = transformPartitionBoundValue(pstate,
-												end,
-												part_col_name,
-												part_col_typid,
-												part_col_typmod,
-												part_col_collation);
-		if (endConst->constisnull)
-			ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-				 errmsg("cannot use NULL with range partition specification"),
-				 parser_errposition(pstate, exprLocation(end))));
+		/*
+		 * Infinite range bounds -- "minvalue" and "maxvalue" -- get passed in
+		 * as ColumnRefs.
+		 */
+		if (IsA(expr, ColumnRef))
+		{
+			ColumnRef  *cref = (ColumnRef *) expr;
+			char	   *cname = NULL;
 
-		if (endInclusive)
-			convert_exclusive_start_inclusive_end(endConst,
-												  part_col_typid, part_col_typmod,
-												  false);
-		if (endConst->constisnull)
+			/*
+			 * There should be a single field named either "minvalue" or
+			 * "maxvalue".
+			 */
+			if (list_length(cref->fields) == 1 &&
+				IsA(linitial(cref->fields), String))
+				cname = strVal(linitial(cref->fields));
+
+			if (cname == NULL)
+			{
+				/*
+				 * ColumnRef is not in the desired single-field-name form. For
+				 * consistency between all partition strategies, let the
+				 * expression transformation report any errors rather than
+				 * doing it ourselves.
+				 */
+			}
+			else if (strcmp("minvalue", cname) == 0)
+			{
+				/* FIXME: Cloud be possible when multiple multi-dimension? */
+				prd = makeNode(PartitionRangeDatum);
+				prd->kind = PARTITION_RANGE_DATUM_MINVALUE;
+				prd->value = NULL;
+			}
+			else if (strcmp("maxvalue", cname) == 0)
+			{
+				prd = makeNode(PartitionRangeDatum);
+				prd->kind = PARTITION_RANGE_DATUM_MAXVALUE;
+				prd->value = NULL;
+			}
+		}
+		if (prd)
+		{
+
+			end = (Node *) prd;
 			isEndValMaxValue = true;
 
-		endVal = endConst->constvalue;
+		}
+		else
+		{
+			endConst = transformPartitionBoundValue(pstate,
+													end,
+													part_col_name,
+													part_col_typid,
+													part_col_typmod,
+													part_col_collation);
+			if (endConst->constisnull)
+				ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("cannot use NULL with range partition specification"),
+					 parser_errposition(pstate, exprLocation(end))));
+
+			if (endInclusive)
+				convert_exclusive_start_inclusive_end(endConst,
+													  part_col_typid, part_col_typmod,
+													  false);
+			if (endConst->constisnull)
+				isEndValMaxValue = true;
+
+			endVal = endConst->constvalue;
+		}
 	}
 
 	iter = palloc0(sizeof(PartEveryIterator));
@@ -685,6 +739,8 @@ initPartEveryIterator(ParseState *pstate, PartitionKeyData *partkey, const char 
 	iter->currStart = (Datum) 0;
 	iter->called = false;
 	iter->endReached = false;
+	if (iter->isEndValMaxValue)
+		iter->endReached = false;
 
 	iter->pstate = pstate;
 	iter->end_location = exprLocation(end);
@@ -828,10 +884,14 @@ ChoosePartitionName(const char *parentname, int level, Oid naemspaceId,
 							  false);
 }
 
+/*
+ * Construct a CreateStmt representing a single partition to be created as part
+ * of a legacy style CREATE/ALTER statement.
+ */
 CreateStmt *
 makePartitionCreateStmt(Relation parentrel, char *partname, PartitionBoundSpec *boundspec,
 						PartitionSpec *subPart, GpPartDefElem *elem,
-						partname_comp *partnamecomp)
+						partname_comp *partnamecomp, CreateStmtOrigin origin)
 {
 	CreateStmt *childstmt;
 	RangeVar   *parentrv;
@@ -864,10 +924,11 @@ makePartitionCreateStmt(Relation parentrel, char *partname, PartitionBoundSpec *
 	childstmt->ofTypename = NULL;
 	childstmt->constraints = NIL;
 	childstmt->options = elem->options ? copyObject(elem->options) : NIL;
-	childstmt->oncommit = ONCOMMIT_NOOP;  // FIXME: copy from parent stmt?
+	childstmt->oncommit = ONCOMMIT_NOOP;
 	childstmt->tablespacename = elem->tablespacename ? pstrdup(elem->tablespacename) : NULL;
 	childstmt->accessMethod = elem->accessMethod ? pstrdup(elem->accessMethod) : NULL;
 	childstmt->if_not_exists = false;
+	childstmt->origin = origin;
 	childstmt->distributedBy = make_distributedby_for_rel(parentrel);
 	childstmt->partitionBy = NULL;
 	childstmt->relKind = 0;
@@ -884,7 +945,8 @@ generateRangePartitions(ParseState *pstate,
 						GpPartDefElem *elem,
 						PartitionSpec *subPart,
 						partname_comp *partnamecomp,
-						bool *hasImplicitRangeBounds)
+						bool *hasImplicitRangeBounds,
+						CreateStmtOrigin origin)
 {
 	GpPartitionRangeSpec *boundspec;
 	List				 *result = NIL;
@@ -1015,7 +1077,7 @@ generateRangePartitions(ParseState *pstate,
 			partname = elem->partName;
 
 		childstmt = makePartitionCreateStmt(parentrel, partname, boundspec,
-											copyObject(subPart), elem, partnamecomp);
+											copyObject(subPart), elem, partnamecomp, origin);
 		result = lappend(result, childstmt);
 	}
 
@@ -1029,7 +1091,8 @@ generateListPartition(ParseState *pstate,
 					  Relation parentrel,
 					  GpPartDefElem *elem,
 					  PartitionSpec *subPart,
-					  partname_comp *partnamecomp)
+					  partname_comp *partnamecomp,
+					  CreateStmtOrigin origin)
 {
 	GpPartitionListSpec *gpvaluesspec;
 	PartitionBoundSpec  *boundspec;
@@ -1084,7 +1147,7 @@ generateListPartition(ParseState *pstate,
 
 	boundspec = transformPartitionBound(pstate, parentrel, RelationGetPartitionKey(parentrel), boundspec);
 	childstmt = makePartitionCreateStmt(parentrel, elem->partName, boundspec, subPart,
-										elem, partnamecomp);
+										elem, partnamecomp, origin);
 
 	return list_make1(childstmt);
 }
@@ -1094,7 +1157,8 @@ generateDefaultPartition(ParseState *pstate,
 						 Relation parentrel,
 						 GpPartDefElem *elem,
 						 PartitionSpec *subPart,
-						 partname_comp *partnamecomp)
+						 partname_comp *partnamecomp,
+						 CreateStmtOrigin origin)
 {
 	PartitionBoundSpec *boundspec;
 	CreateStmt *childstmt;
@@ -1106,7 +1170,7 @@ generateDefaultPartition(ParseState *pstate,
 	/* default partition always needs name to be specified */
 	Assert(elem->partName != NULL);
 	childstmt = makePartitionCreateStmt(parentrel, elem->partName, boundspec, subPart,
-										elem, partnamecomp);
+										elem, partnamecomp, origin);
 	return list_make1(childstmt);
 }
 
@@ -1417,7 +1481,7 @@ List *
 generatePartitions(Oid parentrelid, GpPartitionDefinition *gpPartSpec,
 				   PartitionSpec *subPartSpec, const char *queryString,
 				   List *parentoptions, const char *parentaccessmethod,
-				   List *parentattenc, bool forvalidationonly)
+				   List *parentattenc, CreateStmtOrigin origin)
 {
 	Relation	parentrel;
 	List	   *result = NIL;
@@ -1432,6 +1496,12 @@ generatePartitions(Oid parentrelid, GpPartitionDefinition *gpPartSpec,
 	bool		hasImplicitRangeBounds;
 
 	partcomp.level = list_length(ancestors) + 1;
+	if (0 < gp_max_partition_level && partcomp.level > gp_max_partition_level)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+				 errmsg("Exceeds maximum configured partitioning level of %d", gp_max_partition_level)));
+	}
 
 	pstate = make_parsestate(NULL);
 	pstate->p_sourcetext = queryString;
@@ -1463,10 +1533,6 @@ generatePartitions(Oid parentrelid, GpPartitionDefinition *gpPartSpec,
 			parent_tblenc = lappend(parent_tblenc, lfirst(lc));
 	}
 
-	/*
-	 * GPDB_12_MERGE_FIXME: can we optimize grammar to create separate lists
-	 * for elems and encoding in encClauses.
-	 */
 	foreach(lc, gpPartSpec->partDefElems)
 	{
 		Node	   *n = lfirst(lc);
@@ -1631,7 +1697,7 @@ generatePartitions(Oid parentrelid, GpPartitionDefinition *gpPartSpec,
 			}
 
 			if (elem->isDefault)
-				new_parts = generateDefaultPartition(pstate, parentrel, elem, tmpSubPartSpec, &partcomp);
+				new_parts = generateDefaultPartition(pstate, parentrel, elem, tmpSubPartSpec, &partcomp, origin);
 			else
 			{
 				PartitionKey key = RelationGetPartitionKey(parentrel);
@@ -1641,11 +1707,11 @@ generatePartitions(Oid parentrelid, GpPartitionDefinition *gpPartSpec,
 					case PARTITION_STRATEGY_RANGE:
 						new_parts = generateRangePartitions(pstate, parentrel,
 															elem, tmpSubPartSpec, &partcomp,
-															&hasImplicitRangeBounds);
+															&hasImplicitRangeBounds, origin);
 						break;
 
 					case PARTITION_STRATEGY_LIST:
-						new_parts = generateListPartition(pstate, parentrel, elem, tmpSubPartSpec, &partcomp);
+						new_parts = generateListPartition(pstate, parentrel, elem, tmpSubPartSpec, &partcomp, origin);
 						break;
 					default:
 						elog(ERROR, "Not supported partition strategy");
@@ -1669,8 +1735,8 @@ generatePartitions(Oid parentrelid, GpPartitionDefinition *gpPartSpec,
 	 * or END specification. While that's true for ADD PARTITION, it's not
 	 * while setting template.
 	 */
-	if (hasImplicitRangeBounds && !forvalidationonly)
-		deduceImplicitRangeBounds(pstate, parentrel, result);
+	if (hasImplicitRangeBounds)
+		deduceImplicitRangeBounds(pstate, parentrel, result, origin);
 
 	free_parsestate(pstate);
 	table_close(parentrel, NoLock);

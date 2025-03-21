@@ -143,6 +143,20 @@ SELECT * FROM table_env WHERE val LIKE 'GP_QUERY%\%' ESCAPE '&' ORDER BY val ASC
  GP_QUERY_STRING=SELECT * FROM table_env WHERE val LIKE 'GP_QUERY%\%' ESCAPE '&' ORDER BY val ASC;
 (1 row)
 
+-- ensure squelching on master
+CREATE EXTERNAL WEB TABLE table_master (val TEXT)
+  EXECUTE E'cat @abs_srcdir@/data/lineitem.csv' ON MASTER
+  FORMAT 'TEXT' (ESCAPE 'OFF');
+BEGIN;
+DECLARE _psql_cursor NO SCROLL CURSOR FOR SELECT 1 FROM table_master;
+FETCH FORWARD 1 FROM _psql_cursor;
+ ?column? 
+----------
+        1
+(1 row)
+
+CLOSE _psql_cursor;
+COMMIT;
 -- echo will behave differently on different platforms, force to use bash with -E option
 CREATE EXTERNAL WEB TABLE table_qry (val TEXT)
   EXECUTE E'/usr/bin/env bash -c ''echo -E "$GP_QUERY_STRING"''' ON SEGMENT 0
@@ -343,6 +357,48 @@ DROP OWNED BY test_role_issue_12748;
 -- Clean up.
 DROP ROLE test_role_issue_12748;
 DROP PROTOCOL dummy_protocol_issue_12748;
+-- Test pg_exttable's encoding: QE's encoding should be consistent with QD
+-- GitHub Issue #9727: https://github.com/greenplum-db/gpdb/issues/9727
+SET client_encoding = 'ISO-8859-1';
+CREATE EXTERNAL TABLE issue_9727 (d varchar(20)) location ('gpfdist://9727/d.dat') format 'csv' (DELIMITER '|');
+SELECT encoding from pg_exttable where urilocation='{gpfdist://9727:8080/d.dat}';
+ encoding 
+----------
+        6
+(1 row)
+
+SELECT encoding from gp_dist_random('pg_exttable') where urilocation='{gpfdist://9727:8080/d.dat}';
+ encoding 
+----------
+        6
+        6
+        6
+(3 rows)
+
+DROP FOREIGN TABLE issue_9727;
+RESET client_encoding;
+-- Test external table location escape
+-- GitHub Issue #17179: https://github.com/greenplum-db/gpdb/issues/17179
+CREATE READABLE EXTERNAL TABLE public.test_ext
+(
+  id integer
+)
+LOCATION(
+  'file://gpdev/tmp/test1|.|tx||t|||',
+  'file://gpdev/tmp/test2|.|tx||t||||'
+)
+FORMAT 'TEXT' (
+  delimiter 'off' null E'\\N' escape E'\\'
+)
+ENCODING 'UTF8'
+LOG ERRORS PERSISTENTLY SEGMENT REJECT LIMIT 10 PERCENT;
+SELECT urilocation FROM pg_exttable WHERE reloid = 'public.test_ext'::regclass;
+                              urilocation                               
+------------------------------------------------------------------------
+ {file://gpdev/tmp/test1|.|tx||t|||,file://gpdev/tmp/test2|.|tx||t||||}
+(1 row)
+
+DROP EXTERNAL TABLE public.test_ext;
 --
 -- WET tests
 --
@@ -703,7 +759,7 @@ CREATE EXTERNAL TABLE exttab_basic_6( i int, j text )
 LOCATION ('file://@hostname@@abs_srcdir@/data/exttab_more_errors.data') FORMAT 'TEXT' (DELIMITER '|')
 LOG ERRORS SEGMENT REJECT LIMIT 100;
 CREATE TABLE exttab_ctas_1 as SELECT * FROM exttab_basic_6;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 NOTICE:  found 6 data formatting errors (6 or more input rows), rejected related input data
 -- CTAS should go through fine
@@ -738,7 +794,7 @@ LOCATION ('file://@hostname@@abs_srcdir@/data/exttab_more_errors.data') FORMAT '
 LOG ERRORS SEGMENT REJECT LIMIT 5;
 -- CTAS should fail
 CREATE TABLE exttab_ctas_2 AS select * from exttab_basic_7;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 ERROR:  segment reject limit reached, aborting operation
 DETAIL:  Last error was: invalid input syntax for type integer: "error_1", column i  (seg0 slice1 127.0.0.1:40000 pid=12121)
@@ -1690,7 +1746,7 @@ SELECT * FROM gp_read_error_log('exttab_udfs_2')
 DROP TABLE IF EXISTS exttab_udfs_insert_1;
 NOTICE:  table "exttab_udfs_insert_1" does not exist, skipping
 CREATE TABLE exttab_udfs_insert_1(a boolean);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 SELECT gp_truncate_error_log('exttab_udfs_1');
  gp_truncate_error_log 
@@ -1795,9 +1851,6 @@ NOTICE:  found 2 data formatting errors (2 or more input rows), rejected related
 ERROR:  segment reject limit reached, aborting operation
 DETAIL:  Last error was: invalid input syntax for type integer: "error_1", column i  (seg0 slice1 127.0.0.1:40000 pid=12226)
 CONTEXT:  External table exttab_udfs_2, line 7 of file://@hostname@@abs_srcdir@/data/exttab_more_errors.data, column i
-SQL statement "INSERT INTO exttab_udfs_insert_2
-  SELECT i, j from exttab_udfs_2"
-PL/pgSQL function exttab_udfs_func2() line 25 at SQL statement
 SELECT COUNT(*) > 0 FROM
 (
 SELECT * FROM gp_read_error_log('exttab_udfs_1')
@@ -1826,9 +1879,6 @@ NOTICE:  found 2 data formatting errors (2 or more input rows), rejected related
 ERROR:  segment reject limit reached, aborting operation
 DETAIL:  Last error was: invalid input syntax for type integer: "error_1", column i  (seg0 slice1 127.0.0.1:40000 pid=12217)
 CONTEXT:  External table exttab_udfs_2, line 7 of file://@hostname@@abs_srcdir@/data/exttab_more_errors.data, column i
-SQL statement "INSERT INTO exttab_udfs_insert_2
-  SELECT i, j from exttab_udfs_2"
-PL/pgSQL function exttab_udfs_func2() line 25 at SQL statement
 SELECT COUNT(*) > 0 FROM
 (
 SELECT * FROM gp_read_error_log('exttab_udfs_1')
@@ -1857,9 +1907,6 @@ NOTICE:  found 2 data formatting errors (2 or more input rows), rejected related
 ERROR:  segment reject limit reached, aborting operation
 DETAIL:  Last error was: invalid input syntax for type integer: "error_1", column i  (seg0 slice1 127.0.0.1:40000 pid=12226)
 CONTEXT:  External table exttab_udfs_2, line 7 of file://@hostname@@abs_srcdir@/data/exttab_more_errors.data, column i
-SQL statement "INSERT INTO exttab_udfs_insert_2
-  SELECT i, j from exttab_udfs_2"
-PL/pgSQL function exttab_udfs_func2() line 25 at SQL statement
 SELECT COUNT(*) > 0 FROM
 (
 SELECT * FROM gp_read_error_log('exttab_udfs_1')
@@ -1884,15 +1931,12 @@ SELECT gp_truncate_error_log('exttab_udfs_2');
 (1 row)
 
 CREATE TABLE exttab_udfs_ctas_2 AS SELECT * FROM exttab_udfs_func2();
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'exttab_udfs_func2' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'exttab_udfs_func2' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 NOTICE:  found 2 data formatting errors (2 or more input rows), rejected related input data
 ERROR:  segment reject limit reached, aborting operation
 DETAIL:  Last error was: invalid input syntax for type integer: "error_1", column i  (seg0 slice1 127.0.0.1:40000 pid=12217)
 CONTEXT:  External table exttab_udfs_2, line 7 of file://@hostname@@abs_srcdir@/data/exttab_more_errors.data, column i
-SQL statement "INSERT INTO exttab_udfs_insert_2
-  SELECT i, j from exttab_udfs_2"
-PL/pgSQL function exttab_udfs_func2() line 25 at SQL statement
 SELECT COUNT(*) > 0 FROM
 (
 SELECT * FROM gp_read_error_log('exttab_udfs_1')
@@ -2073,7 +2117,7 @@ SELECT * FROM gp_read_error_log('exttab_views_2')
 DROP TABLE IF EXISTS exttab_views_insert_1;
 NOTICE:  table "exttab_views_insert_1" does not exist, skipping
 CREATE TABLE exttab_views_insert_1 (i int, j int, k text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 SELECT gp_truncate_error_log('exttab_views_1');
  gp_truncate_error_log 
@@ -2127,7 +2171,7 @@ SELECT gp_truncate_error_log('exttab_views_2');
 
 -- Should fail
 CREATE TABLE exttab_views_ctas_1 AS SELECT * FROM exttab_views_3 where length(j) < 100;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'j' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'j' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 ERROR:  segment reject limit reached, aborting operation
 DETAIL:  Last error was: invalid input syntax for type integer: "error_1", column i  (seg0 slice1 127.0.0.1:40000 pid=12322)
@@ -2165,7 +2209,7 @@ SELECT gp_truncate_error_log('exttab_views_2');
 
 -- Should fail here
 CREATE TABLE exttab_views_ctas_1 AS SELECT * FROM exttab_views_3;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'j' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'j' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 ERROR:  segment reject limit reached, aborting operation
 DETAIL:  Last error was: invalid input syntax for type integer: "error_1", column i  (seg0 slice1 127.0.0.1:40000 pid=12313)
@@ -2593,7 +2637,7 @@ LOG ERRORS SEGMENT REJECT LIMIT 10;
 DROP TABLE IF EXISTS test_ext_heap_join;
 NOTICE:  table "test_ext_heap_join" does not exist, skipping
 CREATE TABLE test_ext_heap_join( i int, j text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 -- Turn off stats
 SET gp_autostats_mode = 'NONE';
@@ -4883,6 +4927,7 @@ INSERT INTO test_part_integrity_p1 VALUES (1,2),(1,3);
 CREATE EXTERNAL WEB TABLE test_part_integrity_p2 (LIKE test_part_integrity_p1) EXECUTE 'echo 2,2;echo 2,3' ON MASTER FORMAT 'CSV';
 ALTER TABLE test_part_integrity ATTACH PARTITION test_part_integrity_p1 FOR VALUES IN (1);
 ALTER TABLE test_part_integrity ATTACH PARTITION test_part_integrity_p2 FOR VALUES IN (2);
+NOTICE:  partition constraints are not validated when attaching a readable external table
 SELECT * FROM test_part_integrity;
  a | b 
 ---+---
@@ -4893,10 +4938,14 @@ SELECT * FROM test_part_integrity;
 (4 rows)
 
 DROP TABLE test_part_integrity;
+-- Testing creating external table with replicated distribution
+-- Should report error
+CREATE WRITABLE EXTERNAL WEB TABLE ext_dist_repl(a int, b int) EXECUTE 'some command' FORMAT 'TEXT' DISTRIBUTED REPLICATED;
+ERROR:  external tables can't have DISTRIBUTED REPLICATED clause
 -- Testing altering the distribution policy of external tables.
 CREATE WRITABLE EXTERNAL WEB TABLE ext_w_dist(a int, b int) EXECUTE 'cat > @abs_srcdir@/data/ext_w_dist.tbl' FORMAT 'TEXT' (DELIMITER AS '|' NULL AS 'null' ESCAPE AS ' ') DISTRIBUTED BY (a);
 ALTER TABLE ext_w_dist SET WITH (reorganize=true); -- should error out if forcing reorganize
-ERROR:  "ext_w_dist" is not a table or directory table
+ERROR:  cannot reorganize external table "ext_w_dist"
 SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'ext_w_dist'::regclass;
  policytype | distkey 
 ------------+---------
@@ -4904,48 +4953,48 @@ SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'ext_w_d
 (1 row)
 
 ALTER TABLE ext_w_dist SET DISTRIBUTED BY (b);
-ERROR:  "ext_w_dist" is not a table or directory table
 SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'ext_w_dist'::regclass;
  policytype | distkey 
 ------------+---------
- p          | 1
+ p          | 2
 (1 row)
 
 ALTER TABLE ext_w_dist SET DISTRIBUTED RANDOMLY;
-ERROR:  "ext_w_dist" is not a table or directory table
 SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'ext_w_dist'::regclass;
  policytype | distkey 
 ------------+---------
- p          | 1
+ p          | 
 (1 row)
 
+ALTER TABLE ext_w_dist SET DISTRIBUTED REPLICATED; -- ERROR
+ERROR:  SET DISTRIBUTED REPLICATED is not supported for external table
 CREATE EXTERNAL WEB TABLE ext_r_dist(a int) EXECUTE 'printf ${GP_SEGMENT_ID}' FORMAT 'TEXT' DISTRIBUTED BY (a);
 ERROR:  readable external tables can't specify a DISTRIBUTED BY clause
 CREATE EXTERNAL WEB TABLE ext_r_dist(a int) EXECUTE 'printf ${GP_SEGMENT_ID}' FORMAT 'TEXT';
 ALTER TABLE ext_r_dist SET DISTRIBUTED BY (a); -- should error out altering readable external tables' distribution policy
-ERROR:  "ext_r_dist" is not a table or directory table
+ERROR:  cannot set distribution policy of readable external table "ext_r_dist"
 -- Testing external table as the partition child.
 CREATE TABLE part_root(a int) PARTITION BY RANGE(a);
 CREATE TABLE part_child (LIKE part_root);
-CREATE WRITABLE EXTERNAL WEB TABLE part_ext_w(a int) EXECUTE 'cat > @abs_srcdir@/data/part_ext.tbl' FORMAT 'TEXT' (DELIMITER AS '|' NULL AS 'null' ESCAPE AS ' ') DISTRIBUTED BY (a);
+CREATE EXTERNAL WEB TABLE part_ext_r(a int) EXECUTE 'cat > @abs_srcdir@/data/part_ext.tbl' FORMAT 'TEXT' (DELIMITER AS '|' NULL AS 'null' ESCAPE AS ' ');
+CREATE WRITABLE EXTERNAL WEB TABLE part_ext_w(a int, b int) EXECUTE 'cat > @abs_srcdir@/data/part_ext.tbl' FORMAT 'TEXT' (DELIMITER AS '|' NULL AS 'null' ESCAPE AS ' ') DISTRIBUTED BY (a);
 ALTER TABLE part_root ATTACH PARTITION part_child FOR VALUES FROM (0) TO (10);
-ALTER TABLE part_root ATTACH PARTITION part_ext_w FOR VALUES FROM (10) TO (20);
--- Adding column should work fine
+ALTER TABLE part_root ATTACH PARTITION part_ext_r FOR VALUES FROM (10) TO (20);
+NOTICE:  partition constraints are not validated when attaching a readable external table
+-- Adding column on readable external table should work fine
 ALTER TABLE part_root ADD COLUMN b int;
-INSERT INTO part_root SELECT i,i FROM generate_series(1,19)i;
--- altering distribution policy should work fine
+-- altering distribution policy on writable external table should work fine
 SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'part_ext_w'::regclass;
  policytype | distkey 
 ------------+---------
  p          | 1
 (1 row)
 
-ALTER TABLE part_root SET DISTRIBUTED BY (b);
-ERROR:  "part_ext_w" is not a table or directory table
+ALTER TABLE part_ext_w SET DISTRIBUTED BY (b);
 SELECT policytype, distkey FROM gp_distribution_policy WHERE localoid = 'part_ext_w'::regclass;
  policytype | distkey 
 ------------+---------
- p          | 1
+ p          | 2
 (1 row)
 
 DROP TABLE part_root;
@@ -4959,22 +5008,22 @@ FORMAT 'text' (delimiter '|') LOG ERRORS SEGMENT REJECT LIMIT 100;
 CREATE EXTERNAL TABLE ext_persistently (c INT)
 location ('file://@hostname@@abs_srcdir@/data/ext_persistently.tbl' )
 FORMAT 'text' (delimiter '|') LOG ERRORS PERSISTENTLY SEGMENT REJECT LIMIT 100;
-SELECT logerrors from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_false';
- logerrors 
------------
- f
+SELECT logerrors, options from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_false';
+ logerrors | options 
+-----------+---------
+ f         | 
 (1 row)
 
-SELECT logerrors from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_true';
- logerrors 
------------
- t
+SELECT logerrors, options from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_true';
+ logerrors | options 
+-----------+---------
+ t         | 
 (1 row)
 
-SELECT logerrors from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_persistently';
- logerrors 
------------
- t
+SELECT logerrors, options from pg_exttable a, pg_class b where a.reloid = b.oid and b.relname = 'ext_persistently';
+ logerrors |           options           
+-----------+-----------------------------
+ t         | {error_log_persistent=true}
 (1 row)
 
 -- drop tables

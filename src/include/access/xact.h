@@ -4,7 +4,6 @@
  *	  postgres transaction system definitions
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -115,6 +114,12 @@ extern int	MyXactFlags;
  * logged any Access Exclusive Locks.
  */
 #define XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK	(1U << 1)
+
+/*
+ * XACT_FLAGS_NEEDIMMEDIATECOMMIT - records whether the top level statement
+ * is one that requires immediate commit, such as CREATE DATABASE.
+ */
+#define XACT_FLAGS_NEEDIMMEDIATECOMMIT			(1U << 2)
 
 /*
  *	start- and end-of-transaction callbacks for dynamically loaded modules
@@ -425,7 +430,7 @@ typedef struct xl_xact_distributed_forget
  * ----------------
  */
 
-/* Cloudberry Database specific */ 
+/* Apache Cloudberry specific */ 
 extern void SetSharedTransactionId_writer(DtxContext distributedTransactionContext);
 extern void SetSharedTransactionId_reader(FullTransactionId xid, CommandId cid, DtxContext distributedTransactionContext);
 extern bool IsTransactionState(void);
@@ -502,7 +507,7 @@ extern void UnregisterXactCallbackOnce(XactCallback callback, void *arg);
 extern void RegisterSubXactCallback(SubXactCallback callback, void *arg);
 extern void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
 
-extern void RecordDistributedForgetCommitted(DistributedTransactionId gxid);
+extern XLogRecPtr RecordDistributedForgetCommitted(DistributedTransactionId gxid);
 extern bool IsSubTransactionAssignmentPending(void);
 extern void MarkSubTransactionAssigned(void);
 

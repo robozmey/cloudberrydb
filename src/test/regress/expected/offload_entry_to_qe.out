@@ -1,7 +1,7 @@
 set optimizer = off; -- orca is currently unsupported
 set enable_offload_entry_to_qe = on;
 create temp table tst(x int, y int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create index tst_y_idx on tst(y);
 insert into tst values (1, 1), (1, 1), (2, 1), (10, 10);
@@ -90,26 +90,20 @@ explain (costs off, locus) select count(x) over () from tst group by x limit 1;
 (14 rows)
 
 explain (costs off, locus) select distinct min(x), max(x) from tst;
-                            QUERY PLAN                            
-------------------------------------------------------------------
+                      QUERY PLAN                      
+------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1)
    Locus: Entry
-   ->  Unique
+   ->  Finalize Aggregate
          Locus: SingleQE
-         Group Key: (min(x)), (max(x))
-         ->  Sort
+         ->  Gather Motion 3:1  (slice2; segments: 3)
                Locus: SingleQE
-               Sort Key: (min(x)), (max(x))
-               ->  Finalize Aggregate
-                     Locus: SingleQE
-                     ->  Gather Motion 3:1  (slice2; segments: 3)
-                           Locus: SingleQE
-                           ->  Partial Aggregate
-                                 Locus: Hashed
-                                 ->  Seq Scan on tst
-                                       Locus: Hashed
+               ->  Partial Aggregate
+                     Locus: Hashed
+                     ->  Seq Scan on tst
+                           Locus: Hashed
  Optimizer: Postgres query optimizer
-(17 rows)
+(11 rows)
 
 reset enable_offload_entry_to_qe;  -- compare results with GUC set to false
 select count(x) from tst where x > 1;
@@ -868,6 +862,7 @@ select min(y), max(y) from part;
 
 -- test partitioned table with external table as partition
 ALTER TABLE part EXCHANGE PARTITION part1 WITH TABLE tst_exttbl;
+NOTICE:  partition constraints are not validated when attaching a readable external table
 explain (costs off, locus) select min(y), max(y) from part;
                       QUERY PLAN                       
 -------------------------------------------------------
@@ -899,6 +894,7 @@ select min(y), max(y) from part;
 (1 row)
 
 ALTER TABLE part EXCHANGE PARTITION part1 WITH TABLE tst_exttbl_all;
+NOTICE:  partition constraints are not validated when attaching a readable external table
 explain (costs off, locus) select min(y), max(y) from part;
                               QUERY PLAN                               
 -----------------------------------------------------------------------

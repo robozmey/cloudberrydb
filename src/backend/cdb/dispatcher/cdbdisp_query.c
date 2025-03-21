@@ -26,6 +26,7 @@
 #include "cdb/cdbmutate.h"
 #include "cdb/cdbsrlz.h"
 #include "cdb/tupleremap.h"
+#include "catalog/namespace.h" /* for GetTempNamespaceState() */
 #include "nodes/execnodes.h"
 #include "pgstat.h"
 #include "tcop/tcopprot.h"
@@ -72,7 +73,7 @@ typedef struct
 } SliceVec;
 
 /*
- * Parameter structure for Cloudberry Database Queries
+ * Parameter structure for Apache Cloudberry Queries
  */
 typedef struct DispatchCommandQueryParms
 {
@@ -124,12 +125,10 @@ static List *formIdleSegmentIdList(void);
 
 static bool param_walker(Node *node, ParamWalkerContext *context);
 static Oid	findParamType(List *params, int paramid);
-static Bitmapset *getExecParamsToDispatch(PlannedStmt *stmt, ParamExecData *intPrm,
-										  List **paramExecTypes);
+static Bitmapset *getExecParamsToDispatch(PlannedStmt *stmt, ParamExecData *intPrm);
 static SerializedParams *serializeParamsForDispatch(QueryDesc *queryDesc,
 													ParamListInfo externParams,
 													ParamExecData *execParams,
-													List *paramExecTypes,
 													Bitmapset *sendParams);
 
 
@@ -144,8 +143,6 @@ static SerializedParams *serializeParamsForDispatch(QueryDesc *queryDesc,
  * 'sendParams' indicates which parameters are included and 'execParams'
  * contains their values. 'paramExecTypes' is a list indexed by paramid,
  * containing the datatype OID of each parameter.
- * GPDB_11_MERGE_FIXME: In PostgreSQL v11, we have paramExecTypes in
- * PlannedStmt, so it will no longer be necessary to pass it as a param.
  *
  * If cancelOnError is true, then any dispatching error, a cancellation
  * request from the client, or an error from any of the associated QEs,
@@ -184,7 +181,6 @@ CdbDispatchPlan(struct QueryDesc *queryDesc,
 {
 	PlannedStmt *stmt;
 	bool		is_SRI = false;
-	List	   *paramExecTypes;
 	Bitmapset  *sendParams;
 
 	Assert(Gp_role == GP_ROLE_DISPATCH);
@@ -244,11 +240,11 @@ CdbDispatchPlan(struct QueryDesc *queryDesc,
 	 * values that need to be included with the query. Then serialize them,
 	 * and also any PARAM_EXTERN parameters.
 	 */
-	sendParams = getExecParamsToDispatch(stmt, execParams, &paramExecTypes);
+	sendParams = getExecParamsToDispatch(stmt, execParams);
 	queryDesc->ddesc->paramInfo =
 		serializeParamsForDispatch(queryDesc,
 								   queryDesc->params,
-								   execParams, paramExecTypes, sendParams);
+								   execParams, sendParams);
 
 	/*
 	 * Cursor queries and bind/execute path queries don't run on the
@@ -333,12 +329,18 @@ CdbDispatchSetCommand(const char *strCommand, bool cancelOnError)
 
 		cdbdisp_dispatchToGang(ds, rg, -1);
 	}
-	addToGxactDtxSegments(primaryGang);
 
 	/*
-	 * No need for two-phase commit, so no need to call
-	 * addToGxactDtxSegments.
+	 * If there is an explicit BEGIN, we'll begin transaction and setup DTX 
+	 * context on QEs at the time of the first SET command. So we need to
+	 * add dtxSegments to make sure we end the transaction at the time of END/COMMIT.
+	 *
+	 * We shouldn't do this when there's no explicit BEGIN, though, because
+	 * if QEs do not have DTX context being setup, they would not recognize
+	 * the DTX protocol command that is going to be sent to the dtxSegments.
 	 */
+	if (isDtxExplicitBegin())
+		addToGxactDtxSegments(primaryGang);
 
 	cdbdisp_waitDispatchFinish(ds);
 
@@ -357,7 +359,7 @@ CdbDispatchSetCommand(const char *strCommand, bool cancelOnError)
 	{
 
 		FlushErrorState();
-		ReThrowError(qeError);
+		ThrowErrorData(qeError);
 	}
 
 	cdbdisp_destroyDispatcherState(ds);
@@ -513,7 +515,7 @@ cdbdisp_dispatchCommandInternal(DispatchCommandQueryParms *pQueryParms,
 	if (qeError)
 	{
 		FlushErrorState();
-		ReThrowError(qeError);
+		ThrowErrorData(qeError);
 	}
 
 	/* collect pgstat from QEs for current transaction level */
@@ -869,6 +871,7 @@ buildGpQueryString(DispatchCommandQueryParms *pQueryParms,
 	Oid			currentUserId = GetUserId();
 	int32		numsegments = getgpsegmentCount();
 	StringInfoData resgroupInfo;
+	Oid			tempNamespaceId, tempToastNamespaceId;
 
 	int			tmp,
 				len;
@@ -920,7 +923,10 @@ buildGpQueryString(DispatchCommandQueryParms *pQueryParms,
 		sddesc_len +
 		sizeof(numsegments) +
 		sizeof(resgroupInfo.len) +
-		resgroupInfo.len;
+		resgroupInfo.len +
+		sizeof(tempNamespaceId) +
+		sizeof(tempToastNamespaceId) +
+		0;
 
 	shared_query = palloc(total_query_len);
 
@@ -1015,11 +1021,20 @@ buildGpQueryString(DispatchCommandQueryParms *pQueryParms,
 		pos += resgroupInfo.len;
 	}
 
-	len = pos - shared_query - 1;
+	/* pass process local variables to QEs */
+	GetTempNamespaceState(&tempNamespaceId, &tempToastNamespaceId);
+	tempNamespaceId = htonl(tempNamespaceId);
+	tempToastNamespaceId = htonl(tempToastNamespaceId);
+
+	memcpy(pos, &tempNamespaceId, sizeof(tempNamespaceId));
+	pos += sizeof(tempNamespaceId);
+	memcpy(pos, &tempToastNamespaceId, sizeof(tempToastNamespaceId));
+	pos += sizeof(tempToastNamespaceId);
 
 	/*
 	 * fill in length placeholder
 	 */
+	len = pos - shared_query - 1;
 	tmp = htonl(len);
 	memcpy(shared_query + 1, &tmp, sizeof(len));
 
@@ -1203,7 +1218,7 @@ cdbdisp_dispatchX(QueryDesc* queryDesc,
 		if (qeError)
 		{
 			FlushErrorState();
-			ReThrowError(qeError);
+			ThrowErrorData(qeError);
 		}
 
 		/*
@@ -1354,7 +1369,7 @@ CdbDispatchCopyStart(struct CdbCopy *cdbCopy, Node *stmt, int flags)
 	if (!cdbdisp_getDispatchResults(ds, &error))
 	{
 		FlushErrorState();
-		ReThrowError(error);
+		ThrowErrorData(error);
 	}
 
 	/*
@@ -1395,6 +1410,16 @@ formIdleSegmentIdList(void)
 		for (i = 0; i < cdbs->total_segment_dbs; i++)
 		{
 			CdbComponentDatabaseInfo *cdi = &cdbs->segment_db_info[i];
+			for (j = 0; j < cdi->numIdleQEs; j++)
+				segments = lappend_int(segments, cdi->config->segindex);
+		}
+	}
+
+	if (cdbs->entry_db_info != NULL)
+	{
+		for (i = 0; i < cdbs->total_entry_dbs; i++)
+		{
+			CdbComponentDatabaseInfo *cdi = &cdbs->entry_db_info[i];
 			for (j = 0; j < cdi->numIdleQEs; j++)
 				segments = lappend_int(segments, cdi->config->segindex);
 		}
@@ -1444,7 +1469,6 @@ static SerializedParams *
 serializeParamsForDispatch(QueryDesc *queryDesc,
 						   ParamListInfo externParams,
 						   ParamExecData *execParams,
-						   List *paramExecTypes,
 						   Bitmapset *sendParams)
 {
 	SerializedParams *result = makeNode(SerializedParams);
@@ -1493,7 +1517,7 @@ serializeParamsForDispatch(QueryDesc *queryDesc,
 	/* materialize Exec params */
 	if (!bms_is_empty(sendParams))
 	{
-		int			numExecParams = list_length(paramExecTypes);
+		int			numExecParams = list_length(queryDesc->plannedstmt->paramExecTypes);
 		int			x;
 
 		result->nExecParams = numExecParams;
@@ -1504,7 +1528,7 @@ serializeParamsForDispatch(QueryDesc *queryDesc,
 		{
 			ParamExecData *prm = &execParams[x];
 			SerializedParamExecData *sprm = &result->execParams[x];
-			Oid			ptype = list_nth_oid(paramExecTypes, x);
+			Oid			ptype = list_nth_oid(queryDesc->plannedstmt->paramExecTypes, x);
 
 			sprm->value = prm->value;
 			sprm->isnull = prm->isnull;
@@ -1539,8 +1563,7 @@ serializeParamsForDispatch(QueryDesc *queryDesc,
  * in the EState->es_param_exec_vals array.
  */
 static Bitmapset *
-getExecParamsToDispatch(PlannedStmt *stmt, ParamExecData *intPrm,
-						List **paramExecTypes)
+getExecParamsToDispatch(PlannedStmt *stmt, ParamExecData *intPrm)
 {
 	ParamWalkerContext context;
 	int			i;
@@ -1549,10 +1572,8 @@ getExecParamsToDispatch(PlannedStmt *stmt, ParamExecData *intPrm,
 	Bitmapset  *sendParams = NULL;
 
 	if (nIntPrm == 0)
-	{
-		*paramExecTypes = NIL;
 		return NULL;
-	}
+	
 	Assert(intPrm != NULL);		/* So there must be some internal parameters. */
 
 	/*
@@ -1587,12 +1608,10 @@ getExecParamsToDispatch(PlannedStmt *stmt, ParamExecData *intPrm,
 	 * Now set the bit corresponding to each init plan param. Use the datatype
 	 * info harvested above.
 	 */
-	*paramExecTypes = NIL;
 	for (i = 0; i < nIntPrm; i++)
 	{
 		Oid			paramType = findParamType(context.params, i);
 
-		*paramExecTypes = lappend_oid(*paramExecTypes, paramType);
 		if (paramType != InvalidOid)
 		{
 			sendParams = bms_add_member(sendParams, i);

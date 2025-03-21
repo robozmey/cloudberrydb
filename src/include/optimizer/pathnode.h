@@ -4,7 +4,6 @@
  *	  prototypes for pathnode.c, relnode.c.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -258,7 +257,6 @@ extern UpperUniquePath *create_upper_unique_path(PlannerInfo *root,
                                                  Path *subpath,
                                                  int numCols,
                                                  double numGroups);
-struct HashAggTableSizes; /* defined in execHHashagg.h */
 extern AggPath *create_agg_path(PlannerInfo *root,
 				RelOptInfo *rel,
 				Path *subpath,

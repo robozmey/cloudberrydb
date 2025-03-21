@@ -4,7 +4,6 @@
  *	  Post-processing of a completed plan tree: fix references to subplan
  *	  vars, compute regproc values for operators, etc
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -2554,6 +2553,7 @@ set_join_references(PlannerInfo *root, Join *join, int rtoffset)
 		case JOIN_LEFT:
 		case JOIN_SEMI:
 		case JOIN_ANTI:
+		case JOIN_LASJ_NOTIN:
 			inner_itlist->has_non_vars = false;
 			break;
 		case JOIN_RIGHT:
@@ -2984,17 +2984,6 @@ build_tlist_index(List *tlist)
 		Expr	   *expr = tle->expr;
 
 		Assert(expr);
-
-		/*
-		 * Allow a Var in parent node's expr to find matching Var in tlist
-		 * ignoring any RelabelType nodes atop the tlist Var.  Also set
-		 * has_non_vars so tlist expr can be matched as a whole.
-		 */
-		while (IsA(expr, RelabelType))
-		{
-			expr = ((RelabelType *)expr)->arg;
-			itlist->has_non_vars = true;
-		}
 
 		if (expr && IsA(expr, Var))
 		{
@@ -3474,8 +3463,6 @@ fix_join_expr_mutator(Node *node, fix_join_expr_context *context)
 	}
 	if (context->inner_itlist && context->inner_itlist->has_non_vars &&
 	        context->use_inner_tlist_for_matching_nonvars)
-
-	if (context->inner_itlist && context->inner_itlist->has_non_vars)
 	{
 		newvar = search_indexed_tlist_for_non_var((Expr *) node,
 												  context->inner_itlist,

@@ -3,7 +3,6 @@
  * lmgr.c
  *	  POSTGRES lock manager code
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -1151,6 +1150,27 @@ LockSharedObject(Oid classid, Oid objid, uint16 objsubid,
 
 	/* Make sure syscaches are up-to-date with any changes we waited for */
 	AcceptInvalidationMessages();
+}
+
+/*
+ *		ConditionalLockSharedObject
+ *
+ * As above, but only lock if we can get the lock without blocking.
+ * Returns true iff the lock was acquired.
+ */
+bool
+ConditionalLockSharedObject(Oid classid, Oid objid, uint16 objsubid,
+							LOCKMODE lockmode)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_OBJECT(tag,
+					   InvalidOid,
+					   classid,
+					   objid,
+					   objsubid);
+
+	return (LockAcquire(&tag, lockmode, false, true) != LOCKACQUIRE_NOT_AVAIL);
 }
 
 /*

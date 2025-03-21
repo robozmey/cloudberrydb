@@ -127,9 +127,6 @@
 /* Define to 1 if you have the `backtrace_symbols' function. */
 #undef HAVE_BACKTRACE_SYMBOLS
 
-/* Define to 1 if you have the `BIO_get_data' function. */
-#undef HAVE_BIO_GET_DATA
-
 /* Define to 1 if you have the `BIO_meth_new' function. */
 #undef HAVE_BIO_METH_NEW
 
@@ -935,7 +932,7 @@
 /* Define to 1 to use <stdbool.h> to define type bool. */
 #undef PG_USE_STDBOOL
 
-/* Postgres version Cloudberry Database is based on */
+/* Postgres version Apache Cloudberry is based on */
 /* PostgreSQL version as a string */
 #undef PG_VERSION
 

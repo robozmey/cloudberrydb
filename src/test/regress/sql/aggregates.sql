@@ -1043,21 +1043,28 @@ create aggregate my_sum(int4)
    finalfunc = sum_finalfn
 );
 
+-- reset the plan cache, sometimes it would re-plan these prepared statements and log ORCA fallbacks
+discard plans;
 -- aggregate state should be shared as aggs are the same.
 select my_avg(one),my_avg(one) from (values(1),(3)) t(one);
 
+discard plans;
 -- aggregate state should be shared as transfn is the same for both aggs.
 select my_avg(one),my_sum(one) from (values(1),(3)) t(one);
 
+discard plans;
 -- same as previous one, but with DISTINCT, which requires sorting the input.
 select my_avg(distinct one),my_sum(distinct one) from (values(1),(3),(1)) t(one);
 
+discard plans;
 -- shouldn't share states due to the distinctness not matching.
 select my_avg(distinct one),my_sum(one) from (values(1),(3)) t(one);
 
+discard plans;
 -- shouldn't share states due to the filter clause not matching.
 select my_avg(one) filter (where one > 1),my_sum(one) from (values(1),(3)) t(one);
 
+discard plans;
 -- this should not share the state due to different input columns.
 select my_avg(one),my_sum(two) from (values(1,2),(3,4)) t(one,two);
 
@@ -1161,6 +1168,7 @@ create aggregate my_half_sum(int4)
    finalfunc = halfsum_finalfn
 );
 
+discard plans;
 -- Agg state should be shared even though my_sum has no finalfn
 select my_sum(one),my_half_sum(one) from (values(1),(2),(3),(4)) t(one);
 
@@ -1436,9 +1444,6 @@ drop table agg_hash_1;
 drop table agg_hash_3;
 drop table agg_hash_4;
 
--- fix github issue #12061 numsegments of general locus is not -1 on create_minmaxagg_path
-/*
- * On the arm platform, `Seq Scan` is executed frequently, resulting in unstable output.
- */
-set enable_indexonlyscan = off;
-explain analyze select count(*) from pg_class,  (select count(*) >0 from  (select count(*) from pg_class where relname like 't%')x)y;
+-- GitHub issue https://github.com/greenplum-db/gpdb/issues/12061
+-- numsegments of the general locus should be -1 on create_minmaxagg_path
+explain analyze select count(*) from pg_class, (select count(*) > 0 from (select count(*) from pg_class where relnatts > 8) x) y;

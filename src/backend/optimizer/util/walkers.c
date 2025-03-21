@@ -4,8 +4,6 @@
  *  Created on: Feb 8, 2011
  *      Author: siva
  * 
- * Portions Copyright (c) 2023, HashData Technology Limited.
- * 
  */
 
 #include "postgres.h"
@@ -76,7 +74,7 @@ walk_plan_node_fields(Plan *plan,
 	if (walker((Node *) (plan->initPlan), context))
 		return true;
 
-	/* Cloudberry Database Flow node */
+	/* Apache Cloudberry Flow node */
 	if (walker((Node *) (plan->flow), context))
 		return true;
 
@@ -235,7 +233,9 @@ plan_tree_walker(Node *node,
 
 		case T_SeqScan:
 		case T_SampleScan:
+		case T_DynamicSeqScan:
 		case T_BitmapHeapScan:
+		case T_DynamicBitmapHeapScan:
 		case T_WorkTableScan:
 		case T_NamedTuplestoreScan:
 			if (walk_scan_node_fields((Scan *) node, walker, context))
@@ -243,6 +243,7 @@ plan_tree_walker(Node *node,
 			break;
 
 		case T_ForeignScan:
+		case T_DynamicForeignScan:
 			if (walk_scan_node_fields((Scan *) node, walker, context))
 				return true;
 			if (walker(((ForeignScan *) node)->fdw_exprs, context))
@@ -255,8 +256,6 @@ plan_tree_walker(Node *node,
 			if (walker(((CustomScan *) node)->custom_plans, context))
 				return true;
 			if (walker(((CustomScan *) node)->custom_exprs, context))
-				return true;
-			if (walker(((CustomScan *) node)->custom_private, context))
 				return true;
 			if (walker(((CustomScan *) node)->custom_scan_tlist, context))
 				return true;
@@ -293,6 +292,8 @@ plan_tree_walker(Node *node,
 			break;
 
 		case T_IndexScan:
+		case T_DynamicIndexScan:
+		case T_DynamicIndexOnlyScan:
 			if (walk_scan_node_fields((Scan *) node, walker, context))
 				return true;
 			if (walker((Node *) ((IndexScan *) node)->indexqual, context))
@@ -308,11 +309,11 @@ plan_tree_walker(Node *node,
 			break;
 
 		case T_BitmapIndexScan:
+		case T_DynamicBitmapIndexScan:
 			if (walk_scan_node_fields((Scan *) node, walker, context))
 				return true;
 			if (walker((Node *) ((BitmapIndexScan *) node)->indexqual, context))
 				return true;
-
 			/* Other fields are lists of basic items, nothing to walk. */
 			break;
 
@@ -440,11 +441,11 @@ plan_tree_walker(Node *node,
 			if (walk_plan_node_fields((Plan *) node, walker, context))
 				return true;
 
-			/* Cloudberry Database Limit Count */
+			/* Apache Cloudberry Limit Count */
 			if (walker((Node *) (((Limit*) node)->limitCount), context))
 					return true;
 
-			/* Cloudberry Database Limit Offset */
+			/* Apache Cloudberry Limit Offset */
 			if (walker((Node *) (((Limit*) node)->limitOffset), context))
 					return true;
 
@@ -910,9 +911,11 @@ check_collation_walker(Node *node, check_collation_context *context)
 	switch (nodeTag(node))
 	{
 		case T_Var:
-			type = (castNode(Var, node))->vartype;
+		case T_Const:
+		case T_OpExpr:
+			type = exprType((node));
 			collation = exprCollation(node);
-			if (type == NAMEOID)
+			if (type == NAMEOID || type == NAMEARRAYOID)
 			{
 				if (collation != C_COLLATION_OID)
 					context->foundNonDefaultCollation = 1;
@@ -922,8 +925,6 @@ check_collation_walker(Node *node, check_collation_context *context)
 				context->foundNonDefaultCollation = 1;
 			}
 			break;
-		case T_Const:
-		case T_OpExpr:
 		case T_ScalarArrayOpExpr:
 		case T_DistinctExpr:
 		case T_BoolExpr:

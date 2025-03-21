@@ -3,7 +3,6 @@
  * relcache.c
  *	  POSTGRES relation descriptor cache code
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2009, Greenplum inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -1250,8 +1249,10 @@ retry:
 		case RELKIND_VIEW:
 		case RELKIND_COMPOSITE_TYPE:
 		case RELKIND_FOREIGN_TABLE:
-		case RELKIND_PARTITIONED_TABLE:
 			Assert(relation->rd_rel->relam == InvalidOid);
+			break;
+		case RELKIND_PARTITIONED_TABLE:
+			/* gp partition tables may set access method for its children */
 			break;
 		case RELKIND_AOSEGMENTS:
 		case RELKIND_AOVISIMAP:
@@ -1264,7 +1265,7 @@ retry:
 	/*
 	 * If it's an append-only table, get information from pg_appendonly.
 	 */
-	if (RelationIsAppendOptimized(relation))
+	if (RelationStorageIsAO(relation))
 		RelationInitAppendOnlyInfo(relation);
 
 	/* extract reloptions if any */
@@ -1284,7 +1285,7 @@ retry:
 	relation->rd_smgr = NULL;
 
     /*
-     * initialize Cloudberry Database partitioning info
+     * initialize Apache Cloudberry partitioning info
      */
 	if ((relation->rd_rel->relkind == RELKIND_RELATION && !IsSystemRelation(relation)) ||
 		relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||
@@ -1892,7 +1893,7 @@ RelationInitTableAccessMethod(Relation relation)
 		 * Cloudberry: append-optimized relations should not have a valid
 		 * relfrozenxid.
 		 */
-		Assert (!RelationIsAppendOptimized(relation) ||
+		Assert (!RelationStorageIsAO(relation) ||
 				!TransactionIdIsValid(relation->rd_rel->relfrozenxid));
 	}
 
@@ -1984,6 +1985,8 @@ formrdesc(const char *relationName, Oid relationReltype,
 	relation->rd_rel->relispopulated = true;
 	/* ... and they're always no ivm, too */
 	relation->rd_rel->relisivm = false;
+	/* ... and they're always not dynamic, too */
+	relation->rd_rel->relisdynamic = false;
 
 	relation->rd_rel->relreplident = REPLICA_IDENTITY_NOTHING;
 	relation->rd_rel->relpages = 0;

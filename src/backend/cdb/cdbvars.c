@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * cdbvars.c
- *	  Provides storage areas and processing routines for Cloudberry Database variables
+ *	  Provides storage areas and processing routines for Apache Cloudberry variables
  *	  managed by GUC.
  *
  * Portions Copyright (c) 2003-2010, Greenplum inc
@@ -48,7 +48,7 @@
 
 bool        gp_internal_is_singlenode;   /* CBDB#69: true if we are in singlenode mode (no segments) */
 
-GpRoleValue Gp_role;			/* Role paid by this Cloudberry Database
+GpRoleValue Gp_role;			/* Role paid by this Apache Cloudberry
 								 * backend */
 char	   *gp_role_string;		/* Staging area for guc.c */
 
@@ -76,8 +76,6 @@ bool		gp_external_enable_exec = true; /* allow ext tables with EXECUTE */
 bool		verify_gpfdists_cert; /* verifies gpfdist's certificate */
 
 int			gp_external_max_segs;	/* max segdbs per gpfdist/gpfdists URI */
-
-int			gp_safefswritesize; /* set for safe AO writes in non-mature fs */
 
 int			gp_cached_gang_threshold;	/* How many gangs to keep around from
 										 * stmt to stmt. */
@@ -267,8 +265,6 @@ uint32		gp_interconnect_id = 0;
 double		gp_motion_cost_per_row = 0;
 int			gp_segments_for_planner = 0;
 
-int			gp_hashagg_default_nbatches = 32;
-
 bool		gp_adjust_selectivity_for_outerjoins = true;
 bool		gp_selectivity_damping_for_scans = false;
 bool		gp_selectivity_damping_for_joins = false;
@@ -277,12 +273,11 @@ bool		gp_enable_runtime_filter = false;
 bool		gp_selectivity_damping_sigsort = true;
 
 int			gp_hashjoin_tuples_per_bucket = 5;
-int			gp_hashagg_groups_per_bucket = 5;
 
 /* Analyzing aid */
 int			gp_motion_slice_noop = 0;
 
-/* Cloudberry Database Experimental Feature GUCs */
+/* Apache Cloudberry Experimental Feature GUCs */
 bool		gp_enable_explain_rows_out = false;
 bool		gp_enable_explain_allstat = false;
 bool		gp_enable_motion_deadlock_sanity = false;	/* planning time sanity
@@ -304,8 +299,6 @@ int			gp_max_plan_size = 0;
 /* Disable setting of tuple hints while reading */
 bool		gp_disable_tuple_hints = false;
 
-int			gp_workfile_compress_algorithm = 0;
-bool		gp_workfile_checksumming = false;
 int			gp_workfile_caching_loglevel = DEBUG1;
 int			gp_sessionstate_loglevel = DEBUG1;
 
@@ -334,6 +327,7 @@ int			gp_autostats_mode_in_functions;
 char	   *gp_autostats_mode_in_functions_string;
 int			gp_autostats_on_change_threshold = 100000;
 bool		gp_autostats_allow_nonowner = false;
+bool		gp_autostats_lock_wait = false;
 bool		log_autostats = true;
 
 /* --------------------------------------------------------------------------------------------------
@@ -386,7 +380,7 @@ static GpRoleValue string_to_role(const char *string);
 
 
 /*
- * Convert a Cloudberry Database role string (as for gp_role) to an
+ * Convert a Apache Cloudberry role string (as for gp_role) to an
  * enum value of type GpRoleValue. Return GP_ROLE_UNDEFINED in case the
  * string is unrecognized.
  */
@@ -584,6 +578,23 @@ gpvars_check_statement_mem(int *newval, void **extra, GucSource source)
 	{
 		GUC_check_errmsg("Invalid input for statement_mem, must be less than max_statement_mem (%d kB)",
 						 max_statement_mem);
+		return false;
+	}
+
+	return true;
+}
+
+/*
+ * gpvars_check_rg_query_fixed_mem
+ */
+bool
+gpvars_check_rg_query_fixed_mem(int *newval, void **extra, GucSource source)
+{
+	if (*newval >= max_statement_mem)
+	{
+		GUC_check_errmsg("Invalid input for gp_resgroup_memory_query_fixed_mem, must be less than max_statement_mem (%d kB)",
+						 max_statement_mem);
+		return false;
 	}
 
 	return true;

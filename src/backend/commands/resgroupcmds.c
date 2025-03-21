@@ -59,6 +59,9 @@
 #define RESGROUP_MIN_CPU_WEIGHT	(1)
 #define RESGROUP_MAX_CPU_WEIGHT	(500)
 
+#define RESGROUP_MIN_MEMORY_QUOTA (0)
+#define RESGROUP_DEFAULT_MEMORY_QUOTA (-1)
+
 #define RESGROUP_MIN_MIN_COST		(0)
 static int str2Int(const char *str, const char *prop);
 static ResGroupLimitType getResgroupOptionType(const char* defname);
@@ -217,20 +220,14 @@ CreateResourceGroup(CreateResourceGroupStmt *stmt)
 		callbackCtx->groupid = groupid;
 		callbackCtx->caps = caps;
 
-		if (caps.io_limit != NULL)
-		{
-			callbackCtx->caps.io_limit = pstrdup(caps.io_limit);
-			callbackCtx->ioLimit = cgroupOpsRoutine->parseio(caps.io_limit);
-		}
-
 		MemoryContextSwitchTo(oldContext);
 		RegisterXactCallbackOnce(createResgroupCallback, callbackCtx);
 
 		/* Create os dependent part for this resource group */
 		cgroupOpsRoutine->createcgroup(groupid);
 
-		if (caps.io_limit != NULL)
-			cgroupOpsRoutine->setio(groupid, callbackCtx->ioLimit);
+		if (caps.io_limit != NIL)
+			cgroupOpsRoutine->setio(groupid, caps.io_limit);
 
 		if (CpusetIsEmpty(caps.cpuset))
 		{
@@ -460,14 +457,22 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 			caps.cpuMaxPercent = CPU_MAX_PERCENT_DISABLED;
 			caps.cpuWeight = RESGROUP_DEFAULT_CPU_WEIGHT;
 			break;
-		case RESGROUP_LIMIT_TYPE_MEMORY_LIMIT:
-			caps.memory_limit = value;
+		case RESGROUP_LIMIT_TYPE_MEMORY_QUOTA:
+			caps.memory_quota = value;
 			break;
 		case RESGROUP_LIMIT_TYPE_MIN_COST:
 			caps.min_cost = value;
 			break;
 		case RESGROUP_LIMIT_TYPE_IO_LIMIT:
-			caps.io_limit = io_limit;
+			oldContext = CurrentMemoryContext;
+			if (cgroupOpsRoutine == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("resource group must be enabled to use io limit feature")));
+
+			MemoryContextSwitchTo(TopMemoryContext);
+			caps.io_limit = cgroupOpsRoutine->parseio(io_limit);
+			MemoryContextSwitchTo(oldContext);
 			break;
 		default:
 			break;
@@ -502,9 +507,10 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 	}
 	else if (limitType == RESGROUP_LIMIT_TYPE_IO_LIMIT)
 	{
-		updateResgroupCapabilityEntry(pg_resgroupcapability_rel,
-									  groupid, RESGROUP_LIMIT_TYPE_IO_LIMIT,
-									  0, caps.io_limit);
+		if (caps.io_limit != NIL)
+			updateResgroupCapabilityEntry(pg_resgroupcapability_rel,
+										  groupid, RESGROUP_LIMIT_TYPE_IO_LIMIT,
+										  0, cgroupOpsRoutine->dumpio(caps.io_limit));
 	}
 	else
 	{
@@ -537,15 +543,7 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 		callbackCtx->groupid = groupid;
 		callbackCtx->limittype = limitType;
 		callbackCtx->caps = caps;
-
-		if (caps.io_limit != NULL)
-		{
-			callbackCtx->ioLimit = cgroupOpsRoutine->parseio(caps.io_limit);
-			callbackCtx->caps.io_limit = pstrdup(caps.io_limit);
-		}
-
 		callbackCtx->oldCaps = oldCaps;
-		callbackCtx->oldCaps.io_limit = NULL;
 
 		MemoryContextSwitchTo(oldContext);
 		RegisterXactCallbackOnce(alterResgroupCallback, callbackCtx);
@@ -558,6 +556,7 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 void
 GetResGroupCapabilities(Relation rel, Oid groupId, ResGroupCaps *resgroupCaps)
 {
+	MemoryContext oldContext;
 	SysScanDesc	sscan;
 	ScanKeyData	key;
 	HeapTuple	tuple;
@@ -624,19 +623,25 @@ GetResGroupCapabilities(Relation rel, Oid groupId, ResGroupCaps *resgroupCaps)
 			case RESGROUP_LIMIT_TYPE_CPUSET:
 				strlcpy(resgroupCaps->cpuset, value, sizeof(resgroupCaps->cpuset));
 				break;
-			case RESGROUP_LIMIT_TYPE_MEMORY_LIMIT:
-				resgroupCaps->memory_limit = str2Int(value,
-													getResgroupOptionName(type));
+			case RESGROUP_LIMIT_TYPE_MEMORY_QUOTA:
+				resgroupCaps->memory_quota = str2Int(value,
+													 getResgroupOptionName(type));
 				break;
 			case RESGROUP_LIMIT_TYPE_MIN_COST:
 				resgroupCaps->min_cost = str2Int(value,
 													getResgroupOptionName(type));
 				break;
 			case RESGROUP_LIMIT_TYPE_IO_LIMIT:
-				if (strcmp(value, DefaultIOLimit) != 0)
-					resgroupCaps->io_limit = value;
+				if (cgroupOpsRoutine != NULL)
+				{
+					oldContext = CurrentMemoryContext;
+					MemoryContextSwitchTo(TopMemoryContext);
+					resgroupCaps->io_limit = cgroupOpsRoutine->parseio(value);
+					MemoryContextSwitchTo(oldContext);
+				}
 				else
-				    resgroupCaps->io_limit = NULL;
+					resgroupCaps->io_limit = NIL;
+				break;
 			default:
 				break;
 		}
@@ -788,6 +793,9 @@ ResGroupCheckForRole(Oid groupId)
 	/* Load current resource group capabilities */
 	GetResGroupCapabilities(pg_resgroupcapability_rel, groupId, &caps);
 
+	if (cgroupOpsRoutine != NULL && caps.io_limit != NIL)
+		cgroupOpsRoutine->freeio(caps.io_limit);
+
 	heap_close(pg_resgroupcapability_rel, AccessShareLock);
 }
 
@@ -809,8 +817,8 @@ getResgroupOptionType(const char* defname)
 		return RESGROUP_LIMIT_TYPE_CPUSET;
 	else if (strcmp(defname, "cpu_weight") == 0)
 		return RESGROUP_LIMIT_TYPE_CPU_SHARES;
-	else if (strcmp(defname, "memory_limit") == 0)
-		return RESGROUP_LIMIT_TYPE_MEMORY_LIMIT;
+	else if (strcmp(defname, "memory_quota") == 0)
+		return RESGROUP_LIMIT_TYPE_MEMORY_QUOTA;
 	else if (strcmp(defname, "min_cost") == 0)
 		return RESGROUP_LIMIT_TYPE_MIN_COST;
 	else if (strcmp(defname, "io_limit") == 0)
@@ -856,8 +864,8 @@ getResgroupOptionName(ResGroupLimitType type)
 			return "cpuset";
 		case RESGROUP_LIMIT_TYPE_CPU_SHARES:
 			return "cpu_weight";
-		case RESGROUP_LIMIT_TYPE_MEMORY_LIMIT:
-			return "memory_limit";
+		case RESGROUP_LIMIT_TYPE_MEMORY_QUOTA:
+			return "memory_quota";
 		case RESGROUP_LIMIT_TYPE_MIN_COST:
 			return "min_cost";
 		default:
@@ -901,7 +909,12 @@ checkResgroupCapLimit(ResGroupLimitType type, int value)
 										   RESGROUP_MIN_CPU_WEIGHT, RESGROUP_MAX_CPU_WEIGHT)));
 				break;
 
-			case RESGROUP_LIMIT_TYPE_MEMORY_LIMIT:
+			case RESGROUP_LIMIT_TYPE_MEMORY_QUOTA:
+				if (value < RESGROUP_MIN_MEMORY_QUOTA && value != RESGROUP_DEFAULT_MEMORY_QUOTA)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("memory_quota range is [%d, INT_MAX] or equals to %d",
+									RESGROUP_MIN_MEMORY_QUOTA, RESGROUP_DEFAULT_MEMORY_QUOTA)));
 				break;
 
 			case RESGROUP_LIMIT_TYPE_MIN_COST:
@@ -927,6 +940,7 @@ checkResgroupCapLimit(ResGroupLimitType type, int value)
 static void
 parseStmtOptions(CreateResourceGroupStmt *stmt, ResGroupCaps *caps)
 {
+	MemoryContext oldContext;
 	ListCell *cell;
 	ResGroupCap value;
 	int mask = 0;
@@ -958,7 +972,19 @@ parseStmtOptions(CreateResourceGroupStmt *stmt, ResGroupCaps *caps)
 			caps->cpuWeight = RESGROUP_DEFAULT_CPU_WEIGHT;
 		}
 		else if (type == RESGROUP_LIMIT_TYPE_IO_LIMIT)
-			caps->io_limit = defGetString(defel);
+		{
+			char *io_limit_str = defGetString(defel);
+
+			oldContext = CurrentMemoryContext;
+			if (cgroupOpsRoutine == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("resource group must be enabled to use io limit feature")));
+
+			MemoryContextSwitchTo(TopMemoryContext);
+			caps->io_limit = cgroupOpsRoutine->parseio(io_limit_str);
+			MemoryContextSwitchTo(oldContext);
+		}
 		else
 		{
 			value = getResgroupOptionValue(defel);
@@ -976,8 +1002,8 @@ parseStmtOptions(CreateResourceGroupStmt *stmt, ResGroupCaps *caps)
 				case RESGROUP_LIMIT_TYPE_CPU_SHARES:
 					caps->cpuWeight = value;
 					break;
-				case RESGROUP_LIMIT_TYPE_MEMORY_LIMIT:
-					caps->memory_limit = value;
+				case RESGROUP_LIMIT_TYPE_MEMORY_QUOTA:
+					caps->memory_quota = value;
 					break;
 				case RESGROUP_LIMIT_TYPE_MIN_COST:
 					caps->min_cost = value;
@@ -1006,8 +1032,8 @@ parseStmtOptions(CreateResourceGroupStmt *stmt, ResGroupCaps *caps)
 	if (!(mask & (1 << RESGROUP_LIMIT_TYPE_CONCURRENCY)))
 		caps->concurrency = RESGROUP_DEFAULT_CONCURRENCY;
 
-	if (!(mask & (1 << RESGROUP_LIMIT_TYPE_MEMORY_LIMIT)))
-		caps->memory_limit = -1;
+	if (!(mask & (1 << RESGROUP_LIMIT_TYPE_MEMORY_QUOTA)))
+		caps->memory_quota = -1;
 
 	if (!(mask & (1 << RESGROUP_LIMIT_TYPE_MIN_COST)))
 		caps->min_cost = 0;
@@ -1033,11 +1059,8 @@ createResgroupCallback(XactEvent event, void *arg)
 		ResGroupCreateOnAbort(callbackCtx);
 	}
 
-	if (callbackCtx->caps.io_limit != NULL)
-	{
-		cgroupOpsRoutine->freeio(callbackCtx->ioLimit);
-		pfree(callbackCtx->caps.io_limit);
-	}
+	if (callbackCtx->caps.io_limit != NIL)
+		cgroupOpsRoutine->freeio(callbackCtx->caps.io_limit);
 	pfree(callbackCtx);
 }
 
@@ -1070,11 +1093,12 @@ alterResgroupCallback(XactEvent event, void *arg)
 	if (event == XACT_EVENT_COMMIT)
 		ResGroupAlterOnCommit(callbackCtx);
 
-	if (callbackCtx->caps.io_limit != NULL)
-	{
-		cgroupOpsRoutine->freeio(callbackCtx->ioLimit);
-		pfree(callbackCtx->caps.io_limit);
-	}
+	if (callbackCtx->caps.io_limit != NIL)
+		cgroupOpsRoutine->freeio(callbackCtx->caps.io_limit);
+
+	if (callbackCtx->caps.io_limit != NIL)
+		cgroupOpsRoutine->freeio(callbackCtx->oldCaps.io_limit);
+
 	pfree(callbackCtx);
 }
 
@@ -1112,17 +1136,18 @@ insertResgroupCapabilities(Relation rel, Oid groupId, ResGroupCaps *caps)
 	insertResgroupCapabilityEntry(rel, groupId,
 								  RESGROUP_LIMIT_TYPE_CPUSET, caps->cpuset);
 
-	snprintf(value, sizeof(value), "%d", caps->memory_limit);
+	snprintf(value, sizeof(value), "%d", caps->memory_quota);
 	insertResgroupCapabilityEntry(rel, groupId,
-								  RESGROUP_LIMIT_TYPE_MEMORY_LIMIT, value);
+								  RESGROUP_LIMIT_TYPE_MEMORY_QUOTA, value);
 
 	snprintf(value, sizeof(value), "%d", caps->min_cost);
 	insertResgroupCapabilityEntry(rel, groupId,
 								  RESGROUP_LIMIT_TYPE_MIN_COST, value);
 
-	if (caps->io_limit != NULL)
+	if (caps->io_limit != NIL)
 		insertResgroupCapabilityEntry(rel, groupId,
-									  RESGROUP_LIMIT_TYPE_IO_LIMIT, caps->io_limit);
+									  RESGROUP_LIMIT_TYPE_IO_LIMIT,
+									  cgroupOpsRoutine->dumpio((caps->io_limit)));
 	else
 		insertResgroupCapabilityEntry(rel, groupId,
 									  RESGROUP_LIMIT_TYPE_IO_LIMIT, DefaultIOLimit);

@@ -37,7 +37,7 @@ protected:
 	const CName *m_pnameAlias;
 
 	// table descriptor
-	CTableDescriptor *m_ptabdesc;
+	CTableDescriptorHashSet *m_ptabdesc;
 
 	// dynamic scan id
 	ULONG m_scan_id;
@@ -69,6 +69,11 @@ protected:
 	// child partition's table descr by matching column names$
 	static ColRefToUlongMapArray *ConstructRootColMappingPerPart(
 		CMemoryPool *mp, CColRefArray *root_cols, IMdIdArray *partition_mdids);
+
+	using ColNameToIndexMap =
+		CHashMap<const CWStringConst, ULONG, CWStringConst::HashValue,
+				 CWStringConst::Equals, CleanupNULL<const CWStringConst>,
+				 CleanupDelete<ULONG>>;
 
 public:
 	// ctors
@@ -112,7 +117,7 @@ public:
 	virtual CTableDescriptor *
 	Ptabdesc() const
 	{
-		return m_ptabdesc;
+		return m_ptabdesc->First();
 	}
 
 	// return scan id
@@ -159,11 +164,12 @@ public:
 	}
 
 	// derive table descriptor
-	CTableDescriptor *
-	DeriveTableDescriptor(CMemoryPool *,	   // mp
+	CTableDescriptorHashSet *
+	DeriveTableDescriptor(CMemoryPool *mp GPOS_UNUSED,
 						  CExpressionHandle &  // exprhdl
 	) const override
 	{
+		m_ptabdesc->AddRef();
 		return m_ptabdesc;
 	}
 

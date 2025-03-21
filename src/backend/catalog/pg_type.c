@@ -3,7 +3,6 @@
  * pg_type.c
  *	  routines to support manipulation of the pg_type relation
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -686,17 +685,12 @@ TypeCreate(Oid newTypeOid,
  * isDependentType is true if this is an implicit array or relation rowtype;
  * that means it doesn't need its own dependencies on owner etc.
  *
- * We make an extension-membership dependency if we're in an extension
- * script and makeExtensionDep is true (and isDependentType isn't true).
- * makeExtensionDep should be true when creating a new type or replacing a
- * shell type, but not for ALTER TYPE on an existing type.  Passing false
- * causes the type's extension membership to be left alone.
- *
- * rebuild should be true if this is a pre-existing type.  We will remove
- * existing dependencies and rebuild them from scratch.  This is needed for
- * ALTER TYPE, and also when replacing a shell type.  We don't remove any
- * existing extension dependency, though (hence, if makeExtensionDep is also
- * true and the type belongs to some other extension, an error will occur).
+ * If rebuild is true, we remove existing dependencies and rebuild them
+ * from scratch.  This is needed for ALTER TYPE, and also when replacing
+ * a shell type.  We don't remove an existing extension dependency, though.
+ * That means an extension can't absorb a shell type that is free-standing
+ * or belongs to another extension, nor ALTER a type that is free-standing or
+ * belongs to another extension.
  */
 void
 GenerateTypeDependencies(HeapTuple typeTuple,

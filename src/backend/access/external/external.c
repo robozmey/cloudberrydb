@@ -71,6 +71,74 @@ gfile_free(void *a)
 	pfree(a);
 }
 
+/*  Split the uris string which may contain escape */
+static char*
+strsep_uri(char **uris)
+{
+	char *index;
+	char *result;
+
+	if ((index = *uris) == NULL)
+		return NULL;
+	if (*index == '\0')
+		return NULL;
+
+	size_t len = strlen(index);
+	result = (char *)palloc(len + 1);
+	int j = 0;
+	for (;;)
+	{
+		if (*index == '\0')
+		{
+			result[j++] = '\0';
+			*uris = index;
+			break;
+		}
+		/* If escape is found */
+		else if (*index == '\\')
+		{
+			/* Check the next character after escape. */
+			index++;
+			/* If it is a separator or another escape, skip the previous escape. */
+			if (*index == '\\' || *index == '|')
+			{
+				result[j++] = *index;
+			}
+			/* This is only possible for previous version data without escape.
+			 * If it is the end, continue and the next loop will handle it.
+			 */
+			else if (*index == '\0')
+			{
+				result[j++] = '\\';
+				continue;
+			}
+			/* This is only possible for previous version data without escape.
+			 * If it is a common char, keep the original format.
+			 */
+			else
+			{
+				result[j++] = '\\';
+				result[j++] = *index;
+			}
+			index++;
+		}
+		/* For correct data, only delimiter have not escape before. */
+		else if (*index == '|')
+		{
+			index++;
+			result[j++] = '\0';
+			*uris = index;
+			break;
+		}
+		else
+		{
+			result[j++] = *index;
+			index++;
+		}
+	}
+	return result;
+}
+
 /* transform the locations string to a list */
 List*
 TokenizeLocationUris(char *uris)
@@ -80,7 +148,7 @@ TokenizeLocationUris(char *uris)
 
 	Assert(uris != NULL);
 
-	while ((uri = strsep(&uris, "|")) != NULL)
+	while ((uri = strsep_uri(&uris)) != NULL)
 	{
 		result = lappend(result, makeString(uri));
 	}
@@ -112,54 +180,22 @@ GetExtTableEntry(Oid relid)
 ExtTableEntry*
 GetExtTableEntryIfExists(Oid relid)
 {
-	Relation	pg_foreign_table_rel;
-	ScanKeyData ftkey;
-	SysScanDesc ftscan;
-	HeapTuple	fttuple;
-	ExtTableEntry *extentry;
-	bool		isNull;
-	List		*ftoptions_list = NIL;;
+	ForeignTable 	*ft;
+	ExtTableEntry 	*extentry;
 
-	pg_foreign_table_rel = table_open(ForeignTableRelationId, RowExclusiveLock);
-
-	ScanKeyInit(&ftkey,
-				Anum_pg_foreign_table_ftrelid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(relid));
-
-	ftscan = systable_beginscan(pg_foreign_table_rel, ForeignTableRelidIndexId,
-								true, NULL, 1, &ftkey);
-	fttuple = systable_getnext(ftscan);
-
-	if (!HeapTupleIsValid(fttuple))
-	{
-		systable_endscan(ftscan);
-		heap_close(pg_foreign_table_rel, RowExclusiveLock);
-
+	/* do nothing if it's not an external table */
+	if (!rel_is_external_table(relid))
 		return NULL;
-	}
 
-	/* get the foreign table options */
-	Datum ftoptions = heap_getattr(fttuple,
-						   Anum_pg_foreign_table_ftoptions,
-						   RelationGetDescr(pg_foreign_table_rel),
-						   &isNull);
+	ft = GetForeignTable(relid);
 
-	if (isNull)
-	{
-		/* options array is always populated, {} if no options set */
+	/* options array is always populated, {} if no options set */
+	if (ft->options == NULL)
 		elog(ERROR, "could not find options for external protocol");
-	}
-	else
-	{
-		ftoptions_list = untransformRelOptions(ftoptions);
-	}
 
-	extentry = GetExtFromForeignTableOptions(ftoptions_list, relid);
+	extentry = GetExtFromForeignTableOptions(ft->options, relid);
 
-	/* Finish up scan and close catalogs */
-	systable_endscan(ftscan);
-	table_close(pg_foreign_table_rel, RowExclusiveLock);
+	pfree(ft);
 
 	return extentry;
 }
@@ -171,14 +207,12 @@ GetExtFromForeignTableOptions(List *ftoptons, Oid relid)
 	ListCell		   *lc;
 	List			   *entryOptions = NIL;
 	char			   *arg;
-	bool				fmtcode_found = false;
 	bool				rejectlimit_found = false;
 	bool				rejectlimittype_found = false;
 	bool				logerrors_found = false;
 	bool				encoding_found = false;
 	bool				iswritable_found = false;
-	bool				locationuris_found = false;
-	bool				command_found = false;
+	bool				executeon_found = false;
 
 	extentry = (ExtTableEntry *) palloc0(sizeof(ExtTableEntry));
 
@@ -189,20 +223,19 @@ GetExtFromForeignTableOptions(List *ftoptons, Oid relid)
 		if (pg_strcasecmp(def->defname, "location_uris") == 0)
 		{
 			extentry->urilocations = TokenizeLocationUris(defGetString(def));
-			locationuris_found = true;
 			continue;
 		}
 
 		if (pg_strcasecmp(def->defname, "execute_on") == 0)
 		{
 			extentry->execlocations = list_make1(makeString(defGetString(def)));
+			executeon_found = true;
 			continue;
 		}
 
 		if (pg_strcasecmp(def->defname, "command") == 0)
 		{
 			extentry->command = defGetString(def);
-			command_found = true;
 			continue;
 		}
 
@@ -210,7 +243,6 @@ GetExtFromForeignTableOptions(List *ftoptons, Oid relid)
 		{
 			arg = defGetString(def);
 			extentry->fmtcode = arg[0];
-			fmtcode_found = true;
 			continue;
 		}
 
@@ -264,42 +296,25 @@ GetExtFromForeignTableOptions(List *ftoptons, Oid relid)
 	if (fmttype_is_csv(extentry->fmtcode))
 		entryOptions = lappend(entryOptions, makeDefElem("format", (Node *) makeString("csv"), -1));
 
-	/*
-	 * external table syntax does have these for sure, but errors could happen
-	 * if using foreign table syntax
-	 */
-	if (!fmtcode_found || !logerrors_found || !encoding_found || !iswritable_found)
-		ereport(ERROR,
-				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("missing format, logerrors, encoding or iswritable options for relation \"%s\"",
-						get_rel_name(relid))));
+	if (!executeon_found)
+		extentry->execlocations = list_make1(makeString("ALL_SEGMENTS"));
 
-	if (locationuris_found && command_found)
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("locationuris and command options conflict with each other")));
+	if(!iswritable_found)
+		extentry->iswritable = false;
 
-	if (!fmttype_is_custom(extentry->fmtcode) &&
-		!fmttype_is_csv(extentry->fmtcode) &&
-		!fmttype_is_text(extentry->fmtcode))
-		elog(ERROR, "unsupported format type %d for external table", extentry->fmtcode);
+	if(!encoding_found)
+		extentry->encoding = GetDatabaseEncoding();
+
+	if(!logerrors_found)
+		extentry->logerrors = LOG_ERRORS_DISABLE;
 
 	if (!rejectlimit_found) {
 		/* mark that no SREH requested */
 		extentry->rejectlimit = -1;
 	}
 
-	if (rejectlimittype_found)
-	{
-		if (extentry->rejectlimittype != 'r' && extentry->rejectlimittype != 'p')
-			elog(ERROR, "unsupported reject limit type %c for external table",
-				 extentry->rejectlimittype);
-	}
-	else
+	if (!rejectlimittype_found)
 		extentry->rejectlimittype = -1;
-
-	if (!PG_VALID_ENCODING(extentry->encoding))
-		elog(ERROR, "invalid encoding found for external table");
 
 	extentry->options = entryOptions;
 
@@ -351,72 +366,6 @@ MakeExternalScanInfo(ExtTableEntry *extEntry)
 	node->extOptions = extEntry->options;
 
 	return node;
-}
-
-/*
- * entry point from ORCA, to create a ForeignScan plan for an external table.
- *
- * Note: the caller is responsible for filling the cost information.
- */
-ForeignScan *
-BuildForeignScanForExternalTable(Oid relid, Index scanrelid,
-								 List *qual, List *targetlist)
-{
-	ExtTableEntry *extEntry;
-	ForeignScan *fscan;
-	ExternalScanInfo *externalscan_info;
-
-	extEntry = GetExtTableEntry(relid);
-
-	externalscan_info = MakeExternalScanInfo(extEntry);
-
-	fscan = makeNode(ForeignScan);
-	fscan->scan.scanrelid = scanrelid;
-	fscan->scan.plan.qual = qual;
-	fscan->scan.plan.targetlist = targetlist;
-
-	/* cost will be filled in by create_foreignscan_plan */
-	fscan->operation = CMD_SELECT;
-	/* fs_server will be filled in by create_foreignscan_plan */
-	fscan->fs_server = get_foreign_server_oid(GP_EXTTABLE_SERVER_NAME, false);
-	fscan->fdw_exprs = NIL;
-	fscan->fdw_private = list_make1(externalscan_info);
-	fscan->fdw_scan_tlist = NIL;
-	fscan->fdw_recheck_quals = NIL;
-
-	fscan->fs_relids = bms_make_singleton(scanrelid);
-
-	/*
-	 * Like in create_foreign_plan(), if rel is a base relation, detect
-	 * whether any system columns are requested from the rel.
-	 */
-	fscan->fsSystemCol = false;
-	if (scanrelid > 0)
-	{
-		Bitmapset  *attrs_used = NULL;
-		int			i;
-
-		/*
-		 * First, examine all the attributes needed for joins or final output.
-		 * Note: we must look at rel's targetlist, not the attr_needed data,
-		 * because attr_needed isn't computed for inheritance child rels.
-		 */
-		pull_varattnos((Node *) targetlist, scanrelid, &attrs_used);
-
-		/* Now, are any system columns requested from rel? */
-		for (i = FirstLowInvalidHeapAttributeNumber + 1; i < 0; i++)
-		{
-			if (bms_is_member(i - FirstLowInvalidHeapAttributeNumber, attrs_used))
-			{
-				fscan->fsSystemCol = true;
-				break;
-			}
-		}
-
-		bms_free(attrs_used);
-	}
-
-	return fscan;
 }
 
 static List *

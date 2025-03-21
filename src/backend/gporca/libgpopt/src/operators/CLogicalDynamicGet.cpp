@@ -1,7 +1,6 @@
 //---------------------------------------------------------------------------
 //	Greenplum Database
 //	Copyright (C) 2012 EMC Corp.
-//	Portions Copyright (c) 2023, HashData Technology Limited.
 //
 //	@filename:
 //		CLogicalDynamicGet.cpp
@@ -21,9 +20,10 @@
 #include "gpopt/base/COptCtxt.h"
 #include "gpopt/base/CUtils.h"
 #include "gpopt/metadata/CName.h"
-#include "gpopt/metadata/CPartConstraint.h"
 #include "gpopt/metadata/CTableDescriptor.h"
 #include "gpopt/operators/CExpressionHandle.h"
+#include "naucrates/md/CMDIdRelStats.h"
+#include "naucrates/md/IMDRelStats.h"
 #include "naucrates/statistics/CFilterStatsProcessor.h"
 #include "naucrates/statistics/CStatistics.h"
 #include "naucrates/statistics/CStatsPredUtils.h"
@@ -57,13 +57,17 @@ CLogicalDynamicGet::CLogicalDynamicGet(
 	CMemoryPool *mp, const CName *pnameAlias, CTableDescriptor *ptabdesc,
 	ULONG ulPartIndex, CColRefArray *pdrgpcrOutput,
 	CColRef2dArray *pdrgpdrgpcrPart, IMdIdArray *partition_mdids,
-	CConstraint *partition_cnstrs_disj, BOOL static_pruned)
+	CConstraint *partition_cnstrs_disj, BOOL static_pruned,
+	IMdIdArray *foreign_server_mdids, BOOL hasSecurityQuals)
 	: CLogicalDynamicGetBase(mp, pnameAlias, ptabdesc, ulPartIndex,
 							 pdrgpcrOutput, pdrgpdrgpcrPart, partition_mdids),
 	  m_partition_cnstrs_disj(partition_cnstrs_disj),
-	  m_static_pruned(static_pruned)
+	  m_static_pruned(static_pruned),
+	  m_foreign_server_mdids(foreign_server_mdids),
+	  m_has_security_quals(hasSecurityQuals)
 {
 	GPOS_ASSERT(static_pruned || (nullptr == partition_cnstrs_disj));
+	GPOS_ASSERT(nullptr != foreign_server_mdids);
 }
 
 
@@ -78,10 +82,15 @@ CLogicalDynamicGet::CLogicalDynamicGet(
 CLogicalDynamicGet::CLogicalDynamicGet(CMemoryPool *mp, const CName *pnameAlias,
 									   CTableDescriptor *ptabdesc,
 									   ULONG ulPartIndex,
-									   IMdIdArray *partition_mdids)
+									   IMdIdArray *partition_mdids,
+									   IMdIdArray *foreign_server_mdids,
+									   BOOL hasSecurityQuals)
 	: CLogicalDynamicGetBase(mp, pnameAlias, ptabdesc, ulPartIndex,
-							 partition_mdids)
+							 partition_mdids),
+	  m_foreign_server_mdids(foreign_server_mdids),
+	  m_has_security_quals(hasSecurityQuals)
 {
+	GPOS_ASSERT(nullptr != foreign_server_mdids);
 }
 
 //---------------------------------------------------------------------------
@@ -95,6 +104,7 @@ CLogicalDynamicGet::CLogicalDynamicGet(CMemoryPool *mp, const CName *pnameAlias,
 CLogicalDynamicGet::~CLogicalDynamicGet()
 {
 	CRefCount::SafeRelease(m_partition_cnstrs_disj);
+	CRefCount::SafeRelease(m_foreign_server_mdids);
 }
 
 //---------------------------------------------------------------------------
@@ -109,9 +119,12 @@ ULONG
 CLogicalDynamicGet::HashValue() const
 {
 	ULONG ulHash = gpos::CombineHashes(COperator::HashValue(),
-									   m_ptabdesc->MDId()->HashValue());
+									   Ptabdesc()->MDId()->HashValue());
 	ulHash =
 		gpos::CombineHashes(ulHash, CUtils::UlHashColArray(m_pdrgpcrOutput));
+
+	ulHash = gpos::CombineHashes(ulHash,
+								 gpos::HashValue<BOOL>(&m_has_security_quals));
 
 	return ulHash;
 }
@@ -128,7 +141,15 @@ CLogicalDynamicGet::HashValue() const
 BOOL
 CLogicalDynamicGet::Matches(COperator *pop) const
 {
-	return CUtils::FMatchDynamicScan(this, pop);
+	if (this->Eopid() != pop->Eopid())
+	{
+		return false;
+	}
+
+	CLogicalDynamicGet *popGet = CLogicalDynamicGet::PopConvert(pop);
+
+	return CUtils::FMatchDynamicScan(this, pop) &&
+		   this->HasSecurityQuals() == popGet->HasSecurityQuals();
 }
 
 //---------------------------------------------------------------------------
@@ -156,9 +177,9 @@ CLogicalDynamicGet::PopCopyWithRemappedColumns(CMemoryPool *mp,
 											 colref_mapping, must_exist);
 	}
 	CColRef2dArray *pdrgpdrgpcrPart =
-		PdrgpdrgpcrCreatePartCols(mp, pdrgpcrOutput, m_ptabdesc->PdrgpulPart());
+		PdrgpdrgpcrCreatePartCols(mp, pdrgpcrOutput, Ptabdesc()->PdrgpulPart());
 	CName *pnameAlias = GPOS_NEW(mp) CName(mp, *m_pnameAlias);
-	m_ptabdesc->AddRef();
+	Ptabdesc()->AddRef();
 	m_partition_mdids->AddRef();
 
 	CConstraint *partition_cnstrs_disj = nullptr;
@@ -170,9 +191,15 @@ CLogicalDynamicGet::PopCopyWithRemappedColumns(CMemoryPool *mp,
 				mp, colref_mapping, must_exist);
 	}
 
+	if (m_foreign_server_mdids)
+	{
+		m_foreign_server_mdids->AddRef();
+	}
+
 	return GPOS_NEW(mp) CLogicalDynamicGet(
-		mp, pnameAlias, m_ptabdesc, m_scan_id, pdrgpcrOutput, pdrgpdrgpcrPart,
-		m_partition_mdids, partition_cnstrs_disj, m_static_pruned);
+		mp, pnameAlias, Ptabdesc(), m_scan_id, pdrgpcrOutput, pdrgpdrgpcrPart,
+		m_partition_mdids, partition_cnstrs_disj, m_static_pruned,
+		m_foreign_server_mdids, m_has_security_quals);
 }
 
 //---------------------------------------------------------------------------
@@ -215,6 +242,8 @@ CLogicalDynamicGet::PxfsCandidates(CMemoryPool *mp) const
 {
 	CXformSet *xform_set = GPOS_NEW(mp) CXformSet(mp);
 	(void) xform_set->ExchangeSet(CXform::ExfDynamicGet2DynamicTableScan);
+	(void) xform_set->ExchangeSet(
+		CXform::ExfExpandDynamicGetWithForeignPartitions);
 	return xform_set;
 }
 
@@ -243,11 +272,12 @@ CLogicalDynamicGet::OsPrint(IOstream &os) const
 
 		// actual name of table in catalog and columns
 		os << " (";
-		m_ptabdesc->Name().OsPrint(os);
+		Ptabdesc()->Name().OsPrint(os);
 		os << "), ";
 		os << "Columns: [";
 		CUtils::OsPrintDrgPcr(os, m_pdrgpcrOutput);
 		os << "] Scan Id: " << m_scan_id;
+		os << " Parts to scan: " << m_partition_mdids->Size();
 	}
 
 	return os;
@@ -266,10 +296,12 @@ CLogicalDynamicGet::PstatsDerive(CMemoryPool *mp, CExpressionHandle &exprhdl,
 								 IStatisticsArray *	 // not used
 ) const
 {
-	CReqdPropRelational *prprel =
-		CReqdPropRelational::GetReqdRelationalProps(exprhdl.Prp());
-	IStatistics *stats =
-		PstatsDeriveFilter(mp, exprhdl, prprel->PexprPartPred());
+	CExpression *expr = nullptr;
+	if (m_partition_cnstrs_disj)
+	{
+		expr = m_partition_cnstrs_disj->PexprScalar(mp);
+	}
+	IStatistics *stats = PstatsDeriveFilter(mp, exprhdl, expr);
 
 	CColRefSet *pcrs = GPOS_NEW(mp) CColRefSet(mp, m_pdrgpcrOutput);
 	CUpperBoundNDVs *upper_bound_NDVs =
@@ -310,7 +342,7 @@ CLogicalDynamicGet::PstatsDeriveFilter(CMemoryPool *mp,
 	}
 
 	CStatistics *pstatsFullTable = dynamic_cast<CStatistics *>(
-		PstatsBaseTable(mp, exprhdl, m_ptabdesc, pcrsStat));
+		PstatsBaseTable(mp, exprhdl, Ptabdesc(), pcrsStat));
 
 	pcrsStat->Release();
 
@@ -347,17 +379,76 @@ CLogicalDynamicGet::PstatsDeriveFilter(CMemoryPool *mp,
 		pexprFilterNew = pexprFilter;
 	}
 
+	// Derive cardinality from unpruned partitions
+	CDouble selected_partitions_rows = CStatistics::MinRows;
+	if (dyn_get->FStaticPruned())
+	{
+		// Get unpruned partitions
+		IMdIdArray *partition_mdids = GetPartitionMdids();
+		CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
+
+		// Iterate through the unpruned partitions, and add up the rows.
+		// This is more accurate than deriving cardinality using constraints
+		// converted from predicates on partition keys through histogram
+		// bucket sampling.
+		DOUBLE unpruned_partitions_rows = 0;
+		for (ULONG ul = 0; ul < partition_mdids->Size(); ++ul)
+		{
+			IMDId *partition_mdid = (*partition_mdids)[ul];
+
+			// Retrieve row count from Relation objects
+			CDouble part_rows =
+				md_accessor->RetrieveRel(partition_mdid)->Rows();
+
+			// Accessing Relation objects is significantly faster than
+			// accessing RelationStatistics objects.
+			// However, if the row count in the Relation object is -1,
+			// retrieve row count from RelationStatistics objects.
+			// This functions as a backup mechanism, given our
+			// expectation that all leaf Relations should have a
+			// non-negative row count, and negative row count just
+			// indicates the leaf stats are missing from the Relation
+			// objects, which could happen in old MDP's.
+			if (-1 == part_rows)
+			{
+				partition_mdid->AddRef();
+				CMDIdRelStats *rel_stats_mdid = GPOS_NEW(mp)
+					CMDIdRelStats(CMDIdGPDB::CastMdid(partition_mdid));
+				part_rows = md_accessor->Pmdrelstats(rel_stats_mdid)->Rows();
+				rel_stats_mdid->Release();
+			}
+			unpruned_partitions_rows += part_rows.Get();
+		}
+		selected_partitions_rows =
+			std::max(selected_partitions_rows.Get(), unpruned_partitions_rows);
+	}
+
 	CStatsPred *pred_stats = CStatsPredUtils::ExtractPredStats(
 		mp, pexprFilterNew, nullptr /*outer_refs*/
 	);
 	pexprFilterNew->Release();
 
 	IStatistics *result_stats = CFilterStatsProcessor::MakeStatsFilter(
-		mp, pstatsFullTable, pred_stats, true /* do_cap_NDVs */);
+		mp, pstatsFullTable, pred_stats, true /* do_cap_NDVs */,
+		selected_partitions_rows);
 	pred_stats->Release();
 	pstatsFullTable->Release();
 
 	return result_stats;
 }
 
+// returns whether table contains foreign partitions
+BOOL
+CLogicalDynamicGet::ContainsForeignParts() const
+{
+	for (ULONG ul = 0; ul < m_foreign_server_mdids->Size(); ++ul)
+	{
+		IMDId *foreign_server_mdid = (*m_foreign_server_mdids)[ul];
+		if (foreign_server_mdid->IsValid())
+		{
+			return true;
+		}
+	}
+	return false;
+}
 // EOF

@@ -2,7 +2,6 @@
  *
  * gp_replication.c
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
  *
@@ -434,7 +433,7 @@ FTSReplicationStatusRetrieveDisconnectTime(FTSReplicationStatus *replication_sta
  *
  * Detect the primary-mirror replication attempt count.
  * If the replication keeps crash, we should consider mark
- * mirror down directly. Since the walsender keeps resarting,
+ * mirror down directly. Since the walsender keeps restarting,
  * walsender->replica_disconnected_at keeps updated.
  * So ignore it.
  *
@@ -541,14 +540,17 @@ is_probe_retry_needed()
 
 /*
  * Check the WalSndCtl to obtain if mirror is up or down, if the wal sender is
- * in streaming, and if synchronous replication is enabled or not.
+ * in streaming, and if synchronous replication is enabled or not, decide if
+ * the primary is ready for syncrep if needed.
  */
 void
-GetMirrorStatus(FtsResponse *response)
+GetMirrorStatus(FtsResponse *response, bool *ready_for_syncrep)
 {
 	response->IsMirrorUp = false;
 	response->IsInSync = false;
 	response->RequestRetry = false;
+	if (ready_for_syncrep != NULL)
+		*ready_for_syncrep = false;
 
 	LWLockAcquire(SyncRepLock, LW_SHARED);
 
@@ -567,6 +569,12 @@ GetMirrorStatus(FtsResponse *response)
 
 		is_up = is_mirror_up(walsender);
 		is_streaming = (walsender->state == WALSNDSTATE_STREAMING);
+
+		if (ready_for_syncrep != NULL)
+			*ready_for_syncrep = is_up &&
+								((walsender->state == WALSNDSTATE_STREAMING) ||
+								 (walsender->state == WALSNDSTATE_CATCHUP &&
+								  walsender->caughtup_within_range));
 
 		response->IsMirrorUp = is_up;
 		response->IsInSync = (is_up && is_streaming);

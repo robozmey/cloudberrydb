@@ -3,7 +3,6 @@
  * postgres.c
  *	  POSTGRES C Backend Interface
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -44,6 +43,7 @@
 #include "access/xact.h"
 #include "catalog/oid_dispatch.h"
 #include "catalog/pg_type.h"
+#include "catalog/namespace.h"
 #include "commands/async.h"
 #include "commands/prepare.h"
 #include "crypto/bufenc.h"
@@ -255,7 +255,7 @@ static int	InteractiveBackend(StringInfo inBuf);
 static int	interactive_getc(void);
 static int	SocketBackend(StringInfo inBuf);
 static int	ReadCommand(StringInfo inBuf);
-static void forbidden_in_wal_sender(char firstchar);
+static void forbidden_in_wal_sender(int firstchar);
 static bool check_log_statement(List *stmt_list);
 static int	errdetail_execute(List *raw_parsetree_list);
 static int	errdetail_params(ParamListInfo params);
@@ -500,7 +500,7 @@ SocketBackend(StringInfo inBuf)
 			doing_extended_query_message = false;
 			break;
 
-		case 'M':				/* Cloudberry Database dispatched statement from QD */
+		case 'M':				/* Apache Cloudberry dispatched statement from QD */
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
 			doing_extended_query_message = false;
 
@@ -513,7 +513,7 @@ SocketBackend(StringInfo inBuf)
 
 			break;
 
-		case 'T':				/* Cloudberry Database dispatched transaction protocol from QD */
+		case 'T':				/* Apache Cloudberry dispatched transaction protocol from QD */
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
 			doing_extended_query_message = false;
 
@@ -1971,6 +1971,13 @@ exec_simple_query(const char *query_string)
 		else
 		{
 			/*
+			 * We had better not see XACT_FLAGS_NEEDIMMEDIATECOMMIT set if
+			 * we're not calling finish_xact_command().  (The implicit
+			 * transaction block should have prevented it from getting set.)
+			 */
+			Assert(!(MyXactFlags & XACT_FLAGS_NEEDIMMEDIATECOMMIT));
+
+			/*
 			 * We need a CommandCounterIncrement after every query, except
 			 * those that start or end a transaction block.
 			 */
@@ -2229,7 +2236,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		if (parsetree_list)
 		{
 			Node	   *parsetree = (Node *) linitial(parsetree_list);
-			sourceTag = nodeTag(parsetree);
+			sourceTag = IsA(parsetree, RawStmt) ? nodeTag(((RawStmt *)parsetree)->stmt) : nodeTag(parsetree);
 		}
 
 		/* Done with the snapshot used for parsing */
@@ -2867,32 +2874,16 @@ exec_execute_message(const char *portal_name, int64 max_rows)
 
 	/*
 	 * We must copy the sourceText and prepStmtName into MessageContext in
-	 * case the portal is destroyed during finish_xact_command. Can avoid the
-	 * copy if it's not an xact command, though.
+	 * case the portal is destroyed during finish_xact_command.  We do not
+	 * make a copy of the portalParams though, preferring to just not print
+	 * them in that case.
 	 */
-	if (is_xact_command)
-	{
-		sourceText = pstrdup(portal->sourceText);
-		if (portal->prepStmtName)
-			prepStmtName = pstrdup(portal->prepStmtName);
-		else
-			prepStmtName = "<unnamed>";
-
-		/*
-		 * An xact command shouldn't have any parameters, which is a good
-		 * thing because they wouldn't be around after finish_xact_command.
-		 */
-		portalParams = NULL;
-	}
+	sourceText = pstrdup(portal->sourceText);
+	if (portal->prepStmtName)
+		prepStmtName = pstrdup(portal->prepStmtName);
 	else
-	{
-		sourceText = portal->sourceText;
-		if (portal->prepStmtName)
-			prepStmtName = portal->prepStmtName;
-		else
-			prepStmtName = "<unnamed>";
-		portalParams = portal->portalParams;
-	}
+		prepStmtName = "<unnamed>";
+	portalParams = portal->portalParams;
 
 	/*
 	 * Report query to various monitoring facilities.
@@ -2991,13 +2982,24 @@ exec_execute_message(const char *portal_name, int64 max_rows)
 
 	if (completed)
 	{
-		if (is_xact_command)
+		if (is_xact_command || (MyXactFlags & XACT_FLAGS_NEEDIMMEDIATECOMMIT))
 		{
 			/*
 			 * If this was a transaction control statement, commit it.  We
 			 * will start a new xact command for the next command (if any).
+			 * Likewise if the statement required immediate commit.  Without
+			 * this provision, we wouldn't force commit until Sync is
+			 * received, which creates a hazard if the client tries to
+			 * pipeline immediate-commit statements.
 			 */
 			finish_xact_command();
+
+			/*
+			 * These commands typically don't have any parameters, and even if
+			 * one did we couldn't print them now because the storage went
+			 * away during finish_xact_command.  So pretend there were none.
+			 */
+			portalParams = NULL;
 		}
 		else
 		{
@@ -4209,9 +4211,25 @@ ProcessInterrupts(const char* filename, int lineno)
 						(errcode(ERRCODE_GP_OPERATION_CANCELED),
 						 errmsg("canceling MPP operation%s", cancel_msg_str.data)));
 			else
-				ereport(ERROR,
-						(errcode(ERRCODE_QUERY_CANCELED),
-						 errmsg("canceling statement due to user request%s", cancel_msg_str.data)));
+			{
+				char		msec_str[32];
+
+				switch (check_log_duration(msec_str, false))
+				{
+					case 0:
+						ereport(ERROR,
+								(errcode(ERRCODE_QUERY_CANCELED),
+										errmsg("canceling statement due to user request%s", cancel_msg_str.data)));
+						break;
+					case 1:
+					case 2:
+						ereport(ERROR,
+								(errcode(ERRCODE_QUERY_CANCELED),
+										errmsg("canceling statement due to user request%s, duration:%s",
+											   cancel_msg_str.data, msec_str)));
+						break;
+				}
+			}
 		}
 	}
 
@@ -4850,7 +4868,7 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
  * received, and is used to construct the error message.
  */
 static void
-check_forbidden_in_gpdb_handlers(char firstchar)
+check_forbidden_in_gpdb_handlers(int firstchar)
 {
 	if (am_ftshandler || am_faulthandler)
 	{
@@ -4870,7 +4888,7 @@ check_forbidden_in_gpdb_handlers(char firstchar)
 }
 
 static void
-forbidden_in_retrieve_handler(char firstchar)
+forbidden_in_retrieve_handler(int firstchar)
 {
 	if (am_cursor_retrieve_handler)
 		ereport(ERROR,
@@ -5044,8 +5062,19 @@ PostgresMain(int argc, char *argv[],
 		/* read control file (error checking and contains config ) */
 		LocalProcessControlFile(false);
 
+		/*
+		 * process any libraries that should be preloaded at postmaster start
+		 */
+		process_shared_preload_libraries();
+
 		/* Initialize MaxBackends (if under postmaster, was done already) */
 		InitializeMaxBackends();
+
+		/*
+		 * Now that modules have been loaded, we can process any custom resource
+		 * managers specified in the wal_consistency_checking GUC.
+		 */
+		InitializeWalConsistencyChecking();
 	}
 
 	/* Early initialization */
@@ -5371,12 +5400,6 @@ PostgresMain(int argc, char *argv[],
 		InvalidateCatalogSnapshotConditionally();
 
 		/*
-		 * Also consider releasing our catalog snapshot if any, so that it's
-		 * not preventing advance of global xmin while we wait for the client.
-		 */
-		InvalidateCatalogSnapshotConditionally();
-
-		/*
 		 * (1) If we've reached idle state, tell the frontend we're ready for
 		 * a new query.
 		 *
@@ -5409,7 +5432,7 @@ PostgresMain(int argc, char *argv[],
 				pgstat_report_activity(STATE_IDLEINTRANSACTION_ABORTED, NULL);
 
 				/* Start the idle-in-transaction timer */
-				if (IdleInTransactionSessionTimeout > 0)
+				if (IdleInTransactionSessionTimeout > 0 && Gp_role != GP_ROLE_EXECUTE)
 				{
 					idle_in_transaction_timeout_enabled = true;
 					enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
@@ -5423,7 +5446,7 @@ PostgresMain(int argc, char *argv[],
 				pgstat_report_activity(STATE_IDLEINTRANSACTION, NULL);
 
 				/* Start the idle-in-transaction timer */
-				if (IdleInTransactionSessionTimeout > 0)
+				if (IdleInTransactionSessionTimeout > 0 && Gp_role != GP_ROLE_EXECUTE)
 				{
 					idle_in_transaction_timeout_enabled = true;
 					enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
@@ -5602,11 +5625,8 @@ PostgresMain(int argc, char *argv[],
 					/*
 					 * This is exactly like 'Q' above except we peel off and
 					 * set the snapshot information right away.
-					 *
-					 * Since PortalDefineQuery() does not take NULL query string,
-					 * we initialize it with a constant empty string.
 					 */
-					const char *query_string = pstrdup("");
+					const char *query_string = "";
 
 					const char *serializedDtxContextInfo = NULL;
 					const char *serializedPlantree = NULL;
@@ -5701,6 +5721,15 @@ PostgresMain(int argc, char *argv[],
 					if (resgroupInfoLen > 0)
 						resgroupInfoBuf = pq_getmsgbytes(&input_message, resgroupInfoLen);
 
+					/* process local variables for temporary namespace */
+					{
+						Oid			tempNamespaceId, tempToastNamespaceId;
+
+						tempNamespaceId = pq_getmsgint(&input_message, sizeof(tempNamespaceId));
+						tempToastNamespaceId = pq_getmsgint(&input_message, sizeof(tempToastNamespaceId));
+						SetTempNamespaceStateAfterBoot(tempNamespaceId, tempToastNamespaceId);
+					}
+
 					pq_getmsgend(&input_message);
 
 					elog((Debug_print_full_dtm ? LOG : DEBUG5), "MPP dispatched stmt from QD: %s.",query_string);
@@ -5764,6 +5793,7 @@ PostgresMain(int argc, char *argv[],
 
 					SetUserIdAndSecContext(GetOuterUserId(), 0);
 
+					SIMPLE_FAULT_INJECTOR("qe_exec_finished");
 					send_ready_for_query = true;
 				}
 				break;
@@ -6079,7 +6109,7 @@ PostgresMain(int argc, char *argv[],
  * message was received, and is used to construct the error message.
  */
 static void
-forbidden_in_wal_sender(char firstchar)
+forbidden_in_wal_sender(int firstchar)
 {
 	if (am_walsender)
 	{

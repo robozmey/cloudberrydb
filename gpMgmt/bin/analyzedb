@@ -52,14 +52,14 @@ NUM_REPORTS_TO_SAVE = 3
 GET_ALL_DATA_TABLES_SQL = """
 select n.nspname as schemaname, c.relname as tablename
 from pg_class c, pg_namespace n
-where c.relnamespace = n.oid and c.relkind='r'::char
+where c.relnamespace = n.oid and (c.relkind='r'::char or c.relkind = 'm'::char)
 and (c.relnamespace >= 16384 or n.nspname = 'public' or n.nspname = 'pg_catalog')
 and c.oid not in (select ftrelid from pg_foreign_table)
 """
 
 GET_VALID_DATA_TABLES_SQL = """
 select n.nspname as schemaname, c.relname as tablename from pg_class c, pg_namespace n where
-c.relnamespace = n.oid and c.oid in (%s) and c.relkind='r'::char and (c.relnamespace >= 16384 or n.nspname = 'public' or n.nspname = 'pg_catalog') and c.oid not in (select ftrelid from pg_foreign_table)
+c.relnamespace = n.oid and c.oid in (%s) and (c.relkind='r'::char or c.relkind = 'm'::char) and (c.relnamespace >= 16384 or n.nspname = 'public' or n.nspname = 'pg_catalog') and c.oid not in (select ftrelid from pg_foreign_table)
 """
 
 GET_REQUESTED_AO_DATA_TABLE_INFO_SQL = """
@@ -86,7 +86,7 @@ GET_REQUESTED_LAST_OP_INFO_SQL = """
 GET_ALL_DATA_TABLES_IN_SCHEMA_SQL = """
 select n.nspname as schemaname, c.relname as tablename
 from pg_class c, pg_namespace n
-where c.relnamespace = n.oid and c.relkind='r'::char
+where c.relnamespace = n.oid and (c.relkind='r'::char or c.relkind = 'm'::char)
  and (c.relnamespace >= 16384 or n.nspname = 'public' or n.nspname = 'pg_catalog')
 and c.oid not in (select ftrelid from pg_foreign_table)
 and n.nspname = '%s'
@@ -112,7 +112,7 @@ and c.relkind = 'p' and c.relispartition
 GET_REQUESTED_NON_AO_TABLES_SQL = """
 select n.nspname as schemaname, c.relname as tablename
 from pg_class c, pg_namespace n
-where c.relnamespace = n.oid and c.relkind='r'::char
+where c.relnamespace = n.oid and (c.relkind='r'::char or c.relkind = 'm'::char)
 and (c.relnamespace >= 16384 or n.nspname = 'public' or n.nspname = 'pg_catalog')
 and c.oid not in (select ftrelid from pg_foreign_table)
 and c.oid not in (select relid from pg_appendonly)
@@ -121,6 +121,12 @@ and c.oid in (%s)
 
 GET_COLUMN_NAMES_SQL = """
 SELECT attname FROM pg_attribute WHERE attrelid = %s AND attnum > 0 AND NOT attisdropped
+"""
+
+GET_SCHEMA_WITH_TEMP_TABLE_SQL = """
+SELECT n.nspname
+FROM pg_class c, pg_namespace n
+WHERE c.relnamespace = n.oid AND c.relpersistence = 't';
 """
 
 GET_INCLUDED_COLUMNS_FROM_EXCLUDE_SQL = """
@@ -548,7 +554,7 @@ class AnalyzeDb(Operation):
         At the same time, parse the requested columns and populate the col_dict.
         If a requested table is partitioned, expand all the leaf partitions.
         """
-        logger.info("Getting and verifying input tables...")
+        logger.info("Getting and verifying input tables and materialized views...")
         if self.single_table:
 
             # Check that the table name given on the command line is schema-qualified.
@@ -576,7 +582,7 @@ class AnalyzeDb(Operation):
             tablenames = parse_tables_from_file(self.conn, self.config_file)
             canonical_tables = validate_tables(self.conn, tablenames)
             all_root_partitions = run_sql(self.conn, GET_ALL_ROOT_PARTITION_TABLES_SQL)
-            cfg_file = open(self.config_file, 'rU')
+            cfg_file = open(self.config_file, 'r')
             for line in cfg_file:
                 # XXX: The file format does not allow listing tables with spaces in the name,
                 # even when quoted
@@ -628,10 +634,15 @@ class AnalyzeDb(Operation):
             tup = (schema_tbl[0], schema_tbl[1])
             mid_level_partitions.add(tup)
 
+        qresult = run_sql(self.conn, GET_SCHEMA_WITH_TEMP_TABLE_SQL)
+        temp_schema_set = set([x[0] for x in qresult])
+
         ret = set()
         for can in candidates:
             schema = can[0]
             table = can[1]
+            if schema in temp_schema_set:
+                continue
             if '\n' in schema or ',' in schema or ':' in schema:
                 raise Exception('Schema name has an invalid character "\\n", ":", "," : "%s"' % schema)
             if '\n' in table or ',' in table or ':' in table:
@@ -1196,7 +1207,7 @@ def validate_dir(path):
 
 # Parse a list of tables from the config file.
 def parse_tables_from_file(conn, include_file):
-    in_file = open(include_file, 'rU')
+    in_file = open(include_file, 'r')
     line_no = 1
     tables = []
     for line in in_file:
@@ -1327,7 +1338,6 @@ def create_parser():
     parser.add_option('-v', '--verbose', action='store_true', dest='verbose', help='Print debug messages.')
     parser.add_option('-a', action='store_true', dest='silent', default=False,
                       help="Quiet mode. Do not prompt for user confirmation.")
-
     return parser
 
 

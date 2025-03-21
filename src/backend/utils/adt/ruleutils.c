@@ -4,7 +4,6 @@
  *	  Functions to convert stored expressions/querytrees back to
  *	  source text
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -37,11 +36,13 @@
 #include "catalog/pg_partitioned_table.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_statistic_ext.h"
+#include "catalog/pg_task.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
+#include "common/fe_memutils.h"
 #include "common/keywords.h"
 #include "executor/spi.h"
 #include "funcapi.h"
@@ -103,6 +104,9 @@
 #define PRETTY_INDENT(context)	((context)->prettyFlags & PRETTYFLAG_INDENT)
 #define PRETTY_SCHEMA(context)	((context)->prettyFlags & PRETTYFLAG_SCHEMA)
 
+/* macros for negative operator only used in current file */
+#define	Int4NegOperator			558
+#define	NumericNegOperator		1751
 
 /* ----------
  * Local data types
@@ -4946,6 +4950,8 @@ set_deparse_plan(deparse_namespace *dpns, Plan *plan)
 		dpns->index_tlist = ((ForeignScan *) plan)->fdw_scan_tlist;
 	else if (IsA(plan, CustomScan))
 		dpns->index_tlist = ((CustomScan *) plan)->custom_scan_tlist;
+	else if (IsA(plan, DynamicIndexOnlyScan))
+		dpns->index_tlist = ((DynamicIndexOnlyScan *) plan)->indexscan.indextlist;
 	else
 		dpns->index_tlist = NIL;
 }
@@ -6298,6 +6304,35 @@ get_rule_sortgroupclause(Index ref, List *tlist, bool force_colno,
 		get_const_expr((Const *) expr, context, 1);
 	else if (!expr || IsA(expr, Var))
 		get_rule_expr(expr, context, true);
+	else if (expr && IsA(expr, OpExpr))
+	{
+		OpExpr		*opexpr = (OpExpr *)expr;
+		List		*args = opexpr->args;
+		bool		need_paren = PRETTY_PAREN(context);
+
+		/*
+		 * Const-folder the expression(opexpr plus const) to negative const,
+		 * mainly there are two operators we need to worried about, namely
+		 * in4um(Int4NegOperator) and numeric_uminus(NumericNegOperator),
+		 * and get_const_expr() is responsible for end up getting labeled
+		 * with a typecast.
+		 */
+		if (list_length(args) == 1)
+		{
+			Node	   *arg = (Node *) linitial(args);
+			Oid			opno = opexpr->opno;
+
+			if ((opno == Int4NegOperator || opno == NumericNegOperator) &&
+				 IsA(arg, Const))
+				expr = (Node *) expression_planner((Expr *)expr);
+		}
+
+		if (need_paren)
+			appendStringInfoChar(context->buf, '(');
+		get_rule_expr(expr, context, true);
+		if (need_paren)
+			appendStringInfoChar(context->buf, ')');
+	}
 	else
 	{
 		/*
@@ -12349,6 +12384,71 @@ flatten_reloptions(Oid relid)
 	ReleaseSysCache(tuple);
 
 	return result;
+}
+
+/*
+ * Get dynamic table's corresponding task SCHEDULE.
+ */
+Datum
+pg_get_dynamic_table_schedule(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Relation 	pg_task;
+	StringInfoData buf;
+	char		*username;
+	SysScanDesc		scanDescriptor = NULL;
+	ScanKeyData scanKey[2];
+	HeapTuple		heapTuple = NULL;
+	Form_pg_task	task = NULL;
+
+	if (!get_rel_relisdynamic(relid))
+	{
+		ereport(WARNING,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("relation of oid \"%u\" is not dynamic table", relid)));
+		PG_RETURN_TEXT_P(cstring_to_text(""));
+	}
+
+	pg_task = table_open(TaskRelationId, AccessShareLock);
+	if (!pg_task)
+	{
+		table_close(pg_task, AccessShareLock);
+		PG_RETURN_TEXT_P(cstring_to_text(""));
+	}
+
+	initStringInfo(&buf);
+	appendStringInfo(&buf, "%s%u", DYNAMIC_TASK_PREFIX, relid);
+
+	/* FIXME: is it possible that supersuers try to dump task? */
+	username = GetUserNameFromId(GetUserId(), false);
+
+	ScanKeyInit(&scanKey[0], Anum_pg_task_jobname,
+				BTEqualStrategyNumber, F_TEXTEQ, CStringGetTextDatum(buf.data));
+	ScanKeyInit(&scanKey[1], Anum_pg_task_username,
+				BTEqualStrategyNumber, F_TEXTEQ, CStringGetTextDatum(username));
+
+	scanDescriptor = systable_beginscan(pg_task, TaskJobNameUserNameIndexId, false,
+										NULL, 2, scanKey);
+
+	heapTuple = systable_getnext(scanDescriptor);
+	if (!HeapTupleIsValid(heapTuple))
+	{
+		ereport(WARNING,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("task \"%s\" does not exist", buf.data)));
+		table_close(pg_task, AccessShareLock);
+		PG_RETURN_TEXT_P(cstring_to_text(""));
+	}
+
+	task = (Form_pg_task) GETSTRUCT(heapTuple);
+
+	resetStringInfo(&buf);
+	appendStringInfo(&buf, "%s", text_to_cstring(&task->schedule));
+
+	systable_endscan(scanDescriptor);
+	table_close(pg_task, AccessShareLock);
+
+	PG_RETURN_TEXT_P(string_to_text(buf.data));
 }
 
 /* ----------

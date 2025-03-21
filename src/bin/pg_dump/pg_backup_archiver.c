@@ -6,7 +6,6 @@
  *
  *	See the headers to pg_restore for more details.
  *
- *	Portions Copyright (c) 2023, HashData Technology Limited.
  * Copyright (c) 2000, Philip Warner
  *	Rights are granted to use this software in any way so long
  *	as this notice is not removed.
@@ -43,8 +42,8 @@
 
 #define TEXT_DUMP_HEADER "--\n-- PostgreSQL database dump\n--\n\n"
 #define TEXT_DUMPALL_HEADER "--\n-- PostgreSQL database cluster dump\n--\n\n"
-#define GP_TEXT_DUMP_HEADER "--\n-- Cloudberry Database database dump\n--\n\n"
-#define GP_TEXT_DUMPALL_HEADER "--\n-- Cloudberry Database cluster dump\n--\n\n"
+#define GP_TEXT_DUMP_HEADER "--\n-- Apache Cloudberry database dump\n--\n\n"
+#define GP_TEXT_DUMPALL_HEADER "--\n-- Apache Cloudberry cluster dump\n--\n\n"
 
 /* state needed to save/restore an archive's output target */
 typedef struct _outputContext
@@ -420,7 +419,8 @@ RestoreArchive(Archive *AHX)
 		AHX->minRemoteVersion = 0;
 		AHX->maxRemoteVersion = 9999999;
 
-		ConnectDatabase(AHX, &ropt->cparams, false, false);
+		ConnectDatabase(AHX, &ropt->cparams, false, ropt->binary_upgrade);
+
 		/*
 		 * If we're talking to the DB directly, don't send comments since they
 		 * obscure SQL when displaying errors
@@ -463,7 +463,7 @@ RestoreArchive(Archive *AHX)
 	if (ropt->filename || ropt->compression)
 		SetOutput(AH, ropt->filename, ropt->compression);
 
-	ahprintf(AH, "--\n-- Cloudberry Database database dump\n--\n\n");
+	ahprintf(AH, "--\n-- Apache Cloudberry database dump\n--\n\n");
 
 	if (AH->archiveRemoteVersion)
 		ahprintf(AH, "-- Dumped from database version %s\n",
@@ -744,7 +744,7 @@ RestoreArchive(Archive *AHX)
 	if (AH->public.verbose)
 		dumpTimestamp(AH, "Completed on", time(NULL));
 
-	ahprintf(AH, "--\n-- Cloudberry Database database dump complete\n--\n\n");
+	ahprintf(AH, "--\n-- Apache Cloudberry database dump complete\n--\n\n");
 
 	/*
 	 * Clean up & we're done.
@@ -2723,6 +2723,7 @@ processEncodingEntry(ArchiveHandle *AH, TocEntry *te)
 			fatal("unrecognized encoding \"%s\"",
 				  ptr1);
 		AH->public.encoding = encoding;
+		setFmtEncoding(encoding);
 	}
 	else
 		fatal("invalid ENCODING item: %s",
@@ -4208,7 +4209,7 @@ restore_toc_entries_postfork(ArchiveHandle *AH, TocEntry *pending_list)
 	/*
 	 * Now reconnect the single parent connection.
 	 */
-	ConnectDatabase((Archive *) AH, &ropt->cparams, true, false);
+	ConnectDatabase((Archive *) AH, &ropt->cparams, true, ropt->binary_upgrade);
 
 	/* re-establish fixed state */
 	_doSetFixedOutputState(AH);
@@ -4873,6 +4874,9 @@ CloneArchive(ArchiveHandle *AH)
 	 * Connect our new clone object to the database, using the same connection
 	 * parameters used for the original connection.
 	 */
+	ConnectDatabase((Archive *) clone, &clone->public.ropt->cparams, true, clone->public.ropt->binary_upgrade);
+
+	/* re-establish fixed state */
 	if (AH->mode == archModeRead)
 	{
 		Assert(AH->connection == NULL);

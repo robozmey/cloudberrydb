@@ -73,6 +73,12 @@ struct ExprContext;
  * Maximum number of array subscripts (arbitrary limit)
  */
 #define MAXDIM 6
+/*
+ * Maximum number of elements in an array.  We limit this to at most about a
+ * quarter billion elements, so that it's not necessary to check for overflow
+ * in quite so many places --- for instance when palloc'ing Datum arrays.
+ */
+#define MaxArraySize ((Size) (MaxAllocSize / sizeof(Datum)))
 
 /*
  * Arrays are varlena objects, so must meet the varlena convention that
@@ -403,8 +409,10 @@ extern void deconstruct_array(ArrayType *array,
 							  Datum **elemsp, bool **nullsp, int *nelemsp);
 extern bool array_contains_nulls(ArrayType *array);
 
-extern ArrayBuildState *initArrayResult(Oid element_type,
-										MemoryContext rcontext, bool subcontext);
+extern ArrayBuildState *
+initArrayResult(Oid element_type, MemoryContext rcontext, bool subcontext);
+extern ArrayBuildState *
+initArrayResultWithSize(Oid element_type, MemoryContext rcontext, bool subcontext, int initsize);
 extern ArrayBuildState *accumArrayResult(ArrayBuildState *astate,
 										 Datum dvalue, bool disnull,
 										 Oid element_type,

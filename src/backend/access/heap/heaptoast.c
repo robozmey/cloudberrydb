@@ -35,7 +35,7 @@
 
 static void *
 heap_toast_insert_or_update_generic(Relation rel, void *newtup, void *oldtup,
-									MemTupleBinding *pbind, int options, bool ismemtuple);
+									MemTupleBinding *pbind, int options, int toast_tuple_target, bool ismemtuple);
 
 /* ----------
  * heap_toast_delete -
@@ -100,18 +100,18 @@ heap_toast_delete(Relation rel, HeapTuple oldtup, bool is_speculative)
 HeapTuple
 heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup, int options)
 {
-	return (HeapTuple) heap_toast_insert_or_update_generic(rel, newtup, oldtup, NULL, options, false);
+	return (HeapTuple) heap_toast_insert_or_update_generic(rel, newtup, oldtup, NULL, options, TOAST_TUPLE_TARGET, false);
 }
 
 MemTuple memtup_toast_insert_or_update(Relation rel, MemTuple newtup, MemTuple oldtup,
-									   MemTupleBinding *pbind, int options)
+									   MemTupleBinding *pbind, int toast_tuple_target, int options)
 {
-	return (MemTuple) heap_toast_insert_or_update_generic(rel, newtup, oldtup, pbind, options, true);
+	return (MemTuple) heap_toast_insert_or_update_generic(rel, newtup, oldtup, pbind, toast_tuple_target, options, true);
 }
 
 static void *
 heap_toast_insert_or_update_generic(Relation rel, void *newtup, void *oldtup,
-									MemTupleBinding *pbind, int options, bool ismemtuple)
+									MemTupleBinding *pbind, int options, int toast_tuple_target, bool ismemtuple)
 {
 	void		*result_gtuple;
 	TupleDesc	tupleDesc;
@@ -210,10 +210,8 @@ heap_toast_insert_or_update_generic(Relation rel, void *newtup, void *oldtup,
 	}
 	else
 	{
-		/* Since reloptions for AO table is not permitted, so using TOAST_TUPLE_TARGET */
-		hoff = sizeof(MemTupleData);
-		hoff = MAXALIGN(hoff);
-		maxDataLen = TOAST_TUPLE_TARGET - hoff;
+		maxDataLen = toast_tuple_target;
+		hoff = -1; /* keep compiler quiet about using 'hoff' uninitialized */
 	}
 
 	/*
@@ -295,7 +293,15 @@ heap_toast_insert_or_update_generic(Relation rel, void *newtup, void *oldtup,
 	 * increase the target tuple size, so that MAIN attributes aren't stored
 	 * externally unless really necessary.
 	 */
-	maxDataLen = TOAST_TUPLE_TARGET_MAIN - hoff;
+	/*
+	 * FIXME: Should we do something like this with memtuples on
+	 * AO tables too? Currently we do not increase the target tuple size for AO
+	 * table, so there are occasions when columns of type 'm' will be stored
+	 * out-of-line but they could otherwise be accommodated in-block
+	 * c.f. upstream Postgres commit ca7c8168de76459380577eda56a3ed09b4f6195c
+	 */
+	if (!ismemtuple)
+		maxDataLen = TOAST_TUPLE_TARGET_MAIN - hoff;
 
 	while (heap_compute_data_size(tupleDesc,
 								  toast_values, toast_isnull) > maxDataLen &&

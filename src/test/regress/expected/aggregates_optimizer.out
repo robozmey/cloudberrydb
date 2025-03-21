@@ -27,8 +27,8 @@ SELECT avg(b)::numeric(10,3) AS avg_107_943 FROM aggtest;
 (1 row)
 
 SELECT avg(gpa) AS avg_3_4 FROM ONLY student;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ONLY in the FROM clause
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ONLY in the FROM clause
  avg_3_4 
 ---------
      3.4
@@ -53,8 +53,8 @@ SELECT sum(b) AS avg_431_773 FROM aggtest;
 (1 row)
 
 SELECT sum(gpa) AS avg_6_8 FROM ONLY student;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ONLY in the FROM clause
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ONLY in the FROM clause
  avg_6_8 
 ---------
      6.8
@@ -79,8 +79,8 @@ SELECT max(aggtest.b) AS max_324_78 FROM aggtest;
 (1 row)
 
 SELECT max(student.gpa) AS max_3_7 FROM student;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Inherited tables
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
  max_3_7 
 ---------
      3.7
@@ -579,8 +579,6 @@ group by ten order by ten;
 
 select ten, count(four), sum(DISTINCT four) from onek
 group by ten order by ten;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: GPDB_96_MERGE_FIXME: Intermediate aggregate stage not implemented not supported in DXL
  ten | count | sum 
 -----+-------+-----
    0 |   100 |   2
@@ -627,8 +625,6 @@ SELECT oldcnt(*) AS cnt_1000 FROM onek;
 (1 row)
 
 SELECT sum2(q1,q2) FROM int8_tbl;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
        sum2        
 -------------------
  18271560493827981
@@ -661,8 +657,6 @@ LINE 4:                where sum(distinct a.four + b.four) = b.four)...
 select
   (select max((select i.unique2 from tenk1 i where i.unique1 = o.unique1)))
 from tenk1 o;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Query-to-DXL Translation: No variable entry found due to incorrect normalization of query
  max  
 ------
  9999
@@ -676,8 +670,8 @@ from generate_series(1, 3) s1,
      lateral (select s2, sum(s1 + s2) sm
               from generate_series(1, 3) s2 group by s2) ss
 order by 1, 2;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: LATERAL
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: LATERAL
                                QUERY PLAN                               
 ------------------------------------------------------------------------
  Sort
@@ -705,8 +699,8 @@ from generate_series(1, 3) s1,
      lateral (select s2, sum(s1 + s2) sm
               from generate_series(1, 3) s2 group by s2) ss
 order by 1, 2;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: LATERAL
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: LATERAL
  s1 | s2 | sm 
 ----+----+----
   1 |  1 |  2
@@ -724,8 +718,8 @@ explain (verbose, costs off)
 select array(select sum(x+y) s
             from generate_series(1,3) y group by y order by s)
   from generate_series(1,3) x;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-Scalar Subquery
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
                             QUERY PLAN                             
 -------------------------------------------------------------------
  Function Scan on pg_catalog.generate_series x
@@ -748,8 +742,8 @@ DETAIL:  Feature not supported: Non-Scalar Subquery
 select array(select sum(x+y) s
             from generate_series(1,3) y group by y order by s)
   from generate_series(1,3) x;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-Scalar Subquery
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
   array  
 ---------
  {2,3,4}
@@ -768,7 +762,7 @@ CREATE TEMPORARY TABLE bitwise_test(
   x INT2,
   y BIT(4)
 );
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i2' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i2' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 -- empty case
 SELECT
@@ -852,7 +846,7 @@ CREATE TEMPORARY TABLE bool_test(
   b2 BOOL,
   b3 BOOL,
   b4 BOOL);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'b1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'b1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 -- empty case
 SELECT
@@ -911,14 +905,17 @@ FROM bool_test;
 -- Basic cases
 explain (costs off)
   select min(unique1) from tenk1;
-                   QUERY PLAN                   
-------------------------------------------------
- Finalize Aggregate
-   ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Partial Aggregate
-               ->  Seq Scan on tenk1
- Optimizer: Pivotal Optimizer (GPORCA)
-(5 rows)
+                              QUERY PLAN
+----------------------------------------------------------------------
+ Aggregate
+   ->  Limit
+         ->  Gather Motion 3:1  (slice1; segments: 3)
+               Merge Key: unique1
+               ->  Limit
+                     ->  Index Only Scan using tenk1_unique1 on tenk1
+                           Index Cond: (unique1 IS NOT NULL)
+ Optimizer: GPORCA
+(8 rows)
 
 select min(unique1) from tenk1;
  min 
@@ -928,14 +925,17 @@ select min(unique1) from tenk1;
 
 explain (costs off)
   select max(unique1) from tenk1;
-                   QUERY PLAN                   
-------------------------------------------------
- Finalize Aggregate
-   ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Partial Aggregate
-               ->  Seq Scan on tenk1
- Optimizer: Pivotal Optimizer (GPORCA)
-(5 rows)
+                                  QUERY PLAN
+-------------------------------------------------------------------------------
+ Aggregate
+   ->  Limit
+         ->  Gather Motion 3:1  (slice1; segments: 3)
+               Merge Key: unique1
+               ->  Limit
+                     ->  Index Only Scan Backward using tenk1_unique1 on tenk1
+                           Index Cond: (unique1 IS NOT NULL)
+ Optimizer: GPORCA
+(8 rows)
 
 select max(unique1) from tenk1;
  max  
@@ -1079,14 +1079,17 @@ select f1, (select min(unique1) from tenk1 where unique1 > f1) AS gt
 -- check some cases that were handled incorrectly in 8.3.0
 explain (costs off)
   select distinct max(unique2) from tenk1;
-                   QUERY PLAN                   
-------------------------------------------------
- Finalize Aggregate
-   ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Partial Aggregate
-               ->  Seq Scan on tenk1
- Optimizer: Pivotal Optimizer (GPORCA)
-(5 rows)
+                                  QUERY PLAN
+-------------------------------------------------------------------------------
+ Aggregate
+   ->  Limit
+         ->  Gather Motion 3:1  (slice1; segments: 3)
+               Merge Key: unique2
+               ->  Limit
+                     ->  Index Only Scan Backward using tenk1_unique2 on tenk1
+                           Index Cond: (unique2 IS NOT NULL)
+ Optimizer: GPORCA
+(8 rows)
 
 select distinct max(unique2) from tenk1;
  max  
@@ -1100,12 +1103,15 @@ explain (costs off)
 ------------------------------------------------------
  Sort
    Sort Key: (max(unique2))
-   ->  Finalize Aggregate
-         ->  Gather Motion 3:1  (slice1; segments: 3)
-               ->  Partial Aggregate
-                     ->  Seq Scan on tenk1
- Optimizer: Pivotal Optimizer (GPORCA)
-(7 rows)
+   ->  Aggregate
+         ->  Limit
+               ->  Gather Motion 3:1  (slice1; segments: 3)
+                     Merge Key: unique2
+                     ->  Limit
+                           ->  Index Only Scan Backward using tenk1_unique2 on tenk1
+                                 Index Cond: (unique2 IS NOT NULL)
+ Optimizer: GPORCA
+(10 rows)
 
 select max(unique2) from tenk1 order by 1;
  max  
@@ -1119,12 +1125,15 @@ explain (costs off)
 ------------------------------------------------------
  Sort
    Sort Key: (max(unique2))
-   ->  Finalize Aggregate
-         ->  Gather Motion 3:1  (slice1; segments: 3)
-               ->  Partial Aggregate
-                     ->  Seq Scan on tenk1
- Optimizer: Pivotal Optimizer (GPORCA)
-(7 rows)
+   ->  Aggregate
+         ->  Limit
+               ->  Gather Motion 3:1  (slice1; segments: 3)
+                     Merge Key: unique2
+                     ->  Limit
+                           ->  Index Only Scan Backward using tenk1_unique2 on tenk1
+                                 Index Cond: (unique2 IS NOT NULL)
+ Optimizer: GPORCA
+(10 rows)
 
 select max(unique2) from tenk1 order by max(unique2);
  max  
@@ -1159,12 +1168,15 @@ explain (costs off)
  Sort
    Sort Key: (generate_series(1, 3)) DESC
    ->  ProjectSet
-         ->  Finalize Aggregate
-               ->  Gather Motion 3:1  (slice1; segments: 3)
-                     ->  Partial Aggregate
-                           ->  Seq Scan on tenk1
- Optimizer: Pivotal Optimizer (GPORCA)
-(8 rows)
+         ->  Aggregate
+               ->  Limit
+                     ->  Gather Motion 3:1  (slice1; segments: 3)
+                           Merge Key: unique2
+                           ->  Limit
+                                 ->  Index Only Scan Backward using tenk1_unique2 on tenk1
+                                       Index Cond: (unique2 IS NOT NULL)
+ Optimizer: GPORCA
+(11 rows)
 
 select max(unique2), generate_series(1,3) as g from tenk1 order by g desc;
  max  | g 
@@ -1194,7 +1206,7 @@ select max(100) from tenk1;
 
 -- try it on an inheritance tree
 create table minmaxtest(f1 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table minmaxtest1() inherits (minmaxtest);
 NOTICE:  table has parent, setting distribution columns to match parent table
@@ -1207,8 +1219,8 @@ create index minmaxtest1i on minmaxtest1(f1);
 create index minmaxtest2i on minmaxtest2(f1 desc);
 create index minmaxtest3i on minmaxtest3(f1) where f1 is not null;
 insert into minmaxtest values(11), (12);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Inherited tables
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
 insert into minmaxtest1 values(13), (14);
 insert into minmaxtest2 values(15), (16);
 insert into minmaxtest3 values(17), (18);
@@ -1219,10 +1231,10 @@ analyze minmaxtest3;
 set enable_seqscan=off;
 explain (costs off)
   select min(f1), max(f1) from minmaxtest;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Inherited tables
-                                            QUERY PLAN                                             
----------------------------------------------------------------------------------------------------
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
+                                             QUERY PLAN                                             
+----------------------------------------------------------------------------------------------------
  Result
    InitPlan 1 (returns $0)  (slice1)
      ->  Limit
@@ -1254,8 +1266,8 @@ DETAIL:  Feature not supported: Inherited tables
 (28 rows)
 
 select min(f1), max(f1) from minmaxtest;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Inherited tables
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
  min | max 
 -----+-----
   11 |  18
@@ -1265,28 +1277,24 @@ reset enable_seqscan;
 -- DISTINCT doesn't do anything useful here, but it shouldn't fail
 explain (costs off)
   select distinct min(f1), max(f1) from minmaxtest;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Inherited tables
-                                QUERY PLAN                                
---------------------------------------------------------------------------
- Unique
-   Group Key: (min(minmaxtest.f1)), (max(minmaxtest.f1))
-   ->  Sort
-         Sort Key: (min(minmaxtest.f1)), (max(minmaxtest.f1))
-         ->  Finalize Aggregate
-               ->  Gather Motion 3:1  (slice1; segments: 3)
-                     ->  Partial Aggregate
-                           ->  Append
-                                 ->  Seq Scan on minmaxtest minmaxtest_1
-                                 ->  Seq Scan on minmaxtest1 minmaxtest_2
-                                 ->  Seq Scan on minmaxtest2 minmaxtest_3
-                                 ->  Seq Scan on minmaxtest3 minmaxtest_4
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Partial Aggregate
+               ->  Append
+                     ->  Seq Scan on minmaxtest minmaxtest_1
+                     ->  Seq Scan on minmaxtest1 minmaxtest_2
+                     ->  Seq Scan on minmaxtest2 minmaxtest_3
+                     ->  Seq Scan on minmaxtest3 minmaxtest_4
  Optimizer: Postgres query optimizer
-(13 rows)
+(9 rows)
 
 select distinct min(f1), max(f1) from minmaxtest;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Inherited tables
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
  min | max 
 -----+-----
   11 |  18
@@ -1346,55 +1354,51 @@ explain (costs off) select a,c from t1 group by a,c,d;
 explain (costs off) select *
 from t1 inner join t2 on t1.a = t2.x and t1.b = t2.y
 group by t1.a,t1.b,t1.c,t1.d,t2.x,t2.y,t2.z;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Operator Fallback: InnerIndexNestLoopJoin may have wrong plan not supported
-                         QUERY PLAN                         
-------------------------------------------------------------
+                      QUERY PLAN                       
+-------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  HashAggregate
-         Group Key: t1.a, t1.b, t2.x, t2.y
-         ->  Hash Join
-               Hash Cond: ((t2.x = t1.a) AND (t2.y = t1.b))
-               ->  Seq Scan on t2
-               ->  Hash
-                     ->  Seq Scan on t1
- Optimizer: Postgres query optimizer
-(9 rows)
+   ->  Nested Loop
+         Join Filter: true
+         ->  Seq Scan on t1
+         ->  Index Scan using t2_pkey on t2
+               Index Cond: ((x = t1.a) AND (y = t1.b))
+ Optimizer: Pivotal Optimizer (GPORCA)
+(7 rows)
 
 -- Test case where t1 can be optimized but not t2
 explain (costs off) select t1.*,t2.x,t2.z
 from t1 inner join t2 on t1.a = t2.x and t1.b = t2.y
 group by t1.a,t1.b,t1.c,t1.d,t2.x,t2.z;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Operator Fallback: InnerIndexNestLoopJoin may have wrong plan not supported
-                         QUERY PLAN                         
-------------------------------------------------------------
+                      QUERY PLAN                       
+-------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  HashAggregate
-         Group Key: t1.a, t1.b, t2.x, t2.z
-         ->  Hash Join
-               Hash Cond: ((t2.x = t1.a) AND (t2.y = t1.b))
-               ->  Seq Scan on t2
-               ->  Hash
-                     ->  Seq Scan on t1
- Optimizer: Postgres query optimizer
-(9 rows)
+   ->  Nested Loop
+         Join Filter: true
+         ->  Seq Scan on t1
+         ->  Index Scan using t2_pkey on t2
+               Index Cond: ((x = t1.a) AND (y = t1.b))
+ Optimizer: Pivotal Optimizer (GPORCA)
+(7 rows)
 
 -- Cannot optimize when PK is deferrable
 explain (costs off) select * from t3 group by a,b,c;
-                      QUERY PLAN                      
+                QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on t3
+   ->  GroupAggregate
+         Group Key: a, b, c
+         ->  Sort
+               Sort Key: a, b, c
+               ->  Seq Scan on t3
  Optimizer: Pivotal Optimizer (GPORCA)
-(3 rows)
+(7 rows)
 
 create temp table t1c () inherits (t1);
 NOTICE:  table has parent, setting distribution columns to match parent table
 -- Ensure we don't remove any columns when t1 has a child table
 explain (costs off) select * from t1 group by a,b,c,d;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Inherited tables
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
                 QUERY PLAN                 
 -------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
@@ -1408,8 +1412,8 @@ DETAIL:  Feature not supported: Inherited tables
 
 -- Okay to remove columns if we're only querying the parent.
 explain (costs off) select * from only t1 group by a,b,c,d;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ONLY in the FROM clause
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ONLY in the FROM clause
                 QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
@@ -1435,11 +1439,10 @@ explain (costs off) select * from p_t1 group by a,b,c,d;
                 QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Append
-         ->  Seq Scan on p_t1_1
-         ->  Seq Scan on p_t1_2
+   ->  Dynamic Seq Scan on p_t1
+         Number of partitions to scan: 2 (out of 2)
  Optimizer: Pivotal Optimizer (GPORCA)
-(5 rows)
+(4 rows)
 
 drop table t1 cascade;
 NOTICE:  drop cascades to table t1c
@@ -1534,8 +1537,9 @@ select array_agg(distinct a order by a desc nulls last)
 -- multi-arg aggs, strict/nonstrict, distinct/order by
 select aggfstr(a,b,c)
   from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggf_trans" during startup
                 aggfstr                
 ---------------------------------------
  {"(1,3,foo)","(2,2,bar)","(3,1,baz)"}
@@ -1543,8 +1547,9 @@ DETAIL:  Feature not supported: ROW EXPRESSION
 
 select aggfns(a,b,c)
   from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggfns_trans" during startup
                     aggfns                     
 -----------------------------------------------
  {"(1,3,foo)","(0,,)","(2,2,bar)","(3,1,baz)"}
@@ -1553,8 +1558,9 @@ DETAIL:  Feature not supported: ROW EXPRESSION
 select aggfstr(distinct a,b,c)
   from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
        generate_series(1,3) i;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggf_trans" during startup
                 aggfstr                
 ---------------------------------------
  {"(1,3,foo)","(2,2,bar)","(3,1,baz)"}
@@ -1563,8 +1569,9 @@ DETAIL:  Feature not supported: ROW EXPRESSION
 select aggfns(distinct a,b,c)
   from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
        generate_series(1,3) i;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggfns_trans" during startup
                     aggfns                     
 -----------------------------------------------
  {"(0,,)","(1,3,foo)","(2,2,bar)","(3,1,baz)"}
@@ -1573,8 +1580,9 @@ DETAIL:  Feature not supported: ROW EXPRESSION
 select aggfstr(distinct a,b,c order by b)
   from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
        generate_series(1,3) i;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggf_trans" during startup
                 aggfstr                
 ---------------------------------------
  {"(3,1,baz)","(2,2,bar)","(1,3,foo)"}
@@ -1583,8 +1591,9 @@ DETAIL:  Feature not supported: ROW EXPRESSION
 select aggfns(distinct a,b,c order by b)
   from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
        generate_series(1,3) i;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggfns_trans" during startup
                     aggfns                     
 -----------------------------------------------
  {"(3,1,baz)","(2,2,bar)","(1,3,foo)","(0,,)"}
@@ -1594,8 +1603,9 @@ DETAIL:  Feature not supported: ROW EXPRESSION
 select aggfns(distinct a,a,c order by c using ~<~,a)
   from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
        generate_series(1,2) i;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggfns_trans" during startup
                      aggfns                     
 ------------------------------------------------
  {"(2,2,bar)","(3,3,baz)","(1,1,foo)","(0,0,)"}
@@ -1604,8 +1614,9 @@ DETAIL:  Feature not supported: ROW EXPRESSION
 select aggfns(distinct a,a,c order by c using ~<~)
   from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
        generate_series(1,2) i;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggfns_trans" during startup
                      aggfns                     
 ------------------------------------------------
  {"(2,2,bar)","(3,3,baz)","(1,1,foo)","(0,0,)"}
@@ -1614,8 +1625,9 @@ DETAIL:  Feature not supported: ROW EXPRESSION
 select aggfns(distinct a,a,c order by a)
   from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
        generate_series(1,2) i;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggfns_trans" during startup
                      aggfns                     
 ------------------------------------------------
  {"(0,0,)","(1,1,foo)","(2,2,bar)","(3,3,baz)"}
@@ -1624,8 +1636,9 @@ DETAIL:  Feature not supported: ROW EXPRESSION
 select aggfns(distinct a,b,c order by a,c using ~<~,b)
   from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
        generate_series(1,2) i;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggfns_trans" during startup
                     aggfns                     
 -----------------------------------------------
  {"(0,,)","(1,3,foo)","(2,2,bar)","(3,1,baz)"}
@@ -1828,8 +1841,8 @@ select string_agg(distinct f1::text, ',' order by f1::text) from varchar_tbl;  -
 
 -- FILTER tests
 select min(unique1) filter (where unique1 > 100) from tenk1;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  min 
 -----
  101
@@ -1837,8 +1850,8 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 
 select ten, sum(distinct four) filter (where four::text ~ '123') from onek a
 group by ten;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  ten | sum 
 -----+-----
    0 |    
@@ -1856,8 +1869,8 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 select ten, sum(distinct four) filter (where four > 10) from onek a
 group by ten
 having exists (select 1 from onek b where sum(distinct a.four) = b.four);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  ten | sum 
 -----+-----
    0 |    
@@ -1869,8 +1882,8 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 
 select max(foo COLLATE "C") filter (where (bar collate "POSIX") > '0')
 from (values ('a', 'b')) AS v(foo,bar);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
  max 
 -----
  a
@@ -1889,8 +1902,8 @@ from (values (2),(3)) t1(outer_c); -- inner query is aggregation query
 select (select count(*) filter (where outer_c <> 0)
         from (values (1)) t0(inner_c))
 from (values (2),(3)) t1(outer_c); -- outer query is aggregation query
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  count 
 -------
      2
@@ -1899,8 +1912,8 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 select (select count(inner_c) filter (where outer_c <> 0)
         from (values (1)) t0(inner_c))
 from (values (2),(3)) t1(outer_c); -- inner query is aggregation query
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  count 
 -------
      1
@@ -1911,8 +1924,8 @@ select
   (select max((select i.unique2 from tenk1 i where i.unique1 = o.unique1))
      filter (where o.unique1 < 10))
 from tenk1 o;					-- outer query is aggregation query
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  max  
 ------
  9998
@@ -1921,8 +1934,8 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 -- subquery in FILTER clause (PostgreSQL extension)
 select sum(unique1) FILTER (WHERE
   unique1 IN (SELECT unique1 FROM onek where unique1 < 100)) FROM tenk1;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  sum  
 ------
  4950
@@ -1932,10 +1945,11 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 select aggfns(distinct a,b,c order by a,c using ~<~,b) filter (where a > 1)
     from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
     generate_series(1,2) i;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggfns_trans" during startup
           aggfns           
 ---------------------------
  {"(2,2,bar)","(3,1,baz)"}
@@ -2061,8 +2075,8 @@ from generate_series(1,6) x;
 (1 row)
 
 select ten, mode() within group (order by string4) from tenk1 group by ten order by ten;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
  ten |  mode  
 -----+--------
    0 | HHHHxx
@@ -2087,8 +2101,8 @@ from unnest('{fred,jim,fred,jack,jill,fred,jill,jim,jim,sheila,jim,sheila}'::tex
 -- check collation propagates up in suitable cases:
 select pg_collation_for(percentile_disc(1) within group (order by x collate "POSIX"))
   from (values ('fred'),('jim')) v(x);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
  pg_collation_for 
 ------------------
  "POSIX"
@@ -2194,8 +2208,8 @@ select pg_get_viewdef('aggordview1');
 SET optimizer_trace_fallback to on;
 -- end_ignore
 select * from aggordview1 order by ten;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  ten | p50 | px  | rank 
 -----+-----+-----+------
    0 | 490 |     |  101
@@ -2213,16 +2227,13 @@ DETAIL:  Feature not supported: Non-default collation
 drop view aggordview1;
 -- variadic aggregates
 select least_agg(q1,q2) from int8_tbl;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
+CONTEXT:  SQL function "least_accum" during startup
      least_agg     
 -------------------
  -4567890123456789
 (1 row)
 
 select least_agg(variadic array[q1,q2]) from int8_tbl;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
      least_agg     
 -------------------
  -4567890123456789
@@ -2230,7 +2241,7 @@ DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
 
 -- string_agg bytea tests
 create table bytea_test_table(gpDistKey int, v bytea);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'gpdistkey' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'gpdistkey' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 select string_agg(v, '') from bytea_test_table;
  string_agg 
@@ -2267,16 +2278,16 @@ select string_agg(v, decode('ee', 'hex')) from bytea_test_table;
 drop table bytea_test_table;
 -- FILTER tests
 select min(unique1) filter (where unique1 > 100) from tenk1;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  min 
 -----
  101
 (1 row)
 
 select sum(1/ten) filter (where ten > 0) from tenk1;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  sum  
 ------
  1000
@@ -2284,8 +2295,8 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 
 select ten, sum(distinct four) filter (where four::text ~ '123') from onek a
 group by ten;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  ten | sum 
 -----+-----
    0 |    
@@ -2303,8 +2314,8 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 select ten, sum(distinct four) filter (where four > 10) from onek a
 group by ten
 having exists (select 1 from onek b where sum(distinct a.four) = b.four);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  ten | sum 
 -----+-----
    0 |    
@@ -2316,8 +2327,8 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 
 select max(foo COLLATE "C") filter (where (bar collate "POSIX") > '0')
 from (values ('a', 'b')) AS v(foo,bar);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
  max 
 -----
  a
@@ -2336,8 +2347,8 @@ from (values (2),(3)) t1(outer_c); -- inner query is aggregation query
 select (select count(*) filter (where outer_c <> 0)
         from (values (1)) t0(inner_c))
 from (values (2),(3)) t1(outer_c); -- outer query is aggregation query
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  count 
 -------
      2
@@ -2346,8 +2357,8 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 select (select count(inner_c) filter (where outer_c <> 0)
         from (values (1)) t0(inner_c))
 from (values (2),(3)) t1(outer_c); -- inner query is aggregation query
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  count 
 -------
      1
@@ -2358,8 +2369,8 @@ select
   (select max((select i.unique2 from tenk1 i where i.unique1 = o.unique1))
      filter (where o.unique1 < 10))
 from tenk1 o;					-- outer query is aggregation query
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  max  
 ------
  9998
@@ -2368,8 +2379,8 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 -- subquery in FILTER clause (PostgreSQL extension)
 select sum(unique1) FILTER (WHERE
   unique1 IN (SELECT unique1 FROM onek where unique1 < 100)) FROM tenk1;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  sum  
 ------
  4950
@@ -2379,10 +2390,11 @@ DETAIL:  Feature not supported: Aggregate functions with FILTER
 select aggfns(distinct a,b,c order by a,c using ~<~,b) filter (where a > 1)
     from (values (1,3,'foo'),(0,null,null),(2,2,'bar'),(3,1,'baz')) v(a,b,c),
     generate_series(1,2) i;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: ROW EXPRESSION
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: ROW EXPRESSION
+CONTEXT:  SQL function "aggfns_trans" during startup
           aggfns           
 ---------------------------
  {"(2,2,bar)","(3,1,baz)"}
@@ -2390,16 +2402,16 @@ DETAIL:  Feature not supported: ROW EXPRESSION
 
 -- check handling of bare boolean Var in FILTER
 select max(0) filter (where b1) from bool_test;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  max 
 -----
    0
 (1 row)
 
 select (select max(0) filter (where b1)) from bool_test;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  max 
 -----
    0
@@ -2542,8 +2554,8 @@ from generate_series(1,6) x;
 (1 row)
 
 select ten, mode() within group (order by string4) from tenk1 group by ten;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
  ten |  mode  
 -----+--------
    0 | HHHHxx
@@ -2568,8 +2580,8 @@ from unnest('{fred,jim,fred,jack,jill,fred,jill,jim,jim,sheila,jim,sheila}'::tex
 -- check collation propagates up in suitable cases:
 select pg_collation_for(percentile_disc(1) within group (order by x collate "POSIX"))
   from (values ('fred'),('jim')) v(x);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
  pg_collation_for 
 ------------------
  "POSIX"
@@ -2675,8 +2687,8 @@ select pg_get_viewdef('aggordview1');
 SET optimizer_trace_fallback to on;
 -- end_ignore
 select * from aggordview1 order by ten;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
  ten | p50 | px  | rank 
 -----+-----+-----+------
    0 | 490 |     |  101
@@ -2694,48 +2706,37 @@ DETAIL:  Feature not supported: Non-default collation
 drop view aggordview1;
 -- variadic aggregates
 select least_agg(q1,q2) from int8_tbl;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
+CONTEXT:  SQL function "least_accum" during startup
      least_agg     
 -------------------
  -4567890123456789
 (1 row)
 
 select least_agg(variadic array[q1,q2]) from int8_tbl;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
      least_agg     
 -------------------
  -4567890123456789
 (1 row)
 
 select cleast_agg(q1,q2) from int8_tbl;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
     cleast_agg     
 -------------------
  -4567890123456789
 (1 row)
 
 select cleast_agg(4.5,f1) from int4_tbl;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
  cleast_agg  
 -------------
  -2147483647
 (1 row)
 
 select cleast_agg(variadic array[4.5,f1]) from int4_tbl;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
  cleast_agg  
 -------------
  -2147483647
 (1 row)
 
 select pg_typeof(cleast_agg(variadic array[4.5,f1])) from int4_tbl;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
  pg_typeof 
 -----------
  numeric
@@ -2797,61 +2798,38 @@ create aggregate my_sum(int4)
    sfunc = avg_transfn,
    finalfunc = sum_finalfn
 );
+-- reset the plan cache, sometimes it would re-plan these prepared statements and log ORCA fallbacks
+discard plans;
 -- aggregate state should be shared as aggs are the same.
 select my_avg(one),my_avg(one) from (values(1),(3)) t(one);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-NOTICE:  avg_transfn called with 1
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
 NOTICE:  avg_transfn called with 1
 NOTICE:  avg_transfn called with 3
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-NOTICE:  avg_transfn called with 3
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
  my_avg | my_avg 
 --------+--------
       2 |      2
 (1 row)
 
+discard plans;
 -- aggregate state should be shared as transfn is the same for both aggs.
 select my_avg(one),my_sum(one) from (values(1),(3)) t(one);
 NOTICE:  avg_transfn called with 1
-NOTICE:  avg_transfn called with 1
 NOTICE:  avg_transfn called with 3
-NOTICE:  avg_transfn called with 3
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
  my_avg | my_sum 
 --------+--------
       2 |      4
 (1 row)
 
+discard plans;
 -- same as previous one, but with DISTINCT, which requires sorting the input.
 select my_avg(distinct one),my_sum(distinct one) from (values(1),(3),(1)) t(one);
 NOTICE:  avg_transfn called with 1
 NOTICE:  avg_transfn called with 3
-NOTICE:  avg_transfn called with 1
-NOTICE:  avg_transfn called with 3
  my_avg | my_sum 
 --------+--------
       2 |      4
 (1 row)
 
+discard plans;
 -- shouldn't share states due to the distinctness not matching.
 select my_avg(distinct one),my_sum(one) from (values(1),(3)) t(one);
 NOTICE:  avg_transfn called with 1
@@ -2863,10 +2841,11 @@ NOTICE:  avg_transfn called with 3
       2 |      4
 (1 row)
 
+discard plans;
 -- shouldn't share states due to the filter clause not matching.
 select my_avg(one) filter (where one > 1),my_sum(one) from (values(1),(3)) t(one);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Aggregate functions with FILTER
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Aggregate functions with FILTER
 NOTICE:  avg_transfn called with 1
 NOTICE:  avg_transfn called with 3
 NOTICE:  avg_transfn called with 3
@@ -2875,12 +2854,13 @@ NOTICE:  avg_transfn called with 3
       3 |      4
 (1 row)
 
+discard plans;
 -- this should not share the state due to different input columns.
 select my_avg(one),my_sum(two) from (values(1,2),(3,4)) t(one,two);
-NOTICE:  avg_transfn called with 1
 NOTICE:  avg_transfn called with 2
-NOTICE:  avg_transfn called with 3
+NOTICE:  avg_transfn called with 1
 NOTICE:  avg_transfn called with 4
+NOTICE:  avg_transfn called with 3
  my_avg | my_sum 
 --------+--------
       2 |      6
@@ -2941,28 +2921,8 @@ create aggregate my_avg_init2(int4)
 discard plans;
 -- state should be shared if INITCONDs are matching
 select my_sum_init(one),my_avg_init(one) from (values(1),(3)) t(one);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-NOTICE:  avg_transfn called with 1
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
 NOTICE:  avg_transfn called with 1
 NOTICE:  avg_transfn called with 3
-NOTICE:  avg_transfn called with 3
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
  my_sum_init | my_avg_init 
 -------------+-------------
           14 |           7
@@ -3023,32 +2983,13 @@ create aggregate my_half_sum(int4)
    sfunc = sum_transfn,
    finalfunc = halfsum_finalfn
 );
+discard plans;
 -- Agg state should be shared even though my_sum has no finalfn
 select my_sum(one),my_half_sum(one) from (values(1),(2),(3),(4)) t(one);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-NOTICE:  sum_transfn called with 1
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
 NOTICE:  sum_transfn called with 1
 NOTICE:  sum_transfn called with 2
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-NOTICE:  sum_transfn called with 2
-NOTICE:  sum_transfn called with 3
 NOTICE:  sum_transfn called with 3
 NOTICE:  sum_transfn called with 4
-NOTICE:  sum_transfn called with 4
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
  my_sum | my_half_sum 
 --------+-------------
      10 |           5
@@ -3077,8 +3018,6 @@ CREATE AGGREGATE balk(int4)
     INITCOND = '0'
 );
 SELECT balk(hundred) FROM tenk1;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
  balk 
 ------
      
@@ -3123,8 +3062,6 @@ EXPLAIN (COSTS OFF) SELECT balk(hundred) FROM tenk1;
 (5 rows)
 
 SELECT balk(hundred) FROM tenk1;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  GPDB Expression type: Query Parameter not supported in DXL
  balk 
 ------
      
@@ -3148,8 +3085,8 @@ FROM (SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1) u;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
                                                                                       QUERY PLAN                                                                                       
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Finalize Aggregate
@@ -3176,8 +3113,8 @@ FROM (SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1) u;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
        variance       |    sum    | regr_count 
 ----------------------+-----------+------------
  8333541.588539713493 | 199980000 |      40000
@@ -3191,8 +3128,8 @@ FROM (SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1) u;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
                                                             QUERY PLAN                                                            
 ----------------------------------------------------------------------------------------------------------------------------------
  Finalize Aggregate
@@ -3219,8 +3156,8 @@ FROM (SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1
       UNION ALL SELECT * FROM tenk1) u;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation
        variance       |          avg          
 ----------------------+-----------------------
  8333541.588539713493 | 4999.5000000000000000
@@ -3277,8 +3214,8 @@ set enable_memoize to off;
 explain (costs off)
   select 1 from tenk1
    where (hundred, thousand) in (select twothousand, twothousand from onek);
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-Scalar Subquery
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
                                    QUERY PLAN                                    
 ---------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
@@ -3303,7 +3240,6 @@ reset enable_memoize;
 --
 set enable_sort=false;
 set work_mem='64kB';
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 select unique1, count(*), sum(twothousand) from tenk1
 group by unique1
 having sum(fivethous) > 4975
@@ -3361,14 +3297,12 @@ order by sum(twothousand);
 (48 rows)
 
 set work_mem to default;
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 set enable_sort to default;
 --
 -- Compare results between plans using sorting and plans using hash
 -- aggregation. Force spilling in both cases by setting work_mem low.
 --
 set work_mem='64kB';
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 create table agg_data_2k as
 select g from generate_series(0, 1999) g;
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
@@ -3464,7 +3398,6 @@ select (g/2)::numeric as c1, array_agg(g::numeric) as c2, count(*) as c3
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
 set enable_sort = true;
 set work_mem to default;
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 -- Compare group aggregation results to hash aggregation results
 (select * from agg_hash_1 except select * from agg_group_1)
   union all
@@ -3495,14 +3428,11 @@ drop table agg_hash_1;
 --  drop table agg_hash_2;
 drop table agg_hash_3;
 drop table agg_hash_4;
--- fix github issue #12061 numsegments of general locus is not -1 on create_minmaxagg_path
-/*
- * On the arm platform, `Seq Scan` is executed frequently, resulting in unstable output.
- */
-set enable_indexonlyscan = off;
-explain analyze select count(*) from pg_class,  (select count(*) >0 from  (select count(*) from pg_class where relname like 't%')x)y;
-INFO:  GPORCA failed to produce a plan, falling back to planner
-DETAIL:  Feature not supported: Non-default collation
+-- GitHub issue https://github.com/greenplum-db/gpdb/issues/12061
+-- numsegments of the general locus should be -1 on create_minmaxagg_path
+explain analyze select count(*) from pg_class, (select count(*) > 0 from (select count(*) from pg_class where relnatts > 8) x) y;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Queries on master-only tables
                                                       QUERY PLAN                                                       
 -----------------------------------------------------------------------------------------------------------------------
  Aggregate  (cost=10000000017.74..10000000017.75 rows=1 width=8) (actual time=0.142..0.142 rows=1 loops=1)

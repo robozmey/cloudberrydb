@@ -4,7 +4,6 @@
  *	  storage manager switch public interface declarations.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -21,13 +20,38 @@
 #include "storage/block.h"
 #include "storage/relfilenode.h"
 #include "storage/dbdirnode.h"
+#include "storage/fd.h"
 #include "utils/relcache.h"
 
+/*
+ * Extension can register a new storage manager(smgr) by implementing
+ * its own struct f_smgr.
+ * Each storage manager has a unique implementation id, which is used
+ * to identify the smgr.
+ *
+ * The smgr_register function is used to register the smgr. it will
+ * check if the smgr is already registered, if so, return SMGR_INVALID.
+ * otherwise, register the smgr and return the implementation id.
+ *
+ * The smgr id of each relation is fixed and cannot be changed. because the
+ * type of smgr is logged in the commit log and wal log. If the value of
+ * smgr is changed, data corruption may occur.
+ *
+ * How to ensure that the smgr of each extension does not conflict? One way
+ * is to predefine the smgr id used by the extension in Cloudberry; the other
+ * way is to refer to the practice of custom rmgr and provide a wiki page
+ * [https://wiki.postgresql.org/wiki/CustomWALResourceManagers] to record
+ * the use of smgr to avoid conflicts.
+ *
+ * FIXME: For PAX_AM_OID, Cloudberry reserves this value for ORCA, a
+ * predefined value is used here to reserve the smgr id for PAX_AM_OID.
+ */
 typedef enum SMgrImplementation
 {
 	SMGR_INVALID = -1,
 	SMGR_MD = 0,
 	SMGR_AO = 1,
+	SMGR_PAX = 2,
 } SMgrImpl;
 
 struct f_smgr;
@@ -73,6 +97,8 @@ typedef struct SMgrRelationData
 	char				smgr_relpersistence;
 	/* pointer to storage manager */
 	const struct f_smgr *smgr;
+	/*pointer to AO storage manager */
+	const struct f_smgr_ao *smgr_ao; 
 
 	/*
 	 * Fields below here are intended to be private to smgr.c and its
@@ -102,6 +128,7 @@ typedef SMgrRelationData *SMgrRelation;
  */
 typedef struct f_smgr
 {
+	const char 	*smgr_name;
 	void		(*smgr_init) (void);	/* may be NULL */
 	void		(*smgr_shutdown) (void);	/* may be NULL */
 	void		(*smgr_open) (SMgrRelation reln);
@@ -127,14 +154,34 @@ typedef struct f_smgr
 	void		(*smgr_immedsync) (SMgrRelation reln, ForkNumber forknum);
 } f_smgr;
 
+typedef struct f_smgr_ao {
+	off_t			(*smgr_FileDiskSize) (File file);
+	void			(*smgr_FileClose) (File file);
+	int				(*smgr_FileTruncate) (File file, int64 offset, uint32 wait_event_info);
+	File			(*smgr_AORelOpenSegFile) (Oid reloid, const char *filePath, int fileFlags);
+	File			(*smgr_AORelOpenSegFileXlog) (RelFileNode node, int32 segmentFileNum, int fileFlags);
+	int				(*smgr_FileWrite) (File file, char *buffer, int amount, off_t offset, uint32 wait_event_info);
+	int				(*smgr_FileRead) (File file, char *buffer, int amount, off_t offset, uint32 wait_event_info);
+	off_t			(*smgr_FileSize) (File file);
+	int				(*smgr_FileSync) (File file, uint32 wait_event_info);
+} f_smgr_ao;
+
+
 typedef void (*smgr_init_hook_type) (void);
 typedef void (*smgr_hook_type) (SMgrRelation reln, BackendId backend, SMgrImpl which, Relation rel);
 typedef void (*smgr_shutdown_hook_type) (void);
 extern PGDLLIMPORT smgr_init_hook_type smgr_init_hook;
 extern PGDLLIMPORT smgr_hook_type smgr_hook;
 extern PGDLLIMPORT smgr_shutdown_hook_type smgr_shutdown_hook;
-
 extern bool smgr_is_heap_relation(SMgrRelation reln);
+
+// must be registered in the shared_preload_libraries phase in extension
+// we should check whether smgr and smgr_impl is valid.
+extern void smgr_register(const f_smgr *smgr, SMgrImpl smgr_impl);
+
+extern const f_smgr *smgr_get(SMgrImpl smgr_impl);
+
+extern SMgrImpl smgr_get_impl(const Relation rel);
 
 extern void smgrinit(void);
 extern SMgrRelation smgropen(RelFileNode rnode, BackendId backend,
@@ -166,6 +213,10 @@ extern void smgrtruncate(SMgrRelation reln, ForkNumber *forknum,
 extern void smgrimmedsync(SMgrRelation reln, ForkNumber forknum);
 extern void AtEOXact_SMgr(void);
 
+extern const struct f_smgr_ao * smgrAOGetDefault(void);
+
+extern const char* smgr_get_name(SMgrImpl impl);
+
 
 /*
  * Hook for plugins to collect statistics from storage functions
@@ -183,5 +234,15 @@ extern PGDLLIMPORT file_truncate_hook_type file_truncate_hook;
 
 typedef void (*file_unlink_hook_type)(RelFileNodeBackend rnode);
 extern PGDLLIMPORT file_unlink_hook_type file_unlink_hook;
+
+/*
+ * This hook is used to get the smgr implementation id of the relation for extension.
+ * If the hook is not set, the default smgr implementation id is SMGR_MD.
+ * If the extension register a custom smgr to manage its own relation, it needs
+ * to implement this hook and then set the smgr_impl to the correct value for
+ * the relation which is managed by the extension, otherwise should ignore it.
+ */
+typedef void (*smgr_get_impl_hook_type)(const Relation rel, SMgrImpl* smgr_impl);
+extern PGDLLIMPORT smgr_get_impl_hook_type smgr_get_impl_hook;
 
 #endif							/* SMGR_H */

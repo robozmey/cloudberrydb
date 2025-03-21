@@ -1054,15 +1054,13 @@ explain (costs off)
   select distinct max(unique2) from tenk1;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
- HashAggregate
-   Group Key: $0
+ Result
    InitPlan 1 (returns $0)
      ->  Limit
            ->  Index Only Scan Backward using tenk1_unique2 on tenk1
                  Index Cond: (unique2 IS NOT NULL)
-   ->  Result
  Optimizer: Postgres query optimizer
-(8 rows)
+(6 rows)
 
 select distinct max(unique2) from tenk1;
  max  
@@ -1074,15 +1072,13 @@ explain (costs off)
   select max(unique2) from tenk1 order by 1;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
- Sort
-   Sort Key: ($0)
+ Result
    InitPlan 1 (returns $0)
      ->  Limit
            ->  Index Only Scan Backward using tenk1_unique2 on tenk1
                  Index Cond: (unique2 IS NOT NULL)
-   ->  Result
  Optimizer: Postgres query optimizer
-(8 rows)
+(6 rows)
 
 select max(unique2) from tenk1 order by 1;
  max  
@@ -1094,15 +1090,13 @@ explain (costs off)
   select max(unique2) from tenk1 order by max(unique2);
                              QUERY PLAN                              
 ---------------------------------------------------------------------
- Sort
-   Sort Key: ($0)
+ Result
    InitPlan 1 (returns $0)
      ->  Limit
            ->  Index Only Scan Backward using tenk1_unique2 on tenk1
                  Index Cond: (unique2 IS NOT NULL)
-   ->  Result
  Optimizer: Postgres query optimizer
-(8 rows)
+(6 rows)
 
 select max(unique2) from tenk1 order by max(unique2);
  max  
@@ -1114,15 +1108,13 @@ explain (costs off)
   select max(unique2) from tenk1 order by max(unique2)+1;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
- Sort
-   Sort Key: (($0 + 1))
+ Result
    InitPlan 1 (returns $0)
      ->  Limit
            ->  Index Only Scan Backward using tenk1_unique2 on tenk1
                  Index Cond: (unique2 IS NOT NULL)
-   ->  Result
  Optimizer: Postgres query optimizer
-(8 rows)
+(6 rows)
 
 select max(unique2) from tenk1 order by max(unique2)+1;
  max  
@@ -1231,20 +1223,16 @@ reset enable_seqscan;
 -- DISTINCT doesn't do anything useful here, but it shouldn't fail
 explain (costs off)
   select distinct min(f1), max(f1) from minmaxtest;
-                          QUERY PLAN                          
---------------------------------------------------------------
- Unique
-   Group Key: (min(minmaxtest.f1)), (max(minmaxtest.f1))
-   ->  Sort
-         Sort Key: (min(minmaxtest.f1)), (max(minmaxtest.f1))
-         ->  Aggregate
-               ->  Append
-                     ->  Seq Scan on minmaxtest minmaxtest_1
-                     ->  Seq Scan on minmaxtest1 minmaxtest_2
-                     ->  Seq Scan on minmaxtest2 minmaxtest_3
-                     ->  Seq Scan on minmaxtest3 minmaxtest_4
+                    QUERY PLAN                    
+--------------------------------------------------
+ Aggregate
+   ->  Append
+         ->  Seq Scan on minmaxtest minmaxtest_1
+         ->  Seq Scan on minmaxtest1 minmaxtest_2
+         ->  Seq Scan on minmaxtest2 minmaxtest_3
+         ->  Seq Scan on minmaxtest3 minmaxtest_4
  Optimizer: Postgres query optimizer
-(11 rows)
+(7 rows)
 
 select distinct min(f1), max(f1) from minmaxtest;
  min | max 
@@ -3055,7 +3043,6 @@ reset enable_memoize;
 --
 set enable_sort=false;
 set work_mem='64kB';
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 select unique1, count(*), sum(twothousand) from tenk1
 group by unique1
 having sum(fivethous) > 4975
@@ -3113,14 +3100,12 @@ order by sum(twothousand);
 (48 rows)
 
 set work_mem to default;
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 set enable_sort to default;
 --
 -- Compare results between plans using sorting and plans using hash
 -- aggregation. Force spilling in both cases by setting work_mem low.
 --
 set work_mem='64kB';
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 create table agg_data_2k as
 select g from generate_series(0, 1999) g;
 analyze agg_data_2k;
@@ -3204,7 +3189,6 @@ select (g/2)::numeric as c1, array_agg(g::numeric) as c2, count(*) as c3
   from agg_data_2k group by g/2;
 set enable_sort = true;
 set work_mem to default;
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 -- Compare group aggregation results to hash aggregation results
 (select * from agg_hash_1 except select * from agg_group_1)
   union all

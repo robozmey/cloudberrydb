@@ -3,7 +3,6 @@
  * outfast.c
  *	  Fast serialization functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2008, PostgreSQL Global Development Group
@@ -938,6 +937,9 @@ _outNode(StringInfo str, void *obj)
 			case T_SeqScan:
 				_outSeqScan(str, obj);
 				break;
+			case T_DynamicSeqScan:
+				_outDynamicSeqScan(str, obj);
+				break;
 			case T_ExternalScanInfo:
 				_outExternalScanInfo(str, obj);
 				break;
@@ -950,11 +952,23 @@ _outNode(StringInfo str, void *obj)
 			case T_IndexOnlyScan:
 				_outIndexOnlyScan(str, obj);
 				break;
+			case T_DynamicIndexScan:
+				_outDynamicIndexScan(str, obj);
+				break;
+			case T_DynamicIndexOnlyScan:
+				_outDynamicIndexOnlyScan(str, obj);
+				break;
 			case T_BitmapIndexScan:
 				_outBitmapIndexScan(str, obj);
 				break;
+			case T_DynamicBitmapIndexScan:
+				_outDynamicBitmapIndexScan(str, obj);
+				break;
 			case T_BitmapHeapScan:
 				_outBitmapHeapScan(str, obj);
+				break;
+			case T_DynamicBitmapHeapScan:
+				_outDynamicBitmapHeapScan(str, obj);
 				break;
 			case T_TidScan:
 				_outTidScan(str, obj);
@@ -985,6 +999,9 @@ _outNode(StringInfo str, void *obj)
 				break;
 			case T_ForeignScan:
 				_outForeignScan(str, obj);
+				break;
+			case T_DynamicForeignScan:
+				_outDynamicForeignScan(str, obj);
 				break;
 			case T_CustomScan:
 				_outCustomScan(str, obj);
@@ -1897,6 +1914,18 @@ _outNode(StringInfo str, void *obj)
 				break;
 			case T_AlterDirectoryTableStmt:
 				_outAlterDirectoryTableStmt(str, obj);
+				break;
+			case T_DropDirectoryTableStmt:
+				_outDropDirectoryTableStmt(str, obj);
+				break;
+			case T_CreateTaskStmt:
+				_outCreateTaskStmt(str, obj);
+				break;
+			case T_AlterTaskStmt:
+				_outAlterTaskStmt(str, obj);
+				break;
+			case T_DropTaskStmt:
+				_outDropTaskStmt(str, obj);
 				break;
 			case T_EphemeralNamedRelationInfo:
 				_outEphemeralNamedRelationInfo(str, obj);

@@ -4,7 +4,6 @@
  *	  pg_dump is a utility for dumping out a postgres database
  *	  into a script file.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -389,6 +388,7 @@ static bool testAttributeEncodingSupport(Archive *fout);
 static char *nextToken(register char **stringp, register const char *delim);
 static void addDistributedBy(Archive *fout, PQExpBuffer q, const TableInfo *tbinfo, int actual_atts);
 static void addDistributedByOld(Archive *fout, PQExpBuffer q, const TableInfo *tbinfo, int actual_atts);
+static void addSchedule(Archive *fout, PQExpBuffer q, const TableInfo *tbinfo);
 static bool isGPDB4300OrLater(Archive *fout);
 static bool isGPDB(Archive *fout);
 static bool isGPDB5000OrLater(Archive *fout);
@@ -647,7 +647,7 @@ main(int argc, char **argv)
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			puts("pg_dump (Cloudberry Database) " PG_VERSION);
+			puts("pg_dump (Apache Cloudberry) " PG_VERSION);
 			exit_nicely(0);
 		}
 	}
@@ -1036,7 +1036,7 @@ main(int argc, char **argv)
 		case GPS_ENABLED:
 			dumpGpPolicy = isGPbackend;
 			if (!isGPbackend)
-				pg_log_warning("server is not a Cloudberry Database instance; --gp-syntax option ignored");
+				pg_log_warning("server is not a Apache Cloudberry instance; --gp-syntax option ignored");
 			break;
 	}
 
@@ -1389,8 +1389,8 @@ help(const char *progname)
 			 "                               ALTER OWNER commands to set ownership\n"));
 
 	/* START MPP ADDITION */
-	printf(_("  --gp-syntax                  dump with Cloudberry Database syntax (default if gpdb)\n"));
-	printf(_("  --no-gp-syntax               dump without Cloudberry Database syntax (default if postgresql)\n"));
+	printf(_("  --gp-syntax                  dump with Apache Cloudberry syntax (default if gpdb)\n"));
+	printf(_("  --no-gp-syntax               dump without Apache Cloudberry syntax (default if postgresql)\n"));
 	printf(_("  --function-oids              dump only function(s) of given list of oids\n"));
 	printf(_("  --relation-oids              dump only relation(s) of given list of oids\n"));
 	/* END MPP ADDITION */
@@ -1435,6 +1435,7 @@ setup_connection(Archive *AH, const char *dumpencoding,
 	 * we know how to escape strings.
 	 */
 	AH->encoding = PQclientEncoding(conn);
+	setFmtEncoding(AH->encoding);
 
 	std_strings = PQparameterStatus(conn, "standard_conforming_strings");
 	AH->std_strings = (std_strings && strcmp(std_strings, "on") == 0);
@@ -2930,8 +2931,16 @@ refreshMatViewData(Archive *fout, const TableDataInfo *tdinfo)
 
 	q = createPQExpBuffer();
 
-	appendPQExpBuffer(q, "REFRESH MATERIALIZED VIEW %s;\n",
-					  fmtQualifiedDumpable(tbinfo));
+	if (tbinfo->isdynamic)
+	{
+		appendPQExpBuffer(q, "REFRESH DYNAMIC TABLE %s;\n",
+						  fmtQualifiedDumpable(tbinfo));
+	}
+	else
+	{
+		appendPQExpBuffer(q, "REFRESH MATERIALIZED VIEW %s;\n",
+						  fmtQualifiedDumpable(tbinfo));
+	}
 
 	if (tdinfo->dobj.dump & DUMP_COMPONENT_DATA)
 		ArchiveEntry(fout,
@@ -2940,7 +2949,7 @@ refreshMatViewData(Archive *fout, const TableDataInfo *tdinfo)
 					 ARCHIVE_OPTS(.tag = tbinfo->dobj.name,
 								  .namespace = tbinfo->dobj.namespace->dobj.name,
 								  .owner = tbinfo->rolname,
-								  .description = "MATERIALIZED VIEW DATA",
+								  .description = tbinfo->isdynamic ? "DYNAMIC TABLE DATA": "MATERIALIZED VIEW DATA",
 								  .section = SECTION_POST_DATA,
 								  .createStmt = q->data,
 								  .deps = tdinfo->dobj.dependencies,
@@ -5148,10 +5157,11 @@ binary_upgrade_set_namespace_oid(Archive *fout, PQExpBuffer upgrade_buffer,
 	/*
 	 * In PostgreSQL, the creation of the public schema is not dumped, because
 	 * it's assumed to exist in a new cluster. But in GPDB, we need to re-create
-	 * it, so that we can set its OID.
-	 *
-	 * GPDB_12_MERGE_FIXME: Or could we rely that it has the same built-in
-	 * OID on all nodes?
+	 * it, so that we can set its OID. This change is required because Oid
+	 * preassignment during upgrade requires the namespace. If the public
+	 * schema is not re-created, Oid preassignments in public will be
+	 * mismatched between old and new cluster if the schema had been
+	 * dropped and recreated on the old cluster.
 	 */
 	if (strcmp(pg_nspname, "public") == 0)
 	{
@@ -5362,6 +5372,14 @@ binary_upgrade_set_type_oids_by_rel_oid_impl(Archive *fout,
 	Oid			pg_type_oid;
 	Oid			pg_type_nsoid;
 	char	   *pg_type_name;
+	char       *co_table_check = "";
+
+	/*
+	 * Starting GPDB7 CO tables no longer have TOAST tables. Hence, ignore
+	 * toast OIDs for CO tables to avoid upgrade failures.
+	 */
+	if (fout->remoteVersion < 120000)
+		co_table_check = " AND c.relstorage <> 'c'";
 
 	appendPQExpBuffer(upgrade_query,
 					  "SELECT c.reltype AS crel, "
@@ -5369,11 +5387,11 @@ binary_upgrade_set_type_oids_by_rel_oid_impl(Archive *fout,
 					  "       tt.typnamespace AS trelns "
 					  "FROM pg_catalog.pg_class c "
 					  "LEFT JOIN pg_catalog.pg_class t ON "
-					  " (c.reltoastrelid = t.oid AND c.relkind <> '%c') "
+					  "  (c.reltoastrelid = t.oid AND c.relkind <> '%c'%s) "
 					  "LEFT JOIN pg_catalog.pg_type ct ON (c.reltype = ct.oid) "
 					  "LEFT JOIN pg_catalog.pg_type tt ON (t.reltype = tt.oid) "
 					  "WHERE c.oid = '%u'::pg_catalog.oid;",
-					  RELKIND_PARTITIONED_TABLE, pg_rel_oid);
+					  RELKIND_PARTITIONED_TABLE, co_table_check, pg_rel_oid);
 
 	upgrade_res = ExecuteSqlQueryForSingleRow(fout, upgrade_query->data);
 
@@ -5566,9 +5584,23 @@ binary_upgrade_set_pg_class_oids_impl(Archive *fout,
 		/*
 		 * In a pre-v12 database, partitioned tables might be marked as having
 		 * toast tables, but we should ignore them if so.
+		*
+		 * One complexity is that the table definition might not require
+		 * the creation of a TOAST table, and the TOAST table might have
+		 * been created long after table creation, when the table was
+		 * loaded with wide data.  By setting the TOAST oid we force
+		 * creation of the TOAST heap and TOAST index by the backend so we
+		 * can cleanly copy the files during binary upgrade.
+		 *
+		 * GPDB: note that we compose the toast table name using the
+		 * relation OID, rather than using whatever name was in the old
+		 * cluster. Some operations can cause the old TOAST table name not
+		 * to match its owner's OID, but the new cluster will be using the
+		 * correct name, and it's the new cluster's name that we have to use
+		 * in preassignment.
 		 */
 		if (OidIsValid(pg_class_reltoastrelid) &&
-			pg_class_relkind != RELKIND_PARTITIONED_TABLE)
+			pg_class_relkind != RELKIND_PARTITIONED_TABLE && !ao_columnstore)
 		{
 			appendPQExpBuffer(upgrade_buffer,
 							  "SELECT pg_catalog.binary_upgrade_set_next_toast_pg_class_oid('%u'::pg_catalog.oid, '%u'::pg_catalog.oid, $$pg_toast_%u$$::text);\n",
@@ -7415,6 +7447,7 @@ getTables(Archive *fout, int *numTables)
 	int			i_amname;
 	int			i_amoid;
 	int			i_isivm;
+	int			i_isdynamic;
 
 	/*
 	 * Find all the tables and table-like objects.
@@ -7535,7 +7568,8 @@ getTables(Archive *fout, int *numTables)
 						  "%s AS partkeydef, "
 						  "%s AS ispartition, "
 						  "%s AS partbound, "
-						  "c.relisivm AS isivm "
+						  "c.relisivm AS isivm, "
+						  "c.relisdynamic AS isdynamic "
 						  "FROM pg_class c "
 						  "LEFT JOIN pg_depend d ON "
 						  "(c.relkind = '%c' AND "
@@ -7689,7 +7723,7 @@ getTables(Archive *fout, int *numTables)
 						  "d.classid = c.tableoid AND d.objid = c.oid AND "
 						  "d.objsubid = 0 AND "
 						  "d.refclassid = c.tableoid AND d.deptype = 'a') "
-						  "LEFT JOIN pg_class tc ON (c.reltoastrelid = tc.oid) "
+						  "LEFT JOIN pg_class tc ON (c.reltoastrelid = tc.oid AND c.relstorage <> 'c') "
 						  "LEFT JOIN pg_partition_rule pr ON c.oid = pr.parchildrelid "
 						  "LEFT JOIN pg_partition p ON pr.paroid = p.oid "
 						  "LEFT JOIN pg_partition pl ON (c.oid = pl.parrelid AND pl.parlevel = 0)"
@@ -8106,6 +8140,7 @@ getTables(Archive *fout, int *numTables)
 	i_amname = PQfnumber(res, "amname");
 	i_amoid = PQfnumber(res, "amoid");
 	i_isivm = PQfnumber(res, "isivm");
+	i_isdynamic = PQfnumber(res, "isdynamic");
 
 	if (dopt->lockWaitTimeout)
 	{
@@ -8238,6 +8273,7 @@ getTables(Archive *fout, int *numTables)
 		tblinfo[i].ispartition = (strcmp(PQgetvalue(res, i, i_ispartition), "t") == 0);
 		tblinfo[i].partbound = pg_strdup(PQgetvalue(res, i, i_partbound));
 		tblinfo[i].isivm = (strcmp(PQgetvalue(res, i, i_isivm), "t") == 0);
+		tblinfo[i].isdynamic = (strcmp(PQgetvalue(res, i, i_isdynamic), "t") == 0);
 
 		/* foreign server */
 		tblinfo[i].foreign_server = atooid(PQgetvalue(res, i, i_foreignserver));
@@ -8314,29 +8350,6 @@ getOwnedSeqs(Archive *fout, TableInfo tblinfo[], int numTables)
 			continue;			/* not an owned sequence */
 
 		owning_tab = findTableByOid(seqinfo->owning_tab);
-
-		/*
-		 * GPDB_96_MERGE_FIXME: Currently, ALTER TABLE EXCHANGE can produce
-		 * a situation that isn't handled well:
-		 *
-		 * create table parttab (i int4, p serial) partition by range (i) (start (1) end (2));
-		 * create table ex (i int4, p serial) ;
-		 * Alter table parttab exchange partition for (rank(1)) with table ex;
-		 *
-		 * After these commands, the sequence implictly created for ex.p
-		 * column, 'ex_p_seq', is still Owned By the original 'ex' table,
-		 * which is now partition of 'parttab'. But because partitions are not
-		 * put into the list of tables, findTableByOid() will return NULL.
-		 *
-		 * Upstream commit f9e439b1ca introduces a sanity check here, which
-		 * will throw an error if findTableByOid() returns NULL, which is
-		 * better than segfaulting. But we really need to fix ALTER TABLE
-		 * EXCHANGE PARTITION so that it doesn't create this situation in
-		 * the first place. For now though, just skip over, like we used to
-		 * before the 9.6 merge.
-		 */
-		if (owning_tab == NULL)
-			continue;
 
 		if (owning_tab == NULL)
 			fatal("failed sanity check, parent table with OID %u of sequence with OID %u not found",
@@ -13769,8 +13782,8 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	proexeclocation = PQgetvalue(res, 0, PQfnumber(res, "proexeclocation"));
 
 	/*
-	 * See backend/commands/define.c for details of how the 'AS' clause is
-	 * used. In GPDB Paris and up, an unused probin is NULL (here ""); previous8bc709b37411ba7ad0fd0f1f79c354714424af3d
+	 * See backend/commands/functioncmds.c for details of how the 'AS' clause
+	 * is used.  In 8.4 and up, an unused probin is NULL (here ""); previous
 	 * versions would set it to "-".  There are no known cases in which prosrc
 	 * is unused, so the tests below for "-" are probably useless.
 	 */
@@ -15721,6 +15734,7 @@ dumpAgg(Archive *fout, const AggInfo *agginfo)
 	const char *aggmtransspace;
 	const char *agginitval;
 	const char *aggminitval;
+	bool		aggrepsafeexec;
 	const char *proparallel;
 	char		defaultfinalmodify;
 
@@ -15820,6 +15834,13 @@ dumpAgg(Archive *fout, const AggInfo *agginfo)
 							 "'0' AS aggfinalmodify,\n"
 							 "'0' AS aggmfinalmodify\n");
 
+	if (fout->remoteVersion >= 140000)
+		appendPQExpBufferStr(query,
+								"aggrepsafeexec,\n");
+	else
+		appendPQExpBufferStr(query,
+								 "false AS aggrepsafeexec,\n");
+
 	appendPQExpBuffer(query,
 					  "FROM pg_catalog.pg_aggregate a, pg_catalog.pg_proc p "
 					  "WHERE a.aggfnoid = p.oid "
@@ -15851,6 +15872,7 @@ dumpAgg(Archive *fout, const AggInfo *agginfo)
 	aggmtransspace = PQgetvalue(res, 0, PQfnumber(res, "aggmtransspace"));
 	agginitval = PQgetvalue(res, 0, i_agginitval);
 	aggminitval = PQgetvalue(res, 0, i_aggminitval);
+	aggrepsafeexec = (PQgetvalue(res, 0, PQfnumber(res, "aggrepsafeexec"))[0] == 't');
 	proparallel = PQgetvalue(res, 0, PQfnumber(res, "proparallel"));
 
 	if (fout->remoteVersion >= 80400)
@@ -15976,6 +15998,9 @@ dumpAgg(Archive *fout, const AggInfo *agginfo)
 			}
 		}
 	}
+
+	if (aggrepsafeexec)
+		appendPQExpBuffer(details, ",\n    REPSAFE = true");
 
 	aggsortconvop = getFormattedOperatorName(aggsortop);
 	if (aggsortconvop)
@@ -17707,7 +17732,20 @@ dumpExternal(Archive *fout, const TableInfo *tbinfo, PQExpBuffer q, PQExpBuffer 
 				appendPQExpBuffer(q, "%s ", fmtId(tbinfo->attnames[j]));
 
 				/* Attribute type */
-				appendPQExpBufferStr(q, tbinfo->atttypnames[j]);
+				if (tbinfo->attisdropped[j])
+				{
+					/*
+					 * ALTER TABLE DROP COLUMN clears
+					 * pg_attribute.atttypid, so we will not have gotten a
+					 * valid type name; insert INTEGER as a stopgap. We'll
+					 * clean things up later.
+					*/
+					appendPQExpBufferStr(q, " INTEGER /* dummy */");
+				}
+				else
+				{
+					appendPQExpBufferStr(q, tbinfo->atttypnames[j]);
+				}
 
 				actual_atts++;
 			}
@@ -18081,7 +18119,10 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 					break;
 				}
 			case RELKIND_MATVIEW:
-				reltypename = "MATERIALIZED VIEW";
+				if (tbinfo->isdynamic)
+					reltypename = "DYNAMIC TABLE";
+				else
+					reltypename = "MATERIALIZED VIEW";
 				break;
 			default:
 				reltypename = "TABLE";
@@ -18154,14 +18195,23 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			}
 		}
 
-		appendPQExpBuffer(q, "CREATE %s%s%s %s",
-						  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ?
-						  "UNLOGGED " : "",
-						  tbinfo->relkind == RELKIND_MATVIEW && tbinfo->isivm ?
-						  "INCREMENTAL " : "",
-						  reltypename,
-						  qualrelname);
+		if (tbinfo->relkind == RELKIND_MATVIEW && tbinfo->isdynamic)
+		{
+			/* We'r sure there is no UNLOGGED and this is a DYNAMIC TABLE. */
+			appendPQExpBuffer(q, "CREATE DYNAMIC TABLE %s", qualrelname);
+			addSchedule(fout, q, tbinfo);
+		}
+		else
+		{
+			appendPQExpBuffer(q, "CREATE %s%s%s %s",
+							  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ?
+							  "UNLOGGED " : "",
+							  tbinfo->relkind == RELKIND_MATVIEW && tbinfo->isivm ?
+							  "INCREMENTAL " : "",
+							  reltypename,
+							  qualrelname);
 
+		}
 		/*
 		 * Attach to type, if reloftype; except in case of a binary upgrade,
 		 * we dump the table normally and attach it to the type afterward.
@@ -18229,7 +18279,15 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 						 * clean things up later.
 						 */
 						appendPQExpBufferStr(q, " INTEGER /* dummy */");
-						/* and skip to the next column */
+
+						/* Dropped columns are dumped during binary upgrade.
+						 * Dump the encoding clause also to maintain a consistent
+						 * catalog entry in pg_attribute_encoding post upgrade.
+						 */
+						if (tbinfo->attencoding[j] != NULL)
+							appendPQExpBuffer(q, " ENCODING (%s)", tbinfo->attencoding[j]);
+
+						/* Skip all the rest */
 						continue;
 					}
 
@@ -19033,11 +19091,6 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			tbinfo->relkind == RELKIND_MATVIEW)
 			tableam = tbinfo->amname;
 
-		/*
-		 * GPDB_94_MERGE_FIXME: Why gpdb doesn't pass conditionally
-		 * SECTION_PRE_DATA or SECTION_POST_DATA based on tbinfo->postponed_def
-		 * similar to upstream.
-		 */
 		ArchiveEntry(fout, tbinfo->dobj.catId, tbinfo->dobj.dumpId,
 					 ARCHIVE_OPTS(.tag = tbinfo->dobj.name,
 								  .namespace = tbinfo->dobj.namespace->dobj.name,
@@ -19046,7 +19099,8 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 								  .tableam = tableam,
 								  .owner = tbinfo->rolname,
 								  .description = reltypename,
-								  .section = SECTION_PRE_DATA,
+								  .section = tbinfo->postponed_def ?
+								  SECTION_POST_DATA : SECTION_PRE_DATA,
 								  .createStmt = q->data,
 								  .dropStmt = delq->data));
 	}
@@ -19162,12 +19216,11 @@ dumpAttrDef(Archive *fout, const AttrDefInfo *adinfo)
 	qualrelname = pg_strdup(fmtQualifiedDumpable(tbinfo));
 
 	/*
-	 * GPDB_12_MERGE_FIXME: upstream always uses ONLY here, why gpdb need
-	 * condition? Fix corresponding tests in t/002_pg_dump.pl if you change
-	 * this.
-	 *
-	 * If the table is the parent of a partitioning hierarchy, the default
-	 * constraint must be applied to all children as well.
+	 * GPDB: Upstream uses ALTER TABLE ONLY below. If the table
+	 * is the parent of a GPDB partitioning hierarchy, the default
+	 * constraint must cascade to all children as well. Because of
+	 * this, we use ALTER TABLE instead when acting on a partition
+	 * parent.
 	 */
 	foreign = tbinfo->relkind == RELKIND_FOREIGN_TABLE ? "FOREIGN " : "";
 
@@ -21436,6 +21489,32 @@ testExtProtocolSupport(Archive *fout)
 	return isSupported;
 }
 
+/*
+ *	addSchedule
+ *
+ *	find the SCHEDULE of the job in pg_task with dynamic table
+ *	and append the SCHEDULE clause to the passed in dump buffer (q).
+ */
+static void
+addSchedule(Archive *fout, PQExpBuffer q, const TableInfo *tbinfo)
+{
+	PQExpBuffer query = createPQExpBuffer();
+	PGresult   *res;
+	char	   *dby;
+
+	appendPQExpBuffer(query,
+					  "SELECT pg_catalog.pg_get_dynamic_table_schedule(%u)",
+					  tbinfo->dobj.catId.oid);
+
+	res = ExecuteSqlQueryForSingleRow(fout, query->data);
+
+	dby = PQgetvalue(res, 0, 0);
+	if (strcmp(dby, "") != 0)
+		appendPQExpBuffer(q, " SCHEDULE \'%s\'", PQgetvalue(res, 0, 0));
+
+	PQclear(res);
+	destroyPQExpBuffer(query);
+}
 
 /*
  *	addDistributedBy

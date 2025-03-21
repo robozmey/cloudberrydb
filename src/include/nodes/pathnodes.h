@@ -4,7 +4,6 @@
  *	  Definitions for planner's internal data structures, especially Paths.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -505,6 +504,7 @@ struct PlannerInfo
 
 	int			numPureOrderedAggs; /* CDB: number that use ORDER BY/WITHIN GROUP, not counting DISTINCT */
 	bool		hasNonCombine;	/* CDB: any agg func w/o a combine func? */
+	bool		is_from_orca; /* true if this PlannerInfo was created from Orca*/
 };
 
 /*
@@ -2225,7 +2225,7 @@ typedef struct AggPath
 	uint64		transitionSpace;	/* for pass-by-ref transition data */
 	List	   *groupClause;	/* a list of SortGroupClause's */
 	List	   *qual;			/* quals (HAVING quals), if any */
-	bool		streaming;
+	bool		streaming;		/* stream entries when out of memory instead of spilling to disk */
 } AggPath;
 
 /*

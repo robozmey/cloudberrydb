@@ -42,33 +42,34 @@ CREATE TABLE tenk_aocs3 (like tenk_heap_for_aocs) with (appendonly=true, orienta
 CREATE TABLE tenk_aocs4 (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, compresslevel=1, compresstype=zlib) distributed by(unique1);
 CREATE TABLE tenk_aocs5 (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, compresslevel=6, compresstype=zlib) distributed by(unique1);
 CREATE TABLE tenk_aocs6 (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, compresslevel=6, compresstype=zlib, blocksize=1048576, checksum=true) distributed by(unique1);
+CREATE TABLE tenk_aocs7 (like tenk_heap_for_aocs) with (appendonly, orientation=column, compresslevel=6, checksum) distributed by(unique1);
 -- invalid combinations
 -- col instead of column
-CREATE TABLE tenk_aocs7 (like tenk_heap_for_aocs) with (appendonly=true, orientation=col) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (appendonly=true, orientation=col) distributed by(unique1);
 ERROR:  invalid parameter value for "orientation": "col"
 -- no parentheses surrounding storage options
-CREATE TABLE tenk_aocs8 (like tenk_heap_for_aocs) with appendonly=true, orientation=column distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with appendonly=true, orientation=column distributed by(unique1);
 ERROR:  syntax error at or near "appendonly"
-LINE 1: ...E TABLE tenk_aocs8 (like tenk_heap_for_aocs) with appendonly...
+LINE 1: ...ABLE tenk_aocs_bad (like tenk_heap_for_aocs) with appendonly...
                                                              ^
 -- no comma separating storage options
-CREATE TABLE tenk_aocs9 (like tenk_heap_for_aocs) with (appendonly=true orientation=column) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (appendonly=true orientation=column) distributed by(unique1);
 ERROR:  syntax error at or near "orientation"
-LINE 1: ...9 (like tenk_heap_for_aocs) with (appendonly=true orientatio...
+LINE 1: ...d (like tenk_heap_for_aocs) with (appendonly=true orientatio...
                                                              ^
 -- appendonly=false with orientation=column should not work
-CREATE TABLE tenk_aocs10 (like tenk_heap_for_aocs) with (appendonly=false, orientation=column, compresslevel=6, checksum=true) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (appendonly=false, orientation=column, compresslevel=6, checksum=true) distributed by(unique1);
 ERROR:  invalid option "orientation" for base relation
 HINT:  Table orientation only valid for Append Only relations, create an AO relation to use table orientation.
 -- block size must be between 8KB and 2MB w/ 8KB multiple
-CREATE TABLE tenk_aocs11 (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, blocksize=100) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, blocksize=100) distributed by(unique1);
 ERROR:  value 100 out of bounds for option "blocksize"
 DETAIL:  Valid values are between "8192" and "2097152".
 -- cannot have compresslevel 0
-CREATE TABLE tenk_aocs12 (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, compresslevel=0, compresstype=zlib) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (appendonly=true, orientation=column, compresslevel=0, compresstype=zlib) distributed by(unique1);
 ERROR:  compresstype "zlib" can't be used with compresslevel 0
 -- orientation=column must be combined with appendonly=true
-CREATE TABLE tenk_aocs13 (like tenk_heap_for_aocs) with (orientation=column) distributed by(unique1);
+CREATE TABLE tenk_aocs_bad (like tenk_heap_for_aocs) with (orientation=column) distributed by(unique1);
 ERROR:  invalid option "orientation" for base relation
 HINT:  Table orientation only valid for Append Only relations, create an AO relation to use table orientation.
 --------------------
@@ -84,7 +85,20 @@ SELECT c.relname, a.blocksize, a.compresstype, a.compresslevel, a.checksum FROM 
  tenk_aocs4 |     32768 | zlib         |             1 | t
  tenk_aocs5 |     32768 | zlib         |             6 | t
  tenk_aocs6 |   1048576 | zlib         |             6 | t
-(6 rows)
+ tenk_aocs7 |     32768 | zlib         |             6 | t
+(7 rows)
+
+SELECT c.relname, count(a.attnum) FROM pg_attribute_encoding a, pg_class c WHERE a.attrelid=c.oid AND c.relname LIKE 'tenk_aocs%' GROUP BY c.relname;
+  relname   | count 
+------------+-------
+ tenk_aocs1 |    16
+ tenk_aocs2 |    16
+ tenk_aocs3 |    16
+ tenk_aocs4 |    16
+ tenk_aocs5 |    16
+ tenk_aocs6 |    16
+ tenk_aocs7 |    16
+(7 rows)
 
 --------------------
 -- supported sql
@@ -346,7 +360,7 @@ FETCH 1 FROM foo3;
 (1 row)
 
 FETCH BACKWARD 1 FROM foo3; -- should fail
-ERROR:  backward scan is not supported in this version of Cloudberry Database
+ERROR:  backward scan is not supported in this version of Apache Cloudberry
 END;
 -- Cursors outside transaction blocks
 BEGIN;
@@ -396,7 +410,8 @@ SELECT c.relname, a.blocksize, a.compresstype, a.compresslevel, a.checksum FROM 
  tenk_aocs4 |     32768 | zlib         |             1 | t
  tenk_aocs5 |     32768 | zlib         |             6 | t
  tenk_aocs6 |   1048576 | zlib         |             6 | t
-(6 rows)
+ tenk_aocs7 |     32768 | zlib         |             6 | t
+(7 rows)
 
 SELECT count(*) FROM tenk_aocs1;
  count 
@@ -439,15 +454,15 @@ WITH (appendonly=true, orientation=column);
 CREATE TABLE aocs_inh_child3 (COLUMN parent_t ENCODING (compresstype=zlib))
 INHERITS (aocs_inh_parent)
 WITH (appendonly=true, orientation=column);
-SELECT c.relname, ae.attnum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh%' AND c.oid=ae.attrelid ORDER BY 1,2;
-     relname     | attnum |                     attoptions                      
------------------+--------+-----------------------------------------------------
- aocs_inh_child2 |      1 | {compresstype=none,compresslevel=0,blocksize=32768}
- aocs_inh_child2 |      2 | {compresstype=none,compresslevel=0,blocksize=32768}
- aocs_inh_child3 |      1 | {compresstype=zlib,compresslevel=1,blocksize=32768}
- aocs_inh_child3 |      2 | {compresstype=none,compresslevel=0,blocksize=32768}
- aocs_inh_parent |      1 | {compresstype=none,compresslevel=0,blocksize=32768}
- aocs_inh_parent |      2 | {blocksize=8192,compresstype=none,compresslevel=0}
+SELECT c.relname, ae.attnum, ae.filenum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh%' AND c.oid=ae.attrelid ORDER BY 1,2;
+     relname     | attnum | filenum |                     attoptions                      
+-----------------+--------+---------+-----------------------------------------------------
+ aocs_inh_child2 |      1 |       1 | {compresstype=none,compresslevel=0,blocksize=32768}
+ aocs_inh_child2 |      2 |       2 | {compresstype=none,compresslevel=0,blocksize=32768}
+ aocs_inh_child3 |      1 |       1 | {compresstype=zlib,compresslevel=1,blocksize=32768}
+ aocs_inh_child3 |      2 |       2 | {compresstype=none,compresslevel=0,blocksize=32768}
+ aocs_inh_parent |      1 |       1 | {compresstype=none,compresslevel=0,blocksize=32768}
+ aocs_inh_parent |      2 |       2 | {blocksize=8192,compresstype=none,compresslevel=0}
 (6 rows)
 
 -- Multiple inheritance
@@ -460,12 +475,12 @@ WITH (appendonly=true, orientation=column);
 CREATE TABLE aocs_inh_multichild ()
 INHERITS (aocs_inh_parent, aocs_inh_parent2)
 WITH (appendonly=true, orientation=column);
-SELECT c.relname, ae.attnum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh_multi%' AND c.oid=ae.attrelid ORDER BY 1,2;
-       relname       | attnum |                     attoptions                      
----------------------+--------+-----------------------------------------------------
- aocs_inh_multichild |      1 | {compresstype=none,compresslevel=0,blocksize=32768}
- aocs_inh_multichild |      2 | {compresstype=none,compresslevel=0,blocksize=32768}
- aocs_inh_multichild |      3 | {compresstype=none,compresslevel=0,blocksize=32768}
+SELECT c.relname, ae.attnum, ae.filenum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh_multi%' AND c.oid=ae.attrelid ORDER BY 1,2;
+       relname       | attnum | filenum |                     attoptions                      
+---------------------+--------+---------+-----------------------------------------------------
+ aocs_inh_multichild |      1 |       1 | {compresstype=none,compresslevel=0,blocksize=32768}
+ aocs_inh_multichild |      2 |       2 | {compresstype=none,compresslevel=0,blocksize=32768}
+ aocs_inh_multichild |      3 |       3 | {compresstype=none,compresslevel=0,blocksize=32768}
 (3 rows)
 
 -- AOCO table inherits a heap table.
@@ -474,13 +489,13 @@ CREATE TABLE aocs_inh2_child1 () INHERITS (aocs_inh2_parent_heap)
 WITH (appendonly=true, orientation=column);
 CREATE TABLE aocs_inh2_child2 (COLUMN parent_t ENCODING (compresstype=zlib)) INHERITS (aocs_inh2_parent_heap)
 WITH (appendonly=true, orientation=column);
-SELECT c.relname, ae.attnum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh2_%' AND c.oid=ae.attrelid ORDER BY 1,2;
-     relname      | attnum |                     attoptions                      
-------------------+--------+-----------------------------------------------------
- aocs_inh2_child1 |      1 | {compresstype=none,compresslevel=0,blocksize=32768}
- aocs_inh2_child1 |      2 | {compresstype=none,compresslevel=0,blocksize=32768}
- aocs_inh2_child2 |      1 | {compresstype=zlib,compresslevel=1,blocksize=32768}
- aocs_inh2_child2 |      2 | {compresstype=none,compresslevel=0,blocksize=32768}
+SELECT c.relname, ae.attnum, ae.filenum, ae.attoptions FROM pg_class c, pg_attribute_encoding ae WHERE c.relname LIKE 'aocs_inh2_%' AND c.oid=ae.attrelid ORDER BY 1,2;
+     relname      | attnum | filenum |                     attoptions                      
+------------------+--------+---------+-----------------------------------------------------
+ aocs_inh2_child1 |      1 |       1 | {compresstype=none,compresslevel=0,blocksize=32768}
+ aocs_inh2_child1 |      2 |       2 | {compresstype=none,compresslevel=0,blocksize=32768}
+ aocs_inh2_child2 |      1 |       1 | {compresstype=zlib,compresslevel=1,blocksize=32768}
+ aocs_inh2_child2 |      2 |       2 | {compresstype=none,compresslevel=0,blocksize=32768}
 (4 rows)
 
 -- don't drop the tables, to also test pg_dump & restore of them.
@@ -520,6 +535,41 @@ SELECT count(*) FROM tenk_aocs4;
  10000
 (1 row)
 
+-- Issue #15904
+set optimizer = off;
+EXPLAIN (verbose, costs off) SELECT max(unique1) FROM tenk_aocs1;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Finalize Aggregate
+   Output: max(unique1)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: (PARTIAL max(unique1))
+         ->  Partial Aggregate
+               Output: PARTIAL max(unique1)
+               ->  Seq Scan on public.tenk_aocs1
+                     Output: unique1
+ Optimizer: Postgres query optimizer
+ Settings: optimizer = 'off'
+(10 rows)
+
+CREATE TABLE tenk_aorow WITH(appendonly=true, orientation=row) AS SELECT * FROM tenk_heap_for_aocs;
+ANALYZE tenk_aorow;
+EXPLAIN (verbose, costs off) SELECT max(unique1) FROM tenk_aorow;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Finalize Aggregate
+   Output: max(unique1)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         Output: (PARTIAL max(unique1))
+         ->  Partial Aggregate
+               Output: PARTIAL max(unique1)
+               ->  Seq Scan on public.tenk_aorow
+                     Output: unique1
+ Optimizer: Postgres query optimizer
+ Settings: optimizer = 'off'
+(10 rows)
+
+reset optimizer;
 -- LIKE
 -- Should not copy storage options if not specified
 CREATE TABLE tenk_like_nocopy_storage (LIKE tenk_aocs1);
@@ -1030,6 +1080,7 @@ DROP TABLE tenk_aocs2;
 DROP TABLE tenk_aocs3;
 DROP TABLE tenk_aocs4;
 DROP TABLE tenk_aocs5;
+DROP TABLE tenk_aorow;
 set client_min_messages='WARNING';
 -- Test case for MPP-10086, make sure that we handle "else" clauses properly.
 DROP TABLE IF EXISTS aocs_new;
@@ -1179,7 +1230,6 @@ insert into bms_ao_bug select 1, 1, a.c1::char(100) from generate_series(1, 2000
 create index bms_ao_bug_ix1 on bms_ao_bug (c2);
 set enable_seqscan=off;
 set work_mem=256;
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 select
 a.c1,
 count(*) row_cnt
@@ -1234,7 +1284,7 @@ reset enable_seqscan;
 create table aocs_small_and_dense_content (a int, b int) with
 (appendonly =true, orientation=column, blocksize=409600,
  compresstype=rle_type, compresslevel=4);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into aocs_small_and_dense_content select i,i from
 generate_series(1,800000)i;
@@ -1331,3 +1381,25 @@ select count(*) from fix_aoco_truncate_last_sequence;
 (1 row)
 
 abort;
+-- Types by reference but the storage is plain
+CREATE TABLE test_ao_tsquery(c1 TSVECTOR, c2 TSQUERY, c3 INT) USING ao_column DISTRIBUTED BY (c3);
+INSERT INTO test_ao_tsquery(c1, c2, c3) VALUES('a fat cat sat on a mat and ate a fat rat'::TSVECTOR, 'fat & rat'::TSQUERY, 1);
+ANALYZE test_ao_tsquery;
+SELECT * FROM test_ao_tsquery;
+                         c1                         |      c2       | c3 
+----------------------------------------------------+---------------+----
+ 'a' 'and' 'ate' 'cat' 'fat' 'mat' 'on' 'rat' 'sat' | 'fat' & 'rat' |  1
+(1 row)
+
+DROP TABLE test_ao_tsquery;
+-- Test user defined types working with the convert-to-short-varlena
+-- optimization
+CREATE TYPE type_to_shorten AS (f1 int, f2 text);
+CREATE TABLE shorten_udt(c1 type_to_shorten) USING ao_column;
+INSERT INTO shorten_udt SELECT '(1,foo)';
+SELECT * FROM shorten_udt;
+   c1    
+---------
+ (1,foo)
+(1 row)
+

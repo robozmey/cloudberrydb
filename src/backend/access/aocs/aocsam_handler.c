@@ -3,7 +3,6 @@
  * aocsam_handler.c
  *	  Append only columnar access methods handler
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2009-2010, Greenplum Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
@@ -23,6 +22,7 @@
 #include "access/tableam.h"
 #include "access/tsmapi.h"
 #include "access/xact.h"
+#include "catalog/aoseg.h"
 #include "catalog/catalog.h"
 #include "catalog/heap.h"
 #include "catalog/index.h"
@@ -88,6 +88,9 @@ typedef struct AOCSBitmapScanData
 	int	rs_cindex;	/* current tuple's index tbmres->offset or -1 */
 } *AOCSBitmapScan;
 
+/*
+ * Per-relation backend-local DML state for DML or DML-like operations.
+ */
 typedef struct AOCODMLState
 {
 	Oid				relationOid;
@@ -107,38 +110,24 @@ typedef struct AOCODMLState
 } AOCODMLState;
 
 static void reset_state_cb(void *arg);
+
 /*
- * GPDB_12_MERGE_FIXME: This is a temporary state of things. A locally stored
- * state is needed currently because there is no viable place to store this
- * information outside of the table access method. Ideally the caller should be
- * responsible for initializing a state and passing it over using the table
- * access method api.
- *
- * Until this is in place, the local state is not to be accessed directly but
- * only via the *_dml_state functions.
- * It contains:
- *		a quick look up member for the common case
+ * A repository for per-relation backend-local DML states. Contains:
+ *		a quick look up member for the common case (only 1 relation)
  *		a hash table which keeps per relation information
  *		a memory context that should be long lived enough and is
  *			responsible for reseting the state via its reset cb
  */
-static struct AOCOLocal
+typedef struct AOCODMLStates
 {
 	AOCODMLState           *last_used_state;
-	HTAB				   *dmlDescriptorTab;
+	HTAB				   *state_table;
 
 	MemoryContext			stateCxt;
 	MemoryContextCallback	cb;
-} aocoLocal = {
-	.last_used_state  = NULL,
-	.dmlDescriptorTab = NULL,
+} AOCODMLStates;
 
-	.stateCxt		  = NULL,
-	.cb				  = {
-		.func	= reset_state_cb,
-		.arg	= NULL
-	},
-};
+static AOCODMLStates aocoDMLStates;
 
 /*
  * There are two cases that we are called from, during context destruction
@@ -150,32 +139,42 @@ static struct AOCOLocal
 static void
 reset_state_cb(void *arg)
 {
-	aocoLocal.dmlDescriptorTab = NULL;
-	aocoLocal.last_used_state = NULL;
-	aocoLocal.stateCxt = NULL;
+	aocoDMLStates.state_table = NULL;
+	aocoDMLStates.last_used_state = NULL;
+	aocoDMLStates.stateCxt = NULL;
 }
 
+
+/*
+ * Initialize the backend local AOCODMLStates object for this backend for the
+ * current DML or DML-like command (if not already initialized).
+ *
+ * This function should be called with a current memory context whose life
+ * span is enough to last until the end of this command execution.
+ */
 static void
-init_dml_local_state(void)
+init_aoco_dml_states()
 {
 	HASHCTL hash_ctl;
 
-	if (!aocoLocal.dmlDescriptorTab)
+	if (!aocoDMLStates.state_table)
 	{
-		Assert(aocoLocal.stateCxt == NULL);
-		aocoLocal.stateCxt = AllocSetContextCreate(
+		Assert(aocoDMLStates.stateCxt == NULL);
+		aocoDMLStates.stateCxt = AllocSetContextCreate(
 			CurrentMemoryContext,
 			"AppendOnly DML State Context",
 			ALLOCSET_SMALL_SIZES);
-		MemoryContextRegisterResetCallback(
-			aocoLocal.stateCxt,
-			&aocoLocal.cb);
+
+		aocoDMLStates.cb.func = reset_state_cb;
+		aocoDMLStates.cb.arg = NULL;
+		MemoryContextRegisterResetCallback(aocoDMLStates.stateCxt,
+										   &aocoDMLStates.cb);
 
 		memset(&hash_ctl, 0, sizeof(hash_ctl));
 		hash_ctl.keysize = sizeof(Oid);
 		hash_ctl.entrysize = sizeof(AOCODMLState);
-		hash_ctl.hcxt = aocoLocal.stateCxt;
-		aocoLocal.dmlDescriptorTab =
+		hash_ctl.hcxt = aocoDMLStates.stateCxt;
+		aocoDMLStates.state_table =
 			hash_create("AppendOnly DML state", 128, &hash_ctl,
 			            HASH_CONTEXT | HASH_ELEM | HASH_BLOBS);
 	}
@@ -187,19 +186,18 @@ init_dml_local_state(void)
  *
  * Should be called exactly once per relation.
  */
-static inline AOCODMLState *
-enter_dml_state(const Oid relationOid)
+static inline void
+init_dml_state(const Oid relationOid)
 {
 	AOCODMLState *state;
 	bool				found;
 
-	Assert(aocoLocal.dmlDescriptorTab);
+	Assert(aocoDMLStates.state_table);
 
-	state = (AOCODMLState *) hash_search(
-		aocoLocal.dmlDescriptorTab,
-		&relationOid,
-		HASH_ENTER,
-		&found);
+	state = (AOCODMLState *) hash_search(aocoDMLStates.state_table,
+										 &relationOid,
+										 HASH_ENTER,
+										 &found);
 
 	state->insertDesc = NULL;
 	state->deleteDesc = NULL;
@@ -210,8 +208,7 @@ enter_dml_state(const Oid relationOid)
 
 	Assert(!found);
 
-	aocoLocal.last_used_state = state;
-	return state;
+	aocoDMLStates.last_used_state = state;
 }
 
 /*
@@ -222,21 +219,20 @@ static inline AOCODMLState *
 find_dml_state(const Oid relationOid)
 {
 	AOCODMLState *state;
-	Assert(aocoLocal.dmlDescriptorTab);
+	Assert(aocoDMLStates.state_table);
 
-	if (aocoLocal.last_used_state &&
-		aocoLocal.last_used_state->relationOid == relationOid)
-		return aocoLocal.last_used_state;
+	if (aocoDMLStates.last_used_state &&
+		aocoDMLStates.last_used_state->relationOid == relationOid)
+		return aocoDMLStates.last_used_state;
 
-	state = (AOCODMLState *) hash_search(
-		aocoLocal.dmlDescriptorTab,
-		&relationOid,
-		HASH_FIND,
-		NULL);
+	state = (AOCODMLState *) hash_search(aocoDMLStates.state_table,
+										 &relationOid,
+										 HASH_FIND,
+										 NULL);
 
 	Assert(state);
 
-	aocoLocal.last_used_state = state;
+	aocoDMLStates.last_used_state = state;
 	return state;
 }
 
@@ -246,26 +242,25 @@ find_dml_state(const Oid relationOid)
  *
  * Should be called exactly once per relation.
  */
-static inline AOCODMLState *
+static inline void
 remove_dml_state(const Oid relationOid)
 {
 	AOCODMLState *state;
-	Assert(aocoLocal.dmlDescriptorTab);
+	Assert(aocoDMLStates.state_table);
 
-	state = (AOCODMLState *) hash_search(
-		aocoLocal.dmlDescriptorTab,
-		&relationOid,
-		HASH_REMOVE,
-		NULL);
+	state = (AOCODMLState *) hash_search(aocoDMLStates.state_table,
+										 &relationOid,
+										 HASH_REMOVE,
+										 NULL);
 
 	if (!state)
-		return NULL;
+		return;
 
-	if (aocoLocal.last_used_state &&
-		aocoLocal.last_used_state->relationOid == relationOid)
-		aocoLocal.last_used_state = NULL;
+	if (aocoDMLStates.last_used_state &&
+		aocoDMLStates.last_used_state->relationOid == relationOid)
+		aocoDMLStates.last_used_state = NULL;
 
-	return state;
+	return;
 }
 
 /*
@@ -277,8 +272,8 @@ remove_dml_state(const Oid relationOid)
 void
 aoco_dml_init(Relation relation, CmdType operation)
 {
-	init_dml_local_state();
-	(void) enter_dml_state(RelationGetRelid(relation));
+	init_aoco_dml_states();
+	init_dml_state(RelationGetRelid(relation));
 }
 
 /*
@@ -290,7 +285,14 @@ aoco_dml_finish(Relation relation, CmdType operation)
 	AOCODMLState *state;
 	bool		 had_delete_desc = false;
 
-	state = remove_dml_state(RelationGetRelid(relation));
+	Oid relationOid = RelationGetRelid(relation);
+
+	Assert(aocoDMLStates.state_table);
+
+	state = (AOCODMLState *) hash_search(aocoDMLStates.state_table,
+										 &relationOid,
+										 HASH_FIND,
+										 NULL);
 
 	if (!state)
 		return;
@@ -341,7 +343,7 @@ aoco_dml_finish(Relation relation, CmdType operation)
 		else
 		{
 			/*
-			 * Github issue: https://github.com/cloudberrydb/cloudberrydb/issues/557
+			 * Github issue: https://github.com/apache/cloudberry/issues/557
 			 *
 			 * For partition tables, it's possible to update across partitions.
 			 * And it does have deleteDesc and uniqueCheckDesc if there were.
@@ -359,6 +361,7 @@ aoco_dml_finish(Relation relation, CmdType operation)
 		state->uniqueCheckDesc = NULL;
 	}
 
+	remove_dml_state(relationOid);
 }
 
 /*
@@ -372,7 +375,7 @@ get_insert_descriptor(const Relation relation)
 	MemoryContext oldcxt;
 
 	state = find_dml_state(RelationGetRelid(relation));
-	oldcxt = MemoryContextSwitchTo(aocoLocal.stateCxt);
+	oldcxt = MemoryContextSwitchTo(aocoDMLStates.stateCxt);
 	if (state->insertDesc == NULL)
 	{
 
@@ -472,25 +475,9 @@ get_delete_descriptor(const Relation relation, bool forUpdate)
 
 	if (state->deleteDesc == NULL)
 	{
-		/*
-		 * GPDB_12_MERGE_FIXME: Can we perform this check earlier on?
-		 * Example during init? Idealy should be called on master node first,
-		 * that way we will avoid the dispatch.
-		 */
 		MemoryContext oldcxt;
-		if (IsolationUsesXactSnapshot())
-		{
-			if (forUpdate)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("updates on append-only tables are not supported in serializable transactions")));
-			else
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("deletes on append-only tables are not supported in serializable transactions")));
-		}
 
-		oldcxt = MemoryContextSwitchTo(aocoLocal.stateCxt);
+		oldcxt = MemoryContextSwitchTo(aocoDMLStates.stateCxt);
 		state->deleteDesc = aocs_delete_init(relation);
 		MemoryContextSwitchTo(oldcxt);
 	}
@@ -508,7 +495,7 @@ get_or_create_unique_check_desc(Relation relation, Snapshot snapshot)
 		MemoryContext oldcxt;
 		AOCSUniqueCheckDesc uniqueCheckDesc;
 
-		oldcxt = MemoryContextSwitchTo(aocoLocal.stateCxt);
+		oldcxt = MemoryContextSwitchTo(aocoDMLStates.stateCxt);
 		uniqueCheckDesc = palloc0(sizeof(AOCSUniqueCheckDescData));
 
 		/* Initialize the block directory */
@@ -1058,20 +1045,29 @@ aoco_tuple_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
 	pgstat_count_heap_insert(relation, 1);
 }
 
+/*
+ * We don't support speculative inserts on appendoptimized tables, i.e. we don't
+ * support INSERT ON CONFLICT DO NOTHING or INSERT ON CONFLICT DO UPDATE. Thus,
+ * the following functions are left unimplemented.
+ */
+
 static void
 aoco_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
                                     CommandId cid, int options,
                                     BulkInsertState bistate, uint32 specToken)
 {
-	/* GPDB_12_MERGE_FIXME: not supported. Can this function be left out completely? Or ereport()? */
-	elog(ERROR, "speculative insertion not supported on AO_COLUMN tables");
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("speculative insert is not supported on appendoptimized relations")));
 }
 
 static void
 aoco_tuple_complete_speculative(Relation relation, TupleTableSlot *slot,
                                       uint32 specToken, bool succeeded)
 {
-	elog(ERROR, "speculative insertion not supported on AO_COLUMN tables");
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("speculative insert is not supported on appendoptimized relations")));
 }
 
 /*
@@ -1175,14 +1171,38 @@ aoco_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	return result;
 }
 
+/*
+ * This API is called for a variety of purposes, which are either not supported
+ * for AO/CO tables or not supported for GPDB in general:
+ *
+ * (1) UPSERT: ExecOnConflictUpdate() calls this, but clearly upsert is not
+ * supported for AO/CO tables.
+ *
+ * (2) DELETE and UPDATE triggers: GetTupleForTrigger() calls this, but clearly
+ * these trigger types are not supported for AO/CO tables.
+ *
+ * (3) Logical replication: RelationFindReplTupleByIndex() and
+ * RelationFindReplTupleSeq() calls this, but clearly we don't support logical
+ * replication yet for GPDB.
+ *
+ * (4) For DELETEs/UPDATEs, when a state of TM_Updated is returned from
+ * table_tuple_delete() and table_tuple_update() respectively, this API is invoked.
+ * However, that is impossible for AO/CO tables as an AO/CO tuple cannot be
+ * deleted/updated while another transaction is updating it (see CdbTryOpenTable()).
+ *
+ * (5) Row-level locking (SELECT FOR ..): ExecLockRows() calls this but a plan
+ * containing the LockRows plan node is never generated for AO/CO tables. In fact,
+ * we lock at the table level instead.
+ */
 static TM_Result
 aoco_tuple_lock(Relation relation, ItemPointer tid, Snapshot snapshot,
                       TupleTableSlot *slot, CommandId cid, LockTupleMode mode,
                       LockWaitPolicy wait_policy, uint8 flags,
                       TM_FailureData *tmfd)
 {
-	/* GPDB_12_MERGE_FIXME: not supported. Can this function be left out completely? Or ereport()? */
-	elog(ERROR, "speculative insertion not supported on AO tables");
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("tuple locking is not supported on appendoptimized tables")));
 }
 
 static void
@@ -1269,8 +1289,17 @@ static TransactionId
 aoco_index_delete_tuples(Relation rel,
 						 TM_IndexDeleteOp *delstate)
 {
-	// GPDB_14_MERGE_FIXME: vacuum related call back.
-	elog(ERROR, "not implemented yet");
+	/*
+	 * This API is only useful for hot standby snapshot conflict resolution
+	 * (for eg. see btree_xlog_delete()), in the context of index page-level
+	 * vacuums (aka page-level cleanups). This operation is only done when
+	 * IndexScanDesc->kill_prior_tuple is true, which is never for AO/CO tables
+	 * (we always return all_dead = false in the index_fetch_tuple() callback
+	 * as we don't support HOT)
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("feature not supported on appendoptimized relations")));
 }
 
 
@@ -1378,7 +1407,7 @@ aoco_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 	 */
 	RelationCreateStorage(*newrnode, rel->rd_rel->relpersistence, SMGR_AO, rel);
 
-	copy_append_only_data(rel->rd_node, *newrnode, rel->rd_backend, rel->rd_rel->relpersistence);
+	copy_append_only_data(rel->rd_node, *newrnode, rel->rd_smgr, dstrel, rel->rd_backend, rel->rd_rel->relpersistence);
 
 	/*
 	 * For append-optimized tables, no forks other than the main fork should
@@ -1408,8 +1437,10 @@ aoco_vacuum_rel(Relation onerel, VacuumParams *params,
                       BufferAccessStrategy bstrategy)
 {
 	/*
-	 * Implemented but not invoked, we do the AO_COLUMN different phases vacuuming by
-	 * calling ao_vacuum_rel() in vacuum_rel() directly for now.
+	 * We VACUUM an AO_COLUMN table through multiple phases. vacuum_rel()
+	 * orchestrates the phases and calls itself again for each phase, so we
+	 * get here for every phase. ao_vacuum_rel() is a wrapper of dedicated
+	 * ao_vacuum_rel_*() functions for the specific phases.
 	 */
 	ao_vacuum_rel(onerel, params, bstrategy);
 
@@ -1651,13 +1682,18 @@ aoco_index_build_range_scan(Relation heapRelation,
 	EState	   *estate;
 	ExprContext *econtext;
 	Snapshot	snapshot;
-	bool		need_unregister_snapshot = false;
-	TransactionId OldestXmin;
 	AOCSFileSegInfo **seginfo = NULL;
-	int32 segfile_count;
+	int32 segfile_count = 0;
 	int64 total_blockcount = 0; 
 	BlockNumber lastBlock = start_blockno;
 	int64 blockcounts = 0;
+#if 0
+	bool		need_create_blk_directory = false;
+	List	   *tlist = NIL;
+	List	   *qual = indexInfo->ii_Predicate;
+#endif
+	Oid			blkdirrelid;
+	Oid			blkidxrelid;
 	int64 		previous_blkno = -1;
 
 	/*
@@ -1698,34 +1734,15 @@ aoco_index_build_range_scan(Relation heapRelation,
 	/* Set up execution state for predicate, if any. */
 	predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
 
-	/*
-	 * Prepare for scan of the base relation.  In a normal index build, we use
-	 * SnapshotAny because we must retrieve all tuples and do our own time
-	 * qual checks (because we have to index RECENTLY_DEAD tuples). In a
-	 * concurrent build, or during bootstrap, we take a regular MVCC snapshot
-	 * and index whatever's live according to that.
-	 */
-	OldestXmin = InvalidTransactionId;
-
-	/* okay to ignore lazy VACUUMs here */
-	if (!IsBootstrapProcessingMode() && !indexInfo->ii_Concurrent)
-		OldestXmin = GetOldestNonRemovableTransactionId(heapRelation);
-
 	if (!scan)
 	{
 		/*
 		 * Serial index build.
 		 *
-		 * Must begin our own heap scan in this case.  We may also need to
-		 * register a snapshot whose lifetime is under our direct control.
+		 * XXX: We always use SnapshotAny here. An MVCC snapshot and oldest xmin
+		 * calculation is necessary to support indexes built CONCURRENTLY.
 		 */
-		if (!TransactionIdIsValid(OldestXmin))
-		{
-			snapshot = RegisterSnapshot(GetTransactionSnapshot());
-			need_unregister_snapshot = true;
-		}
-		else
-			snapshot = SnapshotAny;
+		snapshot = SnapshotAny;
 
 		scan = table_beginscan_strat(heapRelation,	/* relation */
 		                             snapshot,	/* snapshot */
@@ -1753,9 +1770,6 @@ aoco_index_build_range_scan(Relation heapRelation,
 	/*
 	 * If block directory is empty, it must also be built along with the index.
 	 */
-	Oid blkdirrelid;
-	Oid blkidxrelid;
-
 	GetAppendOnlyEntryAuxOids(heapRelation, NULL,
 							  &blkdirrelid, &blkidxrelid, NULL, NULL);
 	/*
@@ -1798,7 +1812,6 @@ aoco_index_build_range_scan(Relation heapRelation,
 		 * directory, otherwise we need to scan only the columns projected. So,
 		 * calculate the total blocks accordingly.
 		 */
-
 		if (need_create_blk_directory)
 			fileSegTotals = GetAOCSSSegFilesTotals(heapRelation,
 												   aocoscan->appendOnlyMetaDataSnapshot);
@@ -1811,30 +1824,13 @@ aoco_index_build_range_scan(Relation heapRelation,
 		Assert(fileSegTotals->totalbytes >= 0);
 		totalBlocks = RelationGuessNumberOfBlocksFromSize(fileSegTotals->totalbytes);
 #endif
-		seginfo = GetAllAOCSFileSegInfo(heapRelation, NULL, &segfile_count, NULL);
-		for (int seginfo_no = 0; seginfo_no < segfile_count; seginfo_no++)
-			total_blockcount += seginfo[seginfo_no]->varblockcount;
+		FileSegTotals	*fileSegTotals;
+		fileSegTotals = GetAOCSSSegFilesTotals(heapRelation,
+												   aocoscan->appendOnlyMetaDataSnapshot);
 
 		pgstat_progress_update_param(PROGRESS_SCAN_BLOCKS_TOTAL,
-									total_blockcount);
+									RelationGuessNumberOfBlocksFromSize(fileSegTotals->totalbytes));
 	}
-
-
-	/*
-	* GPDB_14_MERGE_FIXME
-	* Same as in appendonly_handler.c:
-	* Need to check the comments here as GetOldestXmin() has been removed.
-	*/
-	/*
-	 * Must call GetOldestXmin() with SnapshotAny.  Should never call
-	 * GetOldestXmin() with MVCC snapshot. (It's especially worth checking
-	 * this for parallel builds, since ambuild routines that support parallel
-	 * builds must work these details out for themselves.)
-	 */
-	Assert(snapshot == SnapshotAny || IsMVCCSnapshot(snapshot));
-	Assert(snapshot == SnapshotAny ? TransactionIdIsValid(OldestXmin) :
-	       !TransactionIdIsValid(OldestXmin));
-	Assert(snapshot == SnapshotAny || !anyvisible);
 
 	/* set our scan endpoints */
 	if (!allow_sync)
@@ -1855,14 +1851,13 @@ aoco_index_build_range_scan(Relation heapRelation,
 	while (aoco_getnextslot(&aocoscan->rs_base, ForwardScanDirection, slot))
 	{
 		bool		tupleIsAlive;
-		BlockNumber		blockno;
 		AOTupleId 	*aoTupleId;
+		BlockNumber currblockno = ItemPointerGetBlockNumber(&slot->tts_tid);
 
 		CHECK_FOR_INTERRUPTS();
-		blockno = ItemPointerGetBlockNumber(&slot->tts_tid);
-		if (blockno != lastBlock)
+		if (currblockno != lastBlock)
 		{
-			lastBlock = blockno;
+			lastBlock = currblockno;
 			++blockcounts;
 		}
 
@@ -1871,8 +1866,8 @@ aoco_index_build_range_scan(Relation heapRelation,
 		 * we scan the whole table, and throw away tuples that are not in the
 		 * range. That's clearly very inefficient.
 		 */
-		if (blockno < start_blockno ||
-			(numblocks != InvalidBlockNumber && blockno >= numblocks))
+		if (currblockno < start_blockno ||
+			(numblocks != InvalidBlockNumber && currblockno >= (start_blockno + numblocks)))
 			continue;
 
 		/* Report scan progress, if asked to. */
@@ -1961,10 +1956,6 @@ aoco_index_build_range_scan(Relation heapRelation,
 
 	table_endscan(scan);
 
-	/* we can now forget our snapshot, if set and registered by us */
-	if (need_unregister_snapshot)
-		UnregisterSnapshot(snapshot);
-
 	ExecDropSingleTupleTableSlot(slot);
 
 	FreeExecutorState(estate);
@@ -2037,6 +2028,66 @@ aoco_relation_size(Relation rel, ForkNumber forkNumber)
 	UnregisterSnapshot(snapshot);
 
 	return totalbytes;
+}
+
+/*
+ * For each AO segment, get the starting heap block number and the number of
+ * heap blocks (together termed as a BlockSequence). The starting heap block
+ * number is always deterministic given a segment number. See AOtupleId.
+ *
+ * The number of heap blocks can be determined from the last row number present
+ * in the segment. See appendonlytid.h for details.
+ */
+static BlockSequence *
+aoco_relation_get_block_sequences(Relation rel, int *numSequences)
+{
+	Snapshot			snapshot;
+	Oid					segrelid;
+	int					nsegs;
+	BlockSequence		*sequences;
+	AOCSFileSegInfo 	**seginfos;
+
+	Assert(RelationIsValid(rel));
+	Assert(numSequences);
+
+	snapshot = RegisterSnapshot(GetCatalogSnapshot(InvalidOid));
+
+	seginfos = GetAllAOCSFileSegInfo(rel, snapshot, &nsegs, &segrelid);
+	sequences = (BlockSequence *) palloc(sizeof(BlockSequence) * nsegs);
+	*numSequences = nsegs;
+
+	/*
+	 * For each aoseg, the sequence starts at a fixed heap block number and
+	 * contains up to the highest numbered heap block corresponding to the
+	 * lastSequence value of that segment.
+	 */
+	for (int i = 0; i < nsegs; i++)
+		AOSegment_PopulateBlockSequence(&sequences[i], segrelid, seginfos[i]->segno);
+
+	UnregisterSnapshot(snapshot);
+
+	if (seginfos != NULL)
+	{
+		FreeAllAOCSSegFileInfo(seginfos, nsegs);
+		pfree(seginfos);
+	}
+
+	return sequences;
+}
+
+/*
+ * Populate the BlockSequence corresponding to the AO segment in which the
+ * logical heap block 'blkNum' falls.
+ */
+static void
+aoco_relation_get_block_sequence(Relation rel,
+								 BlockNumber blkNum,
+								 BlockSequence *sequence)
+{
+	Oid segrelid;
+
+	GetAppendOnlyEntryAuxOids(rel, &segrelid, NULL, NULL, NULL, NULL);
+	AOSegment_PopulateBlockSequence(sequence, segrelid, AOSegmentGet_segno(blkNum));
 }
 
 static bool
@@ -2300,6 +2351,7 @@ aoco_transform_column_encoding_clauses(Relation rel, List *aocoColumnEncoding,
 	bool foundCompressTypeNone = false;
 	char *cmplevel = NULL;
 	bool foundBlockSize = false;
+	bool hasAttrs;
 	char *arg;
 	List *retList = list_copy(aocoColumnEncoding);
 	DefElem *el;
@@ -2309,6 +2361,14 @@ aoco_transform_column_encoding_clauses(Relation rel, List *aocoColumnEncoding,
 	int16		compresslevel = 0;
 	char	   *compresstype = NULL;
 	NameData	compresstype_nd;
+
+	/*
+	 * The relam of partition table may be ao table, but partition table
+	 * has no entry in pg_appendonly. It shouldn't fetch encoding options
+	 * from here for partition tables. See details in function
+	 * transformColumnEncoding.
+	 */
+	hasAttrs = rel && rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE;
 
 	foreach(lc, aocoColumnEncoding)
 	{
@@ -2346,18 +2406,17 @@ aoco_transform_column_encoding_clauses(Relation rel, List *aocoColumnEncoding,
 	 * table setting in pg_appendonly is preferred over default
 	 * options in GUC gp_default_storage_option.
 	 */
-	if (rel)
+	if (hasAttrs)
 	{
 		GetAppendOnlyEntryAttributes(RelationGetRelid(rel),
 									 &blocksize,
-									 NULL,
 									 &compresslevel,
 									 NULL,
 									 &compresstype_nd);
 		compresstype = NameStr(compresstype_nd);
 	}
 
-	if (!foundCompressType && rel && compresstype[0])
+	if (!foundCompressType && hasAttrs && compresstype[0])
 	{
 		el = makeDefElem("compresstype", (Node *) makeString(pstrdup(compresstype)), -1);
 		retList = lappend(retList, el);
@@ -2533,6 +2592,8 @@ static TableAmRoutine ao_column_methods = {
 	.index_validate_scan = aoco_index_validate_scan,
 
 	.relation_size = aoco_relation_size,
+	.relation_get_block_sequences = aoco_relation_get_block_sequences,
+	.relation_get_block_sequence = aoco_relation_get_block_sequence,
 	.relation_needs_toast_table = aoco_relation_needs_toast_table,
 
 	.relation_estimate_size = aoco_estimate_rel_size,

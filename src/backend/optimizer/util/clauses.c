@@ -3,7 +3,6 @@
  * clauses.c
  *	  routines to manipulate qualification clauses
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -23,6 +22,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "catalog/oid_dispatch.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_language.h"
@@ -2293,6 +2293,8 @@ Node *
 eval_const_expressions(PlannerInfo *root, Node *node)
 {
 	eval_const_expressions_context context;
+	Node                          *result;
+	List                          *saved_oid_assignments;
 
 	if (root)
 		context.boundParams = root->glob->boundParams;	/* bound Params */
@@ -2307,7 +2309,11 @@ eval_const_expressions(PlannerInfo *root, Node *node)
 	context.max_size = 0;
 	context.eval_stable_functions = should_eval_stable_functions(root);
 
-	return eval_const_expressions_mutator(node, &context);
+	saved_oid_assignments = SaveOidAssignments();
+	result = eval_const_expressions_mutator(node, &context);
+	RestoreOidAssignments(saved_oid_assignments);
+
+	return result;
 }
 
 #define MIN_ARRAY_SIZE_FOR_HASHED_SAOP 9
@@ -5398,6 +5404,13 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	 */
 	record_plan_function_dependency(root, func_oid);
 
+	/*
+	 * We must also notice if the inserted query adds a dependency on the
+	 * calling role due to RLS quals.
+	 */
+	if (querytree->hasRowSecurity)
+		root->glob->dependsOnRole = true;
+
 	return querytree;
 
 	/* Here if func is not inlinable: release temp memory and return NULL */
@@ -5568,49 +5581,6 @@ flatten_join_alias_var_optimizer(Query *query, int queryLevel)
 	}
 
     return queryNew;
-}
-
-/**
- * Returns true if the equality operator with the given opno
- *   values is a true equality operator (unlike some of the
- *   box/rectangle/etc. types which implement 'goofy' operators).
- *
- * This function currently only knows about built-in types, and is
- *   conservative with regard to which it returns true for (only
- *     ones which have been verified to work the right way).
- */
-bool is_builtin_true_equality_between_same_type(int opno)
-{
-	switch (opno)
-	{
-	case BitEqualOperator:
-	case BooleanEqualOperator:
-	case BpcharEqualOperator:
-	case CashEqualOperator:
-	case CharEqualOperator:
-	case CidEqualOperator:
-	case DateEqualOperator:
-	case Float4EqualOperator:
-	case Float8EqualOperator:
-	case Int2EqualOperator:
-	case Int4EqualOperator:
-	case Int8EqualOperator:
-	case IntervalEqualOperator:
-	case NameEqualOperator:
-	case NumericEqualOperator:
-	case OidEqualOperator:
-	case TextEqualOperator:
-	case TIDEqualOperator:
-	case TimeEqualOperator:
-	case TimestampEqualOperator:
-	case TimestampTZEqualOperator:
-	case TimeTZEqualOperator:
-	case XidEqualOperator:
-		return true;
-
-	default:
-		return false;
-	}
 }
 
 /**

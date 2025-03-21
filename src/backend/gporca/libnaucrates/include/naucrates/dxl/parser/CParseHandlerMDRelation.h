@@ -16,7 +16,6 @@
 
 #include "naucrates/dxl/parser/CParseHandlerMetadataObject.h"
 #include "naucrates/dxl/xml/dxltokens.h"
-#include "naucrates/md/CMDPartConstraintGPDB.h"
 #include "naucrates/md/CMDRelationGPDB.h"
 
 namespace gpdxl
@@ -49,9 +48,6 @@ protected:
 	// is this a temporary relation
 	BOOL m_is_temp_table;
 
-	// does this relation have oids
-	BOOL m_has_oids;
-
 	// storage type
 	IMDRelation::Erelstoragetype m_rel_storage_type;
 
@@ -70,9 +66,6 @@ protected:
 	// partition types
 	CharPtrArray *m_str_part_types_array;
 
-	// number of partitions
-	ULONG m_num_of_partitions;
-
 	// key sets
 	ULongPtr2dArray *m_key_sets_arrays;
 
@@ -87,6 +80,12 @@ protected:
 
 	// is part constraint unbounded
 	BOOL m_part_constraint_unbounded;
+
+	// foreign server (if exists)
+	IMDId *m_foreign_server;
+
+	// rows
+	CDouble m_rows;
 
 	// helper function to parse main relation attributes: name, id,
 	// distribution policy and keys

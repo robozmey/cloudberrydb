@@ -3,7 +3,6 @@
  * planner.c
  *	  The query optimizer external interface.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -83,6 +82,7 @@
 #include "cdb/cdbtargeteddispatch.h"
 #include "cdb/cdbutil.h"
 #include "cdb/cdbvars.h"
+#include "optimizer/aqumv.h" /* answer_query_using_materialized_views */
 #include "optimizer/orca.h"
 #include "storage/lmgr.h"
 #include "utils/guc.h"
@@ -159,6 +159,12 @@ typedef struct
 	List       *new_rollups;
 	AggStrategy strat;
 } split_rollup_data;
+
+typedef struct
+{
+	PathTarget *partial_target;
+	List *grps_tlist;
+} deconstruct_expr_context;
 
 /* Local functions */
 static Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);
@@ -389,7 +395,14 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 		if (gp_log_optimization_time)
 			INSTR_TIME_SET_CURRENT(starttime);
 
+#ifdef USE_ORCA
 		result = optimize_query(parse, cursorOptions, boundParams);
+#else
+		/* Make sure this branch is not taken in builds using --disable-orca. */
+		Assert(false);
+		/* Keep compilers quiet in case the build used --disable-orca. */
+		result = NULL;
+#endif
 
 		if (gp_log_optimization_time)
 		{
@@ -1339,6 +1352,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	if (hasResultRTEs)
 		remove_useless_result_rtes(root);
 
+	parse = remove_distinct_sort_clause(parse);
+
 	/*
 	 * Do the main planning.
 	 */
@@ -1738,6 +1753,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		List	   *activeWindows = NIL;
 		grouping_sets_data *gset_data = NULL;
 		standard_qp_extra qp_extra;
+		AqumvContext aqumv_context = (AqumvContext) &(AqumvContextData){0};
 
 		/* A recursive query should always have setOperations */
 		Assert(!root->hasRecursion);
@@ -1762,6 +1778,19 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		 * tlist of the finished Plan.  This is kept in processed_tlist.
 		 */
 		preprocess_targetlist(root);
+
+		/*
+		 * Used for AQUMV.
+		 * tlist and having quals before process_aggrefs().
+		 * Copy them for agg comparison between view and origin query
+		 * in case different agg order.
+		 */
+		if (Gp_role == GP_ROLE_DISPATCH &&
+			enable_answer_query_using_materialized_views)
+		{
+			aqumv_context->raw_havingQual = copyObject(parse->havingQual);
+			aqumv_context->raw_processed_tlist = copyObject(root->processed_tlist);
+		}
 
 		/*
 		 * Collect statistics about aggregates for estimating costs, and mark
@@ -1888,7 +1917,14 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		if (Gp_role == GP_ROLE_DISPATCH &&
 			enable_answer_query_using_materialized_views)
 		{
-			current_rel = answer_query_using_materialized_views(root, current_rel, standard_qp_callback, &qp_extra);
+			/* Now it's ok to set other fields. */
+			aqumv_context->current_rel = current_rel;
+			aqumv_context->qp_callback = standard_qp_callback;
+			aqumv_context->qp_extra = &qp_extra;
+
+			/* Do the real work. */
+			current_rel = answer_query_using_materialized_views(root, aqumv_context);
+			/* parse tree may be rewriten. */
 			parse = root->parse;
 		}
 
@@ -2173,7 +2209,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		 * (for update | no key update | share | key share) in postgres
 		 * is to hold RowShareLock on tables during parsing stage, and
 		 * generate a LockRows plan node for executor to lock the tuples.
-		 * It is not easy to lock tuples in Cloudberry database, since
+		 * It is not easy to lock tuples in Apache Cloudberry, since
 		 * tuples may be fetched through motion nodes.
 		 *
 		 * But when Global Deadlock Detector is enabled, and the select
@@ -2184,28 +2220,9 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		 * The conflict with UPDATE|DELETE is implemented by locking the entire
 		 * table in ExclusiveMode. More details please refer docs.
 		 */
-		/*
-		 * GPDB_96_MERGE_FIXME: since we now process this in the path
-		 * context, it's much simpler than before, please kindly
-		 * revisit this, I'm not quite sure here.
-		 */
 		if (parse->rowMarks)
 		{
-			ListCell   *lc;
-			List   *newmarks = NIL;
-
 			if (parse->canOptSelectLockingClause)
-			{
-				foreach(lc, root->rowMarks)
-				{
-					PlanRowMark *rc = (PlanRowMark *) lfirst(lc);
-
-					rc->canOptSelectLockingClause = true;
-					newmarks = lappend(newmarks, rc);
-				}
-			}
-
-			if (newmarks)
 			{
 				/*
 				 * Cloudberry specific behavior:
@@ -4569,23 +4586,6 @@ consider_groupingsets_paths(PlannerInfo *root,
 											   parse->groupClause,
 											   srd->new_rollups);
 
-		// GPDB_12_MERGE_FIXME: fix computation of dNumGroups
-#if 0
-		/*
-		 * dNumGroupsTotal is the total number of groups across all segments. If the
-		 * Aggregate is distributed, then the number of groups in one segment
-		 * is only a fraction of the total.
-		 */
-		if (CdbPathLocus_IsPartitioned(path->locus))
-		{
-			dNumGroups = clamp_row_est(dNumGroupsTotal /
-									   CdbPathLocus_NumSegments(path->locus));
-			if (path->locus.parallel_workers > 1)
-				dNumGroups /= path->locus.parallel_workers;
-		}
-		else
-			dNumGroups = dNumGroupsTotal;
-#endif
 
 		add_path(grouped_rel, (Path *)
 				 create_groupingsets_path(root,
@@ -5624,6 +5624,93 @@ create_scatter_path(PlannerInfo *root, List *scatterClause, Path *path)
 	return path;
 }
 
+/*
+ * Function: deconstruct_expr_walker
+ *
+ * Work for deconstruct_expr.
+ */
+static bool
+deconstruct_expr_walker(Node *node, deconstruct_expr_context *ctx)
+{
+	ListCell *lc;
+
+	if (node == NULL)
+	{
+		return false;
+	}
+	else if (IsA(node, Var))
+	{
+		if (((Var *) node)->varlevelsup != 0)
+			elog(ERROR, "Upper-level Var found where not expected");
+
+		add_new_column_to_pathtarget(ctx->partial_target, (Expr *)node);
+		return false;
+	}
+	else if (IsA(node, PlaceHolderVar))
+	{
+		if (((PlaceHolderVar *) node)->phlevelsup != 0)
+			elog(ERROR, "Upper-level PlaceHolderVar found where not expected");
+
+		add_new_column_to_pathtarget(ctx->partial_target, (Expr *)node);
+		return false;
+	}
+	else if (IsA(node, Aggref))
+	{
+		if (((Aggref *) node)->agglevelsup != 0)
+			elog(ERROR, "Upper-level Aggref found where not expected");
+
+		add_new_column_to_pathtarget(ctx->partial_target, (Expr *)node);
+		return false;
+	}
+	else if (IsA(node, GroupId))
+	{
+		if (((GroupId *) node)->agglevelsup != 0)
+			elog(ERROR, "Upper-level GROUP_ID found where not expected");
+
+		add_new_column_to_pathtarget(ctx->partial_target, (Expr *)node);
+		return false;
+	}
+	else if (IsA(node, GroupingFunc))
+	{
+		if (((GroupingFunc *) node)->agglevelsup != 0)
+			elog(ERROR, "Upper-level GROUPING found where not expected");
+
+		add_new_column_to_pathtarget(ctx->partial_target, (Expr *)node);
+		return false;
+	}
+	else
+	{
+		foreach(lc, ctx->grps_tlist)
+		{
+			Expr *grp_expr = (Expr *)lfirst(lc);
+
+			/* just return if node equal to group column */
+			if (equal(node, grp_expr))
+			{
+				return false;
+			}
+		}
+	}
+
+	return expression_tree_walker(node, deconstruct_expr_walker, (void *) ctx);
+}
+
+/*
+ * Function: deconstruct_expr
+ *
+ * Prepare an expression for execution within 2-stage aggregation.
+ * This involves adding targets as needed to the target list of the
+ * first (partial) aggregation.
+ */
+static bool
+deconstruct_expr(Expr *expr, PathTarget *partial_target, List *grps_tlist)
+{
+	deconstruct_expr_context ctx;
+	ctx.partial_target = partial_target;
+	ctx.grps_tlist = grps_tlist;
+
+	return deconstruct_expr_walker((Node *) expr, &ctx);
+}
 
 /*
  * make_group_input_target
@@ -5746,15 +5833,13 @@ make_partial_grouping_target(PlannerInfo *root,
 {
 	Query	   *parse = root->parse;
 	PathTarget *partial_target;
-	List	   *non_group_cols;
-	List	   *non_group_exprs;
-	int			i;
+	List	   *non_group_cols = NULL;
+	List	   *grps_tlist = NULL;
+	int			i = 0;
 	ListCell   *lc;
 
 	partial_target = create_empty_pathtarget();
-	non_group_cols = NIL;
 
-	i = 0;
 	foreach(lc, grouping_target->exprs)
 	{
 		Expr	   *expr = (Expr *) lfirst(lc);
@@ -5768,6 +5853,7 @@ make_partial_grouping_target(PlannerInfo *root,
 			 * (This allows the upper agg step to repeat the grouping calcs.)
 			 */
 			add_column_to_pathtarget(partial_target, expr, sgref);
+			grps_tlist = lappend(grps_tlist, expr);
 		}
 		else
 		{
@@ -5794,12 +5880,11 @@ make_partial_grouping_target(PlannerInfo *root,
 	 * be present already.)  Note this includes Vars used in resjunk items, so
 	 * we are covering the needs of ORDER BY and window specifications.
 	 */
-	non_group_exprs = pull_var_clause((Node *) non_group_cols,
-									  PVC_INCLUDE_AGGREGATES |
-									  PVC_RECURSE_WINDOWFUNCS |
-									  PVC_INCLUDE_PLACEHOLDERS);
-
-	add_new_columns_to_pathtarget(partial_target, non_group_exprs);
+	foreach(lc, non_group_cols)
+	{
+		Expr *expr = (Expr *) lfirst(lc);
+		deconstruct_expr(expr, partial_target, grps_tlist);
+	}
 
 	/*
 	 * Adjust Aggrefs to put them in partial mode.  At this point all Aggrefs
@@ -5829,7 +5914,6 @@ make_partial_grouping_target(PlannerInfo *root,
 	}
 
 	/* clean up cruft */
-	list_free(non_group_exprs);
 	list_free(non_group_cols);
 
 	/* XXX this causes some redundant cost calculation ... */
@@ -8929,20 +9013,28 @@ make_new_rollups_for_hash_grouping_set(PlannerInfo        *root,
 		RollupData *rollup = lfirst_node(RollupData, lc);
 
 		/*
+		 * If there are any empty grouping sets and all non-empty grouping
+		 * sets are unsortable, there will be a rollup containing only
+		 * empty groups. We handle those specially below.
+		 * Note: This case only holds when path is equal to null.
+		 */
+		if (rollup->groupClause == NIL)
+		{
+			unhashed_rollup = rollup;
+			break;
+		}
+
+		/*
 		 * If we find an unhashable rollup that's not been skipped by the
 		 * "actually sorted" check above, we can't cope; we'd need sorted
 		 * input (with a different sort order) but we can't get that here.
 		 * So bail out; we'll get a valid path from the is_sorted case
 		 * instead.
-		 *
-		 * The mere presence of empty grouping sets doesn't make a rollup
-		 * unhashable (see preprocess_grouping_sets), we handle those
-		 * specially below.
 		 */
 		if (!rollup->hashable)
 			return NULL;
-		else
-			sets_data = list_concat(sets_data, list_copy(rollup->gsets_data));
+
+		sets_data = list_concat(sets_data, list_copy(rollup->gsets_data));
 	}
 	foreach(lc, sets_data)
 	{

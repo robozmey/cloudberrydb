@@ -650,7 +650,7 @@ COPY segment_reject_limit TO '/tmp/segment_reject_limit<SEGID>.csv' on segment;
 DROP TABLE IF EXISTS segment_reject_limit_from;
 NOTICE:  table "segment_reject_limit_from" does not exist, skipping
 CREATE TABLE segment_reject_limit_from (a int,b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 COPY segment_reject_limit_from from '/tmp/segment_reject_limit<SEGID>.csv' on segment log errors segment reject limit 2 rows;
 ERROR:  segment reject limit reached, aborting operation
@@ -704,7 +704,7 @@ COPY (SELECT * FROM segment_reject_limit_from) TO '/tmp/segment_reject_limit<SEG
 -- 'COPY (SELECT ...) TO' on utility mode
 CREATE EXTERNAL WEB TABLE copy_cmd_utility(a text, b int)
   EXECUTE E'PGOPTIONS="-c gp_role=utility" \\
-    psql -p $GP_MASTER_PORT $GP_DATABASE $GP_USER -c \\
+    psql -X -p $GP_MASTER_PORT $GP_DATABASE $GP_USER -c \\
       "COPY (SELECT * FROM pg_class) TO \'/dev/null\'"'
   ON COORDINATOR FORMAT 'text' (DELIMITER ' ');
 SELECT a FROM copy_cmd_utility;
@@ -748,6 +748,8 @@ ERROR:  COPY single row error handling only available using COPY FROM
 \copy segment_reject_limit_from from 'stdin';
 \copy segment_reject_limit_from to 'stdout';
 \copy segment_reject_limit_from from 'stdout';
+\!rm stdin
+\!rm stdout
 -- gp_initial_bad_row_limit guc test. This guc allows user to set the initial
 -- number of rows which can contain errors before the database stops loading
 -- the data. If there is a valid row within the first 'n' rows specified by
@@ -755,7 +757,7 @@ ERROR:  COPY single row error handling only available using COPY FROM
 DROP TABLE IF EXISTS test_first_segment_reject_limit;
 NOTICE:  table "test_first_segment_reject_limit" does not exist, skipping
 CREATE TABLE test_first_segment_reject_limit (a int, b text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 SET gp_initial_bad_row_limit = 2;
 COPY test_first_segment_reject_limit FROM STDIN WITH DELIMITER '|' segment reject limit 20;
@@ -1253,7 +1255,7 @@ SELECT COUNT(*) FROM COPY_ON_SEGMENT_CHECK_DISTKEY_PARTIONED;
 
 --COPY FROM partition table mulitple attributes
 CREATE TABLE COPY_FROM_PARTITION_TABLE (a text ,b int) PARTITION BY range(b) (START (0) END (10) EVERY(5));
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO COPY_FROM_PARTITION_TABLE values('aa',1);
 INSERT INTO COPY_FROM_PARTITION_TABLE values('bb',2);
@@ -1308,7 +1310,7 @@ DROP TABLE IF EXISTS COPY_TO_PROGRAM_ERROR;
 DROP TABLE IF EXISTS COPY_FROM_PROGRAM_ERROR;
 -- end_ignore
 CREATE TABLE COPY_TO_PROGRAM_ERROR(dir text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'dir' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'dir' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 COPY COPY_TO_PROGRAM_ERROR TO PROGRAM 'echo && echo "error" >&2 && exit 255';
 ERROR:  command error message: error
@@ -1317,7 +1319,7 @@ ERROR:  command error message: error  (seg0 127.0.0.1:25432 pid=23338)
 COPY (SELECT * FROM COPY_TO_PROGRAM_ERROR) TO PROGRAM 'echo <SEGID>&& echo "error" >&2 && exit 255' on segment;
 ERROR:  command error message: error  (seg0 127.0.0.1:25432 pid=23338)
 CREATE TABLE COPY_FROM_PROGRAM_ERROR(a int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 COPY COPY_FROM_PROGRAM_ERROR FROM PROGRAM 'echo 1; echo "error" >&2 && exit 255';
 ERROR:  command error message: error
@@ -1375,7 +1377,7 @@ SET gp_enable_segment_copy_checking=on;
 -- gp_replica_check tool is enabled.
 BEGIN;
 CREATE TABLE copy_from_same_txn(a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 COPY copy_from_same_txn FROM stdin;
 COMMIT;
@@ -1432,6 +1434,7 @@ COPY 26
 CREATE EXTERNAL WEB TABLE ext_dec17(LIKE sales_1_prt_dec17) EXECUTE 'printf "12\t2017-12-01\t21.00\n"' ON COORDINATOR FORMAT 'text';
 CREATE EXTERNAL TABLE
 ALTER TABLE sales EXCHANGE PARTITION dec17 WITH TABLE ext_dec17;
+NOTICE:  partition constraints are not validated when attaching a readable external table
 ALTER TABLE
 DROP TABLE ext_dec17;
 DROP TABLE
@@ -1553,7 +1556,7 @@ DROP TABLE ao_copy;
 copy (select generate_series(1, 10)) to '/tmp/a';
 COPY 10
 create temp table t (id int4);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'id' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'id' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE TABLE
 copy t from '/tmp/a';
@@ -1640,10 +1643,11 @@ ABORT;
 -- Perform these tests in a funnily named database, to test
 -- escaping
 set client_min_messages='warning';
-DROP DATABASE IF EXISTS "funny copy""db'with\\quotes";
+DROP DATABASE IF EXISTS "funny_copy""db'with\\quotes";
 reset client_min_messages;
-CREATE DATABASE "funny copy""db'with\\quotes";
-\c "funny copy""db'with\\quotes"
+CREATE DATABASE "funny_copy""db'with\\quotes";
+\! python3 test_dbconn.py 1
+\c "funny_copy""db'with\\quotes"
 -- echo will behave differently on different platforms, force to use bash with -E option
 COPY (SELECT 'data1') TO PROGRAM 'cat > /tmp/gpcopyenvtest; /usr/bin/env bash -c ''echo -E database in COPY TO: $GP_DATABASE >> /tmp/gpcopyenvtest '' ' ESCAPE 'OFF';
 CREATE TABLE foo (t text);
@@ -1653,7 +1657,41 @@ select * from foo;
                          t                         
 ---------------------------------------------------
  data1
- database in COPY FROM: funny copy"db'with\\quotes
- database in COPY TO: funny copy"db'with\\quotes
+ database in COPY FROM: funny_copy"db'with\\quotes
+ database in COPY TO: funny_copy"db'with\\quotes
 (3 rows)
 
+--
+-- Test copy a partitioned table whose columns' orders are not consistent between the root table and partitions.
+--
+-- 1. Test copy a partitioned table with a single distribution key on segment.
+CREATE TABLE issue_14353       (a integer, b integer, c text) PARTITION BY RANGE (a) DISTRIBUTED BY (a);
+CREATE TABLE issue_14353_prt_1 (b integer, a integer, c text) DISTRIBUTED BY (a);
+CREATE TABLE issue_14353_def   (a integer, b integer, c text) DISTRIBUTED BY (a);
+ALTER TABLE ONLY issue_14353 ATTACH PARTITION issue_14353_prt_1 FOR VALUES FROM (1) TO (2);
+ALTER TABLE ONLY issue_14353 ATTACH PARTITION issue_14353_def DEFAULT;
+INSERT INTO issue_14353 SELECT x, x%3, 'a' FROM generate_series(1, 20)x;
+-- Test that the data are successfully copied out and copied in on segment.
+COPY issue_14353 TO   '/tmp/issue_14353_<SEGID>.csv' WITH CSV DELIMITER ',' ON SEGMENT;
+COPY issue_14353 FROM '/tmp/issue_14353_<SEGID>.csv' WITH CSV DELIMITER ',' ON SEGMENT;
+-- Test that gpdb emits an error message saying the data distribution is malformed.
+\! cp /tmp/issue_14353_1.csv /tmp/issue_14353_0.csv
+COPY issue_14353 FROM '/tmp/issue_14353_<SEGID>.csv' WITH CSV DELIMITER ',' ON SEGMENT;
+ERROR:  value of distribution key doesn't belong to segment with ID 0, it belongs to segment with ID 1  (seg0 127.0.0.1:7002 pid=16166)
+CONTEXT:  COPY issue_14353, line 17: "1,1,a"
+-- 2. Test copy a partitioned table with multiple distribution keys on segment.
+CREATE TABLE issue_14353_multi_dist       (a integer, b integer, c text) PARTITION BY RANGE (a) DISTRIBUTED BY (a, c);
+CREATE TABLE issue_14353_multi_dist_prt_1 (b integer, a integer, c text) DISTRIBUTED BY (a, c);
+CREATE TABLE issue_14353_multi_dist_def   (a integer, b integer, c text) DISTRIBUTED BY (a, c);
+ALTER TABLE ONLY issue_14353_multi_dist ATTACH PARTITION issue_14353__multi_dist_prt_1 FOR VALUES FROM (1) TO (2);
+ERROR:  relation "issue_14353__multi_dist_prt_1" does not exist
+ALTER TABLE ONLY issue_14353_multi_dist ATTACH PARTITION issue_14353_multi_dist_def DEFAULT;
+INSERT INTO issue_14353_multi_dist SELECT x, x%3, 'a' || (x%5)::text FROM generate_series(1, 20)x;
+-- Test that the data are successfully copied out and copied in on segment.
+COPY issue_14353_multi_dist TO   '/tmp/issue_14353_multi_dist_<SEGID>.csv' WITH CSV DELIMITER ',' ON SEGMENT;
+COPY issue_14353_multi_dist FROM '/tmp/issue_14353_multi_dist_<SEGID>.csv' WITH CSV DELIMITER ',' ON SEGMENT;
+-- Test that gpdb emits an error message saying the data distribution is malformed.
+\! cp /tmp/issue_14353_multi_dist_1.csv /tmp/issue_14353_multi_dist_0.csv
+COPY issue_14353_multi_dist FROM '/tmp/issue_14353_multi_dist_<SEGID>.csv' WITH CSV DELIMITER ',' ON SEGMENT;
+ERROR:  value of distribution key doesn't belong to segment with ID 0, it belongs to segment with ID 1  (seg0 127.0.0.1:7002 pid=21933)
+CONTEXT:  COPY issue_14353_multi_dist, line 11: "1,1,a"

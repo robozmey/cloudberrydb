@@ -11,7 +11,7 @@
 #       -S "Primary segment dbid to force recovery": I think this is done now by bringing the primary down, waiting for
 #           failover, and then doing recover full
 #       -z "Primary segment data dir and host to force recovery" see removed -S option for comment
-#       -f        : force Cloudberry Database instance shutdown and restart
+#       -f        : force Apache Cloudberry instance shutdown and restart
 #       -F (HAS BEEN CHANGED) -- used to mean "force recovery" and now means "full recovery)
 #
 # import mainUtils FIRST to get python version check
@@ -25,7 +25,7 @@ from contextlib import closing
 from gppylib import gparray, gplog, userinput, utils
 from gppylib.util import gp_utils
 from gppylib.commands import gp, pg, unix
-from gppylib.commands.base import Command, WorkerPool
+from gppylib.commands.base import Command, WorkerPool, REMOTE
 from gppylib.db import dbconn
 from gppylib.gpparseopts import OptParser, OptChecker
 from gppylib.operations.detect_unreachable_hosts import get_unreachable_segment_hosts, update_unreachable_flag_for_segments
@@ -78,6 +78,7 @@ class GpRecoverSegmentProgram:
         self.__options = options
         self.__pool = None
         self.logger = logger
+        self.termination_requested = False
 
         # If user did not specify a value for showProgressInplace and
         # stdout is a tty then send escape sequences to gprecoverseg
@@ -136,18 +137,18 @@ class GpRecoverSegmentProgram:
         # The design decision here is to squash any exceptions resulting from the
         # synchronization of packages. We should *not* disturb the user's attempts to recover.
         try:
-            self.logger.info('Syncing Cloudberry Database extensions')
+            self.logger.info('Syncing Apache Cloudberry extensions')
             operations = [SyncPackages(host) for host in new_hosts]
             ParallelOperation(operations, self.__options.parallelDegree).run()
             # introspect outcomes
             for operation in operations:
                 operation.get_ret()
         except:
-            self.logger.exception('Syncing of Cloudberry Database extensions has failed.')
+            self.logger.exception('Syncing of Apache Cloudberry extensions has failed.')
             self.logger.warning('Please run gppkg --clean after successful segment recovery.')
 
     def displayRecovery(self, mirrorBuilder, gpArray):
-        self.logger.info('CloudberryDB instance recovery parameters')
+        self.logger.info('Cloudberry instance recovery parameters')
         self.logger.info('---------------------------------------------------------')
 
         if self.__options.recoveryConfigFile:
@@ -269,7 +270,7 @@ class GpRecoverSegmentProgram:
 
         if not gpArray.hasMirrors and not gpArray.standbyCoordinator:
             raise ExceptionNoStackTraceNeeded(
-                'GPDB Mirroring replication is not configured for this Cloudberry Database instance.')
+                'GPDB Mirroring replication is not configured for this Apache Cloudberry instance.')
 
         num_workers = min(len(gpArray.get_hostlist()), self.__options.parallelDegree)
         hosts = set(gpArray.get_hostlist(includeCoordinator=False))
@@ -347,9 +348,45 @@ class GpRecoverSegmentProgram:
 
             contentsToUpdate = [seg.getLiveSegment().getSegmentContentId() for seg in mirrorBuilder.getMirrorsToBuild()]
             update_pg_hba_on_segments(gpArray, self.__options.hba_hostnames, self.__options.parallelDegree, contentsToUpdate)
+
+            def signal_handler(sig, frame):
+                signal_name = signal.Signals(sig).name
+                logger.warn("Recieved {0} signal, terminating gprecoverseg".format(signal_name))
+
+                # Confirm with the user if they really want to terminate with CTRL-C.
+                if signal_name == "SIGINT":
+                    prompt_text = "\nIt is not recommended to terminate a recovery procedure midway. However, if you choose to proceed, you will need " \
+                                  "to run either gprecoverseg --differential or gprecoverseg -F to start a new recovery process the next time."
+
+                    if not userinput.ask_yesno(prompt_text, "Continue terminating gprecoverseg", 'N'):
+                        return
+
+                self.termination_requested = True
+                self.shutdown(current_hosts)
+
+                # Reset the signal handlers
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+                signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+
+            # SSH disconnections send a SIGHUP signal to all the processes running in that session.
+            # Ignoring this signal so that gprecoverseg does not terminate due to such issues.
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
             if not mirrorBuilder.recover_mirrors(gpEnv, gpArray):
-                self.logger.error("gprecoverseg failed. Please check the output for more details.")
+                if self.termination_requested:
+                    self.logger.error("gprecoverseg process was interrupted by the user.")
+                if self.__options.differentialResynchronization:
+                    self.logger.error("gprecoverseg differential recovery failed. Please check the gpsegrecovery.py log"
+                                      " file and rsync log file for more details.")
+                else:
+                    self.logger.error("gprecoverseg failed. Please check the output for more details.")
                 sys.exit(1)
+
+            if self.termination_requested:
+                self.logger.info("Not able to terminate the recovery process since it has been completed successfully.")
 
             self.logger.info("********************************")
             self.logger.info("Segments successfully recovered.")
@@ -390,6 +427,20 @@ class GpRecoverSegmentProgram:
             self.__pool.haltWork()  # \  MPP-13489, CR-2572
             self.__pool.joinWorkers()  # > all three of these appear necessary
             self.__pool.join()  # /  see MPP-12633, CR-2252 as well
+
+    def shutdown(self, hosts):
+        
+        # Clear out the existing pool to stop any pending recovery process
+        while not self.__pool.isDone():
+
+            for host in hosts:
+                try:
+                    logger.debug("Terminating recovery process on host {0}".format(host))
+                    cmd = Command(name="terminate recovery process",
+                                cmdStr="ps ux | grep -E 'gpsegsetuprecovery|gpsegrecovery' | grep -vE 'ssh|grep|bash' | awk '{print $ 2}' | xargs -r kill", remoteHost=host, ctxt=REMOTE)
+                    cmd.run(validateAfter=True)
+                except ExecutionError as e:
+                    logger.error("Not able to terminate recovery process on host {0}: {1}".format(host, e))
 
     # -------------------------------------------------------------------------
 

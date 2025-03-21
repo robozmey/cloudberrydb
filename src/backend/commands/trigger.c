@@ -101,7 +101,6 @@ static void AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 static void AfterTriggerEnlargeQueryState(void);
 static bool before_stmt_triggers_fired(Oid relid, CmdType cmdType);
 
-static char* make_delta_ts_name(const char *prefix, Oid relid, int count);
 /*
  * Create a trigger.  Returns the address of the created trigger.
  *
@@ -925,7 +924,7 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 	values[Anum_pg_trigger_tgtype - 1] = Int16GetDatum(tgtype);
 	
 	/*
-	 * Special for Cloudberry Database: Ignore foreign keys for now. Create
+	 * Special for Apache Cloudberry: Ignore foreign keys for now. Create
 	 * the triggers to back them as 'disabled'.
 	 */
 	char		tgenabled = trigger_fires_when;
@@ -2418,9 +2417,6 @@ ExecARInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 	if ((trigdesc && trigdesc->trig_insert_after_row) ||
 		(transition_capture && transition_capture->tcs_insert_new_table))
 	{
-		if(RelationIsAoCols(relinfo->ri_RelationDesc))
-			elog(ERROR, "Trigger is not supported on AOCS yet");
-
 		AfterTriggerSaveEvent(estate, relinfo, TRIGGER_EVENT_INSERT,
 							  true, NULL, slot,
 							  recheckIndexes, NULL,
@@ -4486,13 +4482,13 @@ SetTransitionTableName(Oid relid, CmdType cmdType, Oid mvoid)
 		{
 			if (table->new_tuplestore)
 			{
-				char *name = make_delta_ts_name("new", relid, gp_command_count);
+				char *name = MakeDeltaName("new", relid, gp_command_count);
 				tuplestore_set_sharedname(table->new_tuplestore, name);
 				tuplestore_set_tableid(table->new_tuplestore, relid);
 			}
 			if (table->old_tuplestore)
 			{
-				char *name = make_delta_ts_name("old", relid, gp_command_count);
+				char *name = MakeDeltaName("old", relid, gp_command_count);
 				tuplestore_set_sharedname(table->old_tuplestore, name);
 				tuplestore_set_tableid(table->old_tuplestore, relid);
 			}
@@ -6175,13 +6171,13 @@ pg_trigger_depth(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(MyTriggerDepth);
 }
 
-static char*
-make_delta_ts_name(const char *prefix, Oid relid, int count)
+char*
+MakeDeltaName(const char *prefix, Oid relid, int count)
 {
 	char buf[NAMEDATALEN];
 	char *name;
 
-	snprintf(buf, NAMEDATALEN, "__ivm_%s_%u_%u", prefix, relid, count);
+	snprintf(buf, NAMEDATALEN, "__ivm_%s_%u_%d", prefix, relid, count);
 	name = pstrdup(buf);
 
 	return name;

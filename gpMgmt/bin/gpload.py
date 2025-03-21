@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# gpload - load file(s) into Greenplum Database & CloudberryDB
+# gpload - load file(s) into Greenplum Database & Cloudberry
 # Copyright Greenplum 2008
 
 '''gpload [options] -f configuration file
@@ -726,7 +726,7 @@ def match_notice_obj(notice):
 
 
 def notice_processor_Notice(notice):
-    # process the notice in master branch
+    # process the notice in main branch
     # notice is a class which is different in 6X, we need a new function to process
     global NUM_WARN_ROWS
     if windowsPlatform == True:
@@ -777,7 +777,7 @@ def bytestr(size, precision=1):
         if size >= factor:
             break
 
-    float_string_split = "size/float(factor)".split('.')
+    float_string_split = repr(size/float(factor)).split('.')
     integer_part = float_string_split[0]
     decimal_part = float_string_split[1]
     if int(decimal_part[0:precision]):
@@ -832,94 +832,17 @@ class CatThread(threading.Thread):
         except Exception as e:
             # close fd so that not block the worker thread because of stdout/stderr pipe not finish/closed.
             self.fd.close()
-            sys.stderr.write("\n\nWarning: gpfdist log halt because Log Thread '%s' got an exception: %s \n" % (self.getName(), str(e)))
-            self.gpload.log(self.gpload.WARN, "gpfdist log halt because Log Thread '%s' got an exception: %s" % (self.getName(), str(e)))
+            sys.stderr.write("\n\nWarning: gpfdist log halt because Log Thread '%s' got an exception: %s \n" % (self.name, str(e)))
+            self.gpload.log(self.gpload.WARN, "gpfdist log halt because Log Thread '%s' got an exception: %s" % (self.name, str(e)))
             raise
 
-class Progress(threading.Thread):
-    """
-    Determine our progress from the gpfdist daemon
-    """
-    def __init__(self,gpload,ports):
-        threading.Thread.__init__(self)
-        self.gpload = gpload
-        self.ports = ports
-        self.number = 0
-        self.condition = threading.Condition()
-
-    def get(self,port):
-        """
-        Connect to gpfdist and issue an HTTP query. No need to do this with
-        httplib as the transaction is extremely simple
-        """
-        addrinfo = socket.getaddrinfo('localhost', port)
-        s = socket.socket(addrinfo[0][0],socket.SOCK_STREAM)
-        s.connect(('localhost',port))
-        s.sendall('GET gpfdist/status HTTP/1.0\r\n\r\n')
-        f = s.makefile()
-        read_bytes = -1
-        total_bytes = -1
-        total_sessions = -1
-        for line in f:
-            self.gpload.log(self.gpload.DEBUG, "gpfdist stat: %s" % \
-                        line.strip('\n'))
-            a = line.split(' ')
-            if not a:
-                continue
-            if a[0]=='read_bytes':
-                read_bytes = int(a[1])
-            elif a[0]=='total_bytes':
-                total_bytes = int(a[1])
-            elif a[0]=='total_sessions':
-                total_sessions = int(a[1])
-        s.close()
-        f.close()
-        return read_bytes,total_bytes,total_sessions
-
-    def get1(self):
-        """
-        Parse gpfdist output
-        """
-        read_bytes = 0
-        total_bytes = 0
-        for port in self.ports:
-            a = self.get(port)
-            if a[2]<1:
-                return
-            if a[0]!=-1:
-                read_bytes += a[0]
-            if a[1]!=-1:
-                total_bytes += a[1]
-        self.gpload.log(self.gpload.INFO,'transferred %s of %s' % \
-            (bytestr(read_bytes),bytestr(total_bytes)))
-
-    def run(self):
-        """
-        Thread worker
-        """
-        while 1:
-            try:
-                self.condition.acquire()
-                n = self.number
-                self.condition.release()
-                self.get1()
-                if n:
-                    self.gpload.log(self.gpload.DEBUG, "gpfdist status thread told to stop")
-                    self.condition.acquire()
-                    self.condition.notify()
-                    self.condition.release()
-                    break
-            except socket.error as e:
-                self.gpload.log(self.gpload.DEBUG, "got socket exception: %s" % e)
-                break
-            time.sleep(1)
 def cli_help():
     help_path = os.path.join(sys.path[0], '..', 'docs', 'cli_help', EXECNAME +
-                             '_help');
+                             '_help')
     f = None
     try:
         try:
-            f = open(help_path);
+            f = open(help_path)
             return f.read(-1)
         except:
             return ''
@@ -1386,7 +1309,7 @@ class gpload:
                 pass
 
         if level == self.ERROR:
-            self.exitValue = 2;
+            self.exitValue = 2
             sys.exit(self.exitValue)
 
     def getconfig(self, a, typ=None, default='error', extraStuff='', returnOriginal=False):
@@ -1734,7 +1657,7 @@ class gpload:
                                            'greenplum_path.sh')
 
                     if (not (srcfile and os.path.exists(srcfile))):
-                        self.log(self.ERROR, 'cannot find greenplum environment ' +
+                        self.log(self.ERROR, 'cannot find cloudberry environment ' +
                                     'file: environment misconfigured')
 
                     cmd = 'source %s ; exec ' % srcfile
@@ -1891,7 +1814,7 @@ class gpload:
                 self.setup_connection(recurse)
             else:
                 self.log(self.ERROR, "could not connect to database: %s. Is " \
-                    "the Cloudberry Database running on port %i?" % (errorMessage,
+                    "the Apache Cloudberry running on port %i?" % (errorMessage,
                     self.options.p))
 
 
@@ -2515,6 +2438,28 @@ WHERE relname = 'staging_gpload_reusable_%s';""" % (encoding_conditions)
             self.cleanupSql.append('drop external table if exists %s'%self.extSchemaTable)
 
 
+    def get_distribution_key(self):
+        '''
+        get distribution key for staging table, default is the DK for target table
+        if it is not setted, we use the match columns for DK
+        '''
+
+        sql = '''select * from pg_get_table_distributedby('%s.%s'::regclass::oid)'''% (self.schema, self.table)
+        try:
+            dk_text = self.db.query(sql.encode('utf-8')).getresult()
+        except Exception as e:
+            self.log(self.ERROR, 'could not run SQL "%s": %s ' % (sql, str(e)))
+
+        if not dk_text[0][0].startswith("DISTRIBUTED BY"):
+            # target table doesn't have dk, we use match column
+            dk = self.getconfig('gpload:output:match_columns', list)
+            dk_text = " DISTRIBUTED BY (%s)" % ', '.join(dk)
+            return dk_text
+        else:
+            # use dk of target table
+            return dk_text[0][0]
+
+		
     def create_staging_table(self):
         '''
         Create a new staging table or find a reusable staging table to use for this operation
@@ -2522,13 +2467,13 @@ WHERE relname = 'staging_gpload_reusable_%s';""" % (encoding_conditions)
         '''
 
         # make sure we set the correct distribution policy
-        distcols = self.getconfig('gpload:output:match_columns', list)
+        distcols = self.get_distribution_key()
 
         sql = "SELECT * FROM pg_class WHERE relname LIKE 'temp_gpload_reusable_%%';"
         resultList = self.db.query(sql).getresult()
         if len(resultList) > 0:
             self.log(self.WARN, """Old style, reusable tables named "temp_gpload_reusable_*" from a previous versions were found.
-                         CloudberryDB recommends running "DROP TABLE temp_gpload_reusable_..." on each table. This only needs to be done once.""")
+                         Cloudberry recommends running "DROP TABLE temp_gpload_reusable_..." on each table. This only needs to be done once.""")
 
         # If the 'reuse tables' option was specified we now try to find an
         # already existing staging table in the catalog which will match
@@ -2576,7 +2521,23 @@ WHERE relname = 'staging_gpload_reusable_%s';""" % (encoding_conditions)
         sql = 'CREATE %sTABLE %s ' % (is_temp_table, self.staging_table_name)
         cols = ['"%s" %s' % (a[0], a[1]) for a in target_columns]
         sql += "(%s)" % ','.join(cols)
-        #sql += " DISTRIBUTED BY (%s)" % ', '.join(distcols)
+
+        # When the field selected as the DISTRIBUTION KEY does not exist when the table is created, 
+        # we need to ensure that the table is created successfully, so the CREATE TABLE statement 
+        # should not explicitly specify the DISTRIBUTED BY clause.
+        # Only the DISTRIBUTED BY clause can take effect if all selected fields 
+        # exist in the CREATE TABLE statement.
+        dist_column_list = re.match(".*\((.*)\).*", distcols).group(1).split(",")
+        target_column_set = set(element[0] for element in target_columns)
+        if set(dist_column_list) <= target_column_set:
+            quoted_dist_column = convertListToDelimited(dist_column_list)
+            sql += " DISTRIBUTED BY (" + ','.join(quoted_dist_column) + ")"
+        else:
+            match_columns = self.getconfig('gpload:output:match_columns', list)
+            if set(match_columns) <= target_column_set:
+                quoted_match_columns = convertListToDelimited(match_columns)
+                sql += " DISTRIBUTED BY (" + ','.join(quoted_match_columns) + ")"
+        
         self.log(self.LOG, sql)
 
         if not self.options.D:
@@ -2600,7 +2561,7 @@ WHERE relname = 'staging_gpload_reusable_%s';""" % (encoding_conditions)
                 results = self.db.query(queryStr).getresult()
                 global NUM_WARN_ROWS
                 NUM_WARN_ROWS = (results[0])[0]
-                return (results[0])[0];
+                return (results[0])[0]
         return 0
 
     def report_errors(self):
@@ -2639,10 +2600,6 @@ WHERE relname = 'staging_gpload_reusable_%s';""" % (encoding_conditions)
         sql += ' SELECT %s' % ','.join([a[2] for a in cols])
         sql += ' FROM %s' % self.extSchemaTable
 
-        # cktan: progress thread is not reliable. revisit later.
-        #progress = Progress(self,self.ports)
-        #progress.start()
-        #self.threads.append(progress)
         self.log(self.LOG, sql)
         if not self.options.D:
             try:
@@ -2654,10 +2611,6 @@ WHERE relname = 'staging_gpload_reusable_%s';""" % (encoding_conditions)
                 strE = e.__str__().encode().decode('unicode-escape')
                 strF = sql.encode().decode('unicode-escape')
                 self.log(self.ERROR, strE + ' encountered while running ' + strF)
-        #progress.condition.acquire()
-        #progress.number = 1
-        #progress.condition.wait()
-        #progress.condition.release()
         self.report_errors()
 
     def do_method_insert(self):
@@ -2890,7 +2843,7 @@ WHERE relname = 'staging_gpload_reusable_%s';""" % (encoding_conditions)
         truncate = False
         self.reuse_tables = False
 
-        if not self.options.no_auto_trans and not method=='insert':
+        if not self.options.no_auto_trans:
             self.db.query("BEGIN")
 
         self.extSchemaName = self.getconfig('gpload:external:schema', str, None)
@@ -2955,8 +2908,9 @@ WHERE relname = 'staging_gpload_reusable_%s';""" % (encoding_conditions)
                     self.log(self.ERROR, 'could not execute SQL in sql:after "%s": %s' %
                              (after, str(e)))
 
-        if not self.options.no_auto_trans and not method=='insert':
+        if not self.options.no_auto_trans:
             self.db.query("COMMIT")
+
 
 
     def stop_gpfdists(self):

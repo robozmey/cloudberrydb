@@ -7,13 +7,13 @@ CREATE TABLE J1_TBL (
   j integer,
   t text
 );
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE TABLE J2_TBL (
   i integer,
   k integer
 );
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO J1_TBL VALUES (1, 4, 'one');
 INSERT INTO J1_TBL VALUES (2, 3, 'two');
@@ -1914,27 +1914,28 @@ select * from int4_tbl i4, tenk1 a
 where exists(select * from tenk1 b
              where a.twothousand = b.twothousand and a.fivethous <> b.fivethous)
       and i4.f1 = a.tenthous;
-                                         QUERY PLAN                                          
----------------------------------------------------------------------------------------------
+                                                                                                                     QUERY PLAN                                                                                                                      
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  HashAggregate
-         Group Key: (RowIdExpr)
+         Group Key: i4.f1, i4.ctid, i4.gp_segment_id, a.unique1, a.unique2, a.two, a.four, a.ten, a.twenty, a.hundred, a.thousand, a.twothousand, a.fivethous, a.tenthous, a.odd, a.even, a.stringu1, a.stringu2, a.string4, a.ctid, a.gp_segment_id
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
-               Hash Key: (RowIdExpr)
+               Hash Key: i4.ctid, i4.gp_segment_id, a.ctid, a.gp_segment_id
                ->  Hash Join
                      Hash Cond: (b.twothousand = a.twothousand)
                      Join Filter: (a.fivethous <> b.fivethous)
                      ->  Seq Scan on tenk1 b
                      ->  Hash
                            ->  Broadcast Motion 3:3  (slice3; segments: 3)
-                                 ->  Hash Join
-                                       Hash Cond: (a.tenthous = i4.f1)
-                                       ->  Seq Scan on tenk1 a
-                                       ->  Hash
-                                             ->  Broadcast Motion 3:3  (slice4; segments: 3)
-                                                   ->  Seq Scan on int4_tbl i4
- Optimizer: Postgres query optimizer
-(18 rows)
+                                 ->  Nested Loop
+                                       Join Filter: true
+                                       ->  Broadcast Motion 3:3  (slice4; segments: 3)
+                                             ->  Seq Scan on int4_tbl i4
+                                       ->  Index Scan using tenk1_thous_tenthous on tenk1 a
+                                             Index Cond: (tenthous = i4.f1)
+                                             Filter: (NOT (twothousand IS NULL))
+ Optimizer: GPORCA
+(19 rows)
 
 --
 -- More complicated constructs
@@ -1943,13 +1944,13 @@ where exists(select * from tenk1 b
 -- Multiway full join
 --
 CREATE TABLE t1 (name TEXT, n INTEGER);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'name' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'name' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE TABLE t2 (name TEXT, n INTEGER);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'name' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'name' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE TABLE t3 (name TEXT, n INTEGER);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'name' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'name' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO t1 VALUES ( 'bb', 11 );
 INSERT INTO t2 VALUES ( 'bb', 12 );
@@ -2115,7 +2116,7 @@ ON (s1_n = s2_n);
 
 -- Test for propagation of nullability constraints into sub-joins
 create temp table x (x1 int, x2 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into x values (1,11);
 insert into x values (2,22);
@@ -2123,7 +2124,7 @@ insert into x values (3,null);
 insert into x values (4,44);
 insert into x values (5,null);
 create temp table y (y1 int, y2 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'y1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'y1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into y values (1,111);
 insert into y values (2,222);
@@ -2309,26 +2310,30 @@ explain (costs off)
 select * from int8_tbl i1 left join (int8_tbl i2 join
   (select 123 as x) ss on i2.q1 = x) on i1.q2 = i2.q2
 order by 1, 2;
-                            QUERY PLAN                            
-------------------------------------------------------------------
- Sort
-   Sort Key: int8_tbl.q1, int8_tbl.q2
-   ->  Hash Left Join
-         Hash Cond: (int8_tbl.q2 = int8_tbl_1.q2)
-         ->  Gather Motion 3:1  (slice1; segments: 3)
-               ->  Seq Scan on int8_tbl
-         ->  Hash
-               ->  Hash Join
-                     Hash Cond: (int8_tbl_1.q1 = ((123))::bigint)
-                     ->  Gather Motion 3:1  (slice2; segments: 3)
-                           ->  Seq Scan on int8_tbl int8_tbl_1
-                                 Filter: (q1 = 123)
-                     ->  Hash
-                           ->  Result
-                                 Filter: ((123) = 123)
-                                 ->  Result
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Merge Key: i1.q1, i1.q2
+   ->  Sort
+         Sort Key: i1.q1, i1.q2
+         ->  Hash Left Join
+               Hash Cond: (i1.q2 = i2.q2)
+               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                     Hash Key: i1.q2
+                     ->  Seq Scan on int8_tbl i1
+               ->  Hash
+                     ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                           Hash Key: i2.q2
+                           ->  Hash Join
+                                 Hash Cond: (i2.q1 = ((123))::bigint)
+                                 ->  Seq Scan on int8_tbl i2
+                                       Filter: (q1 = 123)
+                                 ->  Hash
+                                       ->  Result
+                                             Filter: ((123) = 123)
+                                             ->  Result
  Optimizer: Pivotal Optimizer (GPORCA)
-(17 rows)
+(21 rows)
 
 select * from int8_tbl i1 left join (int8_tbl i2 join
   (select 123 as x) ss on i2.q1 = x) on i1.q2 = i2.q2
@@ -2372,28 +2377,30 @@ select a.f1, b.f1, t.thousand, t.tenthous from
   (select sum(f1)+1 as f1 from int4_tbl i4a) a,
   (select sum(f1) as f1 from int4_tbl i4b) b
 where b.f1 = t.thousand and a.f1 = b.f1 and (a.f1+b.f1+999) = t.tenthous;
-                                                            QUERY PLAN                                                             
------------------------------------------------------------------------------------------------------------------------------------
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Nested Loop
-         ->  Broadcast Motion 1:3  (slice2; segments: 1)
-               ->  Finalize Aggregate
-                     ->  Gather Motion 3:1  (slice3; segments: 3)
-                           ->  Partial Aggregate
-                                 ->  Seq Scan on int4_tbl i4b
-         ->  Materialize
-               ->  Nested Loop
-                     Join Filter: ((sum(i4b.f1)) = ((sum(i4a.f1) + 1)))
-                     ->  Materialize
-                           ->  Broadcast Motion 1:3  (slice4; segments: 1)
-                                 ->  Finalize Aggregate
-                                       ->  Gather Motion 3:1  (slice5; segments: 3)
-                                             ->  Partial Aggregate
-                                                   ->  Seq Scan on int4_tbl i4a
-                     ->  Index Only Scan using tenk1_thous_tenthous on tenk1 t
-                           Index Cond: ((thousand = (sum(i4b.f1))) AND (tenthous = ((((sum(i4a.f1) + 1)) + (sum(i4b.f1))) + 999)))
- Optimizer: Postgres query optimizer
-(19 rows)
+   ->  Hash Join
+         Hash Cond: ((sum(i4b.f1)) = (((sum(i4a.f1)) + 1)))
+         Join Filter: ((((((sum(i4a.f1)) + 1)) + (sum(i4b.f1))) + 999) = (t.tenthous)::bigint)
+         ->  Nested Loop
+               Join Filter: true
+               ->  Broadcast Motion 1:3  (slice2)
+                     ->  Finalize Aggregate
+                           ->  Gather Motion 3:1  (slice3; segments: 3)
+                                 ->  Partial Aggregate
+                                       ->  Seq Scan on int4_tbl i4b
+               ->  Index Only Scan using tenk1_thous_tenthous on tenk1 t
+                     Index Cond: (thousand = (sum(i4b.f1)))
+         ->  Hash
+               ->  Result
+                     ->  Broadcast Motion 1:3  (slice4)
+                           ->  Finalize Aggregate
+                                 ->  Gather Motion 3:1  (slice5; segments: 3)
+                                       ->  Partial Aggregate
+                                             ->  Seq Scan on int4_tbl i4a
+ Optimizer: Pivotal Optimizer (GPORCA)
+(21 rows)
 
 select a.f1, b.f1, t.thousand, t.tenthous from
   tenk1 t,
@@ -2417,19 +2424,16 @@ select * from
   j1_tbl full join
   (select * from j2_tbl order by j2_tbl.i desc, j2_tbl.k asc) j2_tbl
   on j1_tbl.i = j2_tbl.i and j1_tbl.i = j2_tbl.k;
-                              QUERY PLAN                               
------------------------------------------------------------------------
+                              QUERY PLAN                              
+----------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Merge Full Join
-         Merge Cond: ((j1_tbl.i = j2_tbl.i) AND (j1_tbl.i = j2_tbl.k))
-         ->  Sort
-               Sort Key: j1_tbl.i, j1_tbl.i
-               ->  Seq Scan on j1_tbl
-         ->  Sort
-               Sort Key: j2_tbl.i, j2_tbl.k
+   ->  Hash Full Join
+         Hash Cond: ((j1_tbl.i = j2_tbl.i) AND (j1_tbl.i = j2_tbl.k))
+         ->  Seq Scan on j1_tbl
+         ->  Hash
                ->  Seq Scan on j2_tbl
- Optimizer: Pivotal Optimizer (GPORCA)
-(10 rows)
+ Optimizer: GPORCA
+(7 rows)
 
 select * from
   j1_tbl full join
@@ -2477,14 +2481,14 @@ select count(*) from
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Partial Aggregate
                ->  Hash Left Join
-                     Hash Cond: ((tenk1.thousand = tenk1_1.unique2) AND (tenk1.twothousand = tenk1_1.hundred) AND (tenk1.fivethous = tenk1_1.unique2))
+                     Hash Cond: ((x.thousand = y.unique2) AND (x.twothousand = y.hundred) AND (x.fivethous = y.unique2))
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                           Hash Key: tenk1.thousand, tenk1.twothousand, tenk1.thousand
-                           ->  Seq Scan on tenk1
+                           Hash Key: x.thousand, x.twothousand, x.thousand
+                           ->  Seq Scan on tenk1 x
                      ->  Hash
                            ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                                 Hash Key: tenk1_1.unique2, tenk1_1.hundred, tenk1_1.unique2
-                                 ->  Seq Scan on tenk1 tenk1_1
+                                 Hash Key: y.unique2, y.hundred, y.unique2
+                                 ->  Seq Scan on tenk1 y
  Optimizer: Pivotal Optimizer (GPORCA)
 (13 rows)
 
@@ -2511,16 +2515,16 @@ DROP TABLE J2_TBL;
 -- Both DELETE and UPDATE allow the specification of additional tables
 -- to "join" against to determine which rows should be modified.
 CREATE TEMP TABLE t1 (a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE TEMP TABLE t2 (a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE TEMP TABLE t3 (x int, y int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE TEMP TABLE t4 (x int, y int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO t1 VALUES (5, 10);
 INSERT INTO t1 VALUES (15, 20);
@@ -2576,16 +2580,24 @@ ERROR:  column t1.x does not exist
 LINE 1: select t1.x from t1 join t3 on (t1.a = t3.x);
                ^
 HINT:  Perhaps you meant to reference the column "t3.x".
+-- Test matching of locking clause with wrong alias
+select t1.*, t2.*, unnamed_join.* from
+  t1 join t2 on (t1.a = t2.a), t3 as unnamed_join
+  for update of unnamed_join;
+ a | b | a | b | x | y 
+---+---+---+---+---+---
+(0 rows)
+
 --
 -- regression test for 8.1 merge right join bug
 --
 CREATE TEMP TABLE tt1 ( tt1_id int4, joincol int4 );
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'tt1_id' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'tt1_id' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO tt1 VALUES (1, 11);
 INSERT INTO tt1 VALUES (2, NULL);
 CREATE TEMP TABLE tt2 ( tt2_id int4, joincol int4 );
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'tt2_id' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'tt2_id' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO tt2 VALUES (21, 11);
 INSERT INTO tt2 VALUES (22, 11);
@@ -2614,26 +2626,28 @@ reset enable_nestloop;
 -- regression test for bug #13908 (hash join with skew tuples & nbatch increase)
 --
 set work_mem to '64kB';
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 set enable_mergejoin to off;
 set enable_memoize to off;
 explain (costs off)
 select count(*) from tenk1 a, tenk1 b
   where a.hundred = b.thousand and (b.fivethous % 10) < 10;
-                             QUERY PLAN                              
----------------------------------------------------------------------
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
  Finalize Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Partial Aggregate
                ->  Hash Join
-                     Hash Cond: (b.thousand = a.hundred)
-                     ->  Broadcast Motion 3:3  (slice2; segments: 3)
-                           ->  Seq Scan on tenk1 b
-                                 Filter: ((fivethous % 10) < 10)
-                     ->  Hash
+                     Hash Cond: (a.hundred = b.thousand)
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                           Hash Key: a.hundred
                            ->  Seq Scan on tenk1 a
- Optimizer: Postgres query optimizer
-(11 rows)
+                     ->  Hash
+                           ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                 Hash Key: b.thousand
+                                 ->  Seq Scan on tenk1 b
+                                       Filter: ((fivethous % 10) < 10)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(14 rows)
 
 select count(*) from tenk1 a, tenk1 b
   where a.hundred = b.thousand and (b.fivethous % 10) < 10;
@@ -2643,20 +2657,19 @@ select count(*) from tenk1 a, tenk1 b
 (1 row)
 
 reset work_mem;
-WARNING:  "work_mem": setting is deprecated, and may be removed in a future release.
 reset enable_mergejoin;
 reset enable_memoize;
 --
 -- regression test for 8.2 bug with improper re-ordering of left joins
 --
 create temp table tt3(f1 int, f2 text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into tt3 select x, repeat('xyzzy', 100) from generate_series(1,10000) x;
 create index tt3i on tt3(f1);
 analyze tt3;
 create temp table tt4(f1 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into tt4 values (0),(1),(9999);
 analyze tt4;
@@ -2679,7 +2692,7 @@ WHERE d.f1 IS NULL;
 -- regression test for proper handling of outer joins within antijoins
 --
 create temp table tt4x(c1 int, c2 int, c3 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 explain (costs off)
 select * from tt4x t1
@@ -2691,54 +2704,42 @@ where not exists (
               ) a1 on t3.c2 = a1.c1
   where t1.c1 = t2.c2
 );
-                                                          QUERY PLAN                                                          
-------------------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)
-   ->  Result
-         Filter: (COALESCE((count()), '0'::bigint) = '0'::bigint)
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Hash Anti Join
+   Hash Cond: (t1.c1 = t2.c2)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Seq Scan on tt4x t1
+   ->  Hash
          ->  Hash Left Join
-               Hash Cond: (tt4x.c1 = tt4x_1.c2)
-               ->  Seq Scan on tt4x
+               Hash Cond: (t3.c2 = t5.c1)
+               ->  Gather Motion 3:1  (slice2; segments: 3)
+                     ->  Hash Left Join
+                           Hash Cond: (t2.c3 = t3.c1)
+                           ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                 Hash Key: t2.c3
+                                 ->  Seq Scan on tt4x t2
+                           ->  Hash
+                                 ->  Seq Scan on tt4x t3
                ->  Hash
-                     ->  Finalize GroupAggregate
-                           Group Key: tt4x_1.c2
-                           ->  Sort
-                                 Sort Key: tt4x_1.c2
-                                 ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                                       Hash Key: tt4x_1.c2
-                                       ->  Partial GroupAggregate
-                                             Group Key: tt4x_1.c2
-                                             ->  Sort
-                                                   Sort Key: tt4x_1.c2
-                                                   ->  Hash Left Join
-                                                         Hash Cond: (tt4x_2.c2 = tt4x_4.c1)
-                                                         ->  Hash Left Join
-                                                               Hash Cond: (tt4x_1.c3 = tt4x_2.c1)
-                                                               ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                                                                     Hash Key: tt4x_1.c3
-                                                                     ->  Seq Scan on tt4x tt4x_1
-                                                               ->  Hash
-                                                                     ->  Seq Scan on tt4x tt4x_2
-                                                         ->  Hash
-                                                               ->  Broadcast Motion 3:3  (slice4; segments: 3)
-                                                                     ->  Hash Left Join
-                                                                           Hash Cond: (tt4x_3.c2 = tt4x_4.c1)
-                                                                           ->  Redistribute Motion 3:3  (slice5; segments: 3)
-                                                                                 Hash Key: tt4x_3.c2
-                                                                                 ->  Seq Scan on tt4x tt4x_3
-                                                                           ->  Hash
-                                                                                 ->  Seq Scan on tt4x tt4x_4
+                     ->  Hash Left Join
+                           Hash Cond: (t4.c2 = t5.c1)
+                           ->  Gather Motion 3:1  (slice4; segments: 3)
+                                 ->  Seq Scan on tt4x t4
+                           ->  Hash
+                                 ->  Gather Motion 3:1  (slice5; segments: 3)
+                                       ->  Seq Scan on tt4x t5
  Optimizer: Pivotal Optimizer (GPORCA)
-(36 rows)
+(24 rows)
 
 --
 -- regression test for problems of the sort depicted in bug #3494
 --
 create temp table tt5(f1 int, f2 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create temp table tt6(f1 int, f2 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into tt5 values(1, 10);
 insert into tt5 values(1, 11);
@@ -2755,10 +2756,10 @@ select * from tt5,tt6 where tt5.f1 = tt6.f1 and tt5.f1 = tt5.f2 - tt6.f2;
 -- regression test for problems of the sort depicted in bug #3588
 --
 create temp table xx (pkxx int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'pkxx' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'pkxx' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create temp table yy (pkyy int, pkxx int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'pkyy' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'pkyy' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into xx values (1);
 insert into xx values (2);
@@ -2846,10 +2847,10 @@ set enable_mergejoin = 1;
 set enable_hashjoin = 0;
 set enable_nestloop = 0;
 create temp table a (i integer);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create temp table b (x integer, y integer);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'x' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 select * from a left join b on i = x and i = y and x = i;
  i | x | y 
@@ -2863,18 +2864,20 @@ rollback;
 begin;
 create type mycomptype as (id int, v bigint);
 create temp table tidv (idv mycomptype);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause, and no column type is suitable for a distribution key. Creating a NULL policy entry.
 create index on tidv (idv);
+analyze tidv;
 explain (costs off)
 select a.idv, b.idv from tidv a, tidv b where a.idv = b.idv;
-                QUERY PLAN                
-------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Hash Join
-         Hash Cond: (a.idv = b.idv)
+   ->  Nested Loop
+         Join Filter: true
          ->  Seq Scan on tidv a
-         ->  Hash
-               ->  Seq Scan on tidv b
- Optimizer: Postgres query optimizer
+         ->  Index Scan using tidv_idv_idx on tidv b
+               Index Cond: (idv = a.idv)
+ Optimizer: GPORCA
 (7 rows)
 
 set enable_mergejoin = 0;
@@ -2882,15 +2885,16 @@ set enable_hashjoin = 0;
 set enable_nestloop = 1;
 explain (costs off)
 select a.idv, b.idv from tidv a, tidv b where a.idv = b.idv;
-                        QUERY PLAN                        
-----------------------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
+         Join Filter: true
          ->  Seq Scan on tidv a
-         ->  Index Only Scan using tidv_idv_idx on tidv b
+         ->  Index Scan using tidv_idv_idx on tidv b
                Index Cond: (idv = a.idv)
- Optimizer: Postgres query optimizer
-(6 rows)
+ Optimizer: GPORCA
+(7 rows)
 
 rollback;
 --
@@ -3040,25 +3044,29 @@ SELECT qq, unique1
   ( SELECT COALESCE(q2, -1) AS qq FROM int8_tbl b ) AS ss2
   USING (qq)
   INNER JOIN tenk1 c ON qq = unique2;
-                                                QUERY PLAN                                                
-----------------------------------------------------------------------------------------------------------
+                                                           QUERY PLAN                                                            
+---------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Hash Join
-         Hash Cond: (c.unique2 = COALESCE((COALESCE(a.q1, '0'::bigint)), (COALESCE(b.q2, '-1'::bigint))))
-         ->  Seq Scan on tenk1 c
-         ->  Hash
+   ->  Nested Loop
+         Join Filter: true
+         ->  Result
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
-                     ->  Hash Full Join
-                           Hash Cond: ((COALESCE(a.q1, '0'::bigint)) = (COALESCE(b.q2, '-1'::bigint)))
-                           ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                                 Hash Key: (COALESCE(a.q1, '0'::bigint))
-                                 ->  Seq Scan on int8_tbl a
-                           ->  Hash
-                                 ->  Redistribute Motion 3:3  (slice4; segments: 3)
+                     ->  Merge Full Join
+                           Merge Cond: ((COALESCE(b.q2, '-1'::bigint)) = (COALESCE(a.q1, '0'::bigint)))
+                           ->  Sort
+                                 Sort Key: (COALESCE(b.q2, '-1'::bigint))
+                                 ->  Redistribute Motion 3:3  (slice3; segments: 3)
                                        Hash Key: (COALESCE(b.q2, '-1'::bigint))
                                        ->  Seq Scan on int8_tbl b
- Optimizer: Postgres query optimizer
-(16 rows)
+                           ->  Sort
+                                 Sort Key: (COALESCE(a.q1, '0'::bigint))
+                                 ->  Redistribute Motion 3:3  (slice4; segments: 3)
+                                       Hash Key: (COALESCE(a.q1, '0'::bigint))
+                                       ->  Seq Scan on int8_tbl a
+         ->  Index Scan using tenk1_unique2 on tenk1 c
+               Index Cond: (unique2 = (COALESCE((COALESCE(a.q1, '0'::bigint)), (COALESCE(b.q2, '-1'::bigint)))))
+ Optimizer: GPORCA
+(20 rows)
 
 SELECT qq, unique1
   FROM
@@ -3089,14 +3097,14 @@ create temp table nt2 (
   b2 boolean,
   foreign key (nt1_id) references nt1(id)
 );
-WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Cloudberry Database, will not be enforced
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 create temp table nt3 (
   id int primary key,
   nt2_id int,
   c1 boolean,
   foreign key (nt2_id) references nt2(id)
 );
-WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Cloudberry Database, will not be enforced
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 insert into nt1 values (1,true,true);
 ANALYZE nt1;
 insert into nt1 values (2,true,false);
@@ -3121,8 +3129,8 @@ from nt3 as nt3
     ) as ss2
     on ss2.id = nt3.nt2_id
 where nt3.id = 1 and ss2.b3;
-                                     QUERY PLAN                                     
-------------------------------------------------------------------------------------
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
          Hash Cond: (nt3.nt2_id = nt2.id)
@@ -3130,17 +3138,18 @@ where nt3.id = 1 and ss2.b3;
                Index Cond: (id = 1)
          ->  Hash
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
-                     ->  Result
-                           Filter: ((nt2.b1 AND ((NOT (nt1.id IS NULL)))))
-                           ->  Nested Loop Left Join
-                                 Join Filter: true
-                                 ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                                       Hash Key: nt2.nt1_id
-                                       ->  Seq Scan on nt2
+                     ->  Nested Loop
+                           Join Filter: true
+                           ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                 Hash Key: nt2.nt1_id
+                                 ->  Seq Scan on nt2
+                                       Filter: b1
+                           ->  Result
+                                 Filter: ((NOT (nt1.id IS NULL)))
                                  ->  Index Scan using nt1_pkey on nt1
                                        Index Cond: (id = nt2.nt1_id)
  Optimizer: Pivotal Optimizer (GPORCA)
-(17 rows)
+(18 rows)
 
 select nt3.id
 from nt3 as nt3
@@ -3172,18 +3181,18 @@ order by 1,2;
                                           QUERY PLAN                                           
 -----------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   Merge Key: int8_tbl.q1, int8_tbl.q2
+   Merge Key: t1.q1, t1.q2
    ->  Sort
-         Sort Key: int8_tbl.q1, int8_tbl.q2
+         Sort Key: t1.q1, t1.q2
          ->  Result
                Filter: (SubPlan 1)
                ->  Hash Left Join
-                     Hash Cond: (int8_tbl.q2 = int8_tbl_1.q1)
+                     Hash Cond: (t1.q2 = t2.q1)
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                           Hash Key: int8_tbl.q2
-                           ->  Seq Scan on int8_tbl
+                           Hash Key: t1.q2
+                           ->  Seq Scan on int8_tbl t1
                      ->  Hash
-                           ->  Seq Scan on int8_tbl int8_tbl_1
+                           ->  Seq Scan on int8_tbl t2
                SubPlan 1
                  ->  Result
                        Filter: (1 = (1))
@@ -3193,7 +3202,7 @@ order by 1,2;
                                          One-Time Filter: (NOT ((42) IS NULL))
                                          ->  Materialize
                                                ->  Broadcast Motion 3:3  (slice3; segments: 3)
-                                                     ->  Seq Scan on int8_tbl int8_tbl_2
+                                                     ->  Seq Scan on int8_tbl t3
  Optimizer: Pivotal Optimizer (GPORCA)
 (24 rows)
 
@@ -3353,30 +3362,30 @@ select * from
   tenk1 join int4_tbl on f1 = twothousand,
   q1, q2
 where q1 = thousand or q2 = thousand;
-                                        QUERY PLAN                                        
-------------------------------------------------------------------------------------------
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
          Hash Cond: (tenk1.twothousand = int4_tbl.f1)
          ->  Nested Loop
+               Join Filter: true
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
-                     ->  Seq Scan on q2
-               ->  Materialize
                      ->  Nested Loop
-                           ->  Materialize
-                                 ->  Broadcast Motion 3:3  (slice3; segments: 3)
-                                       ->  Seq Scan on q1
-                           ->  Bitmap Heap Scan on tenk1
-                                 Recheck Cond: ((q1.q1 = thousand) OR (q2.q2 = thousand))
-                                 ->  BitmapOr
-                                       ->  Bitmap Index Scan on tenk1_thous_tenthous
-                                             Index Cond: (thousand = q1.q1)
-                                       ->  Bitmap Index Scan on tenk1_thous_tenthous
-                                             Index Cond: (thousand = q2.q2)
+                           Join Filter: true
+                           ->  Broadcast Motion 3:3  (slice3; segments: 3)
+                                 ->  Seq Scan on q1
+                           ->  Seq Scan on q2
+               ->  Bitmap Heap Scan on tenk1
+                     Recheck Cond: ((thousand = q1.q1) OR (thousand = q2.q2))
+                     ->  BitmapOr
+                           ->  Bitmap Index Scan on tenk1_thous_tenthous
+                                 Index Cond: (thousand = q1.q1)
+                           ->  Bitmap Index Scan on tenk1_thous_tenthous
+                                 Index Cond: (thousand = q2.q2)
          ->  Hash
                ->  Broadcast Motion 3:3  (slice4; segments: 3)
                      ->  Seq Scan on int4_tbl
- Optimizer: Postgres query optimizer
+ Optimizer: Pivotal Optimizer (GPORCA)
 (22 rows)
 
 explain (costs off)
@@ -3384,25 +3393,25 @@ select * from
   tenk1 join int4_tbl on f1 = twothousand,
   q1, q2
 where thousand = (q1 + q2);
-                                   QUERY PLAN                                    
----------------------------------------------------------------------------------
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
-         Hash Cond: (tenk1.thousand = (q1.q1 + q2.q2))
-         ->  Hash Join
-               Hash Cond: (tenk1.twothousand = int4_tbl.f1)
-               ->  Seq Scan on tenk1
-               ->  Hash
-                     ->  Broadcast Motion 3:3  (slice2; segments: 3)
-                           ->  Seq Scan on int4_tbl
-         ->  Hash
-               ->  Broadcast Motion 3:3  (slice3; segments: 3)
+         Hash Cond: (tenk1.twothousand = int4_tbl.f1)
+         ->  Nested Loop
+               Join Filter: true
+               ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Nested Loop
-                           ->  Seq Scan on q1
-                           ->  Materialize
-                                 ->  Broadcast Motion 3:3  (slice4; segments: 3)
-                                       ->  Seq Scan on q2
- Optimizer: Postgres query optimizer
+                           Join Filter: true
+                           ->  Broadcast Motion 3:3  (slice3; segments: 3)
+                                 ->  Seq Scan on q1
+                           ->  Seq Scan on q2
+               ->  Index Scan using tenk1_thous_tenthous on tenk1
+                     Index Cond: (thousand = (q1.q1 + q2.q2))
+         ->  Hash
+               ->  Broadcast Motion 3:3  (slice4; segments: 3)
+                     ->  Seq Scan on int4_tbl
+ Optimizer: Pivotal Optimizer (GPORCA)
 (17 rows)
 
 --
@@ -3413,23 +3422,24 @@ explain (costs off)
 select * from
   tenk1, int8_tbl a, int8_tbl b
 where thousand = a.q1 and tenthous = b.q1 and a.q2 = 1 and b.q2 = 2;
-                                   QUERY PLAN                                    
----------------------------------------------------------------------------------
+                            QUERY PLAN                            
+------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Nested Loop
-         ->  Broadcast Motion 3:3  (slice2; segments: 3)
-               ->  Seq Scan on int8_tbl b
-                     Filter: (q2 = 2)
-         ->  Materialize
-               ->  Nested Loop
-                     ->  Materialize
-                           ->  Broadcast Motion 3:3  (slice3; segments: 3)
-                                 ->  Seq Scan on int8_tbl a
-                                       Filter: (q2 = 1)
-                     ->  Index Scan using tenk1_thous_tenthous on tenk1
-                           Index Cond: ((thousand = a.q1) AND (tenthous = b.q1))
- Optimizer: Postgres query optimizer
-(14 rows)
+   ->  Hash Join
+         Hash Cond: ((tenk1.thousand)::bigint = a.q1)
+         ->  Nested Loop
+               Join Filter: true
+               ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                     ->  Seq Scan on int8_tbl b
+                           Filter: (q2 = 2)
+               ->  Index Scan using tenk1_thous_tenthous on tenk1
+                     Index Cond: (tenthous = b.q1)
+         ->  Hash
+               ->  Broadcast Motion 3:3  (slice3; segments: 3)
+                     ->  Seq Scan on int8_tbl a
+                           Filter: (q2 = 1)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(15 rows)
 
 reset enable_nestloop;
 --
@@ -3454,34 +3464,39 @@ where t1.unique2 < 42 and t1.stringu1 > t2.stringu2;
                                               QUERY PLAN                                              
 ------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Nested Loop
-         ->  Broadcast Motion 1:3  (slice2; segments: 1)
-               ->  Seq Scan on int4_tbl i1
-                     Filter: (f1 = 0)
-         ->  Materialize
-               ->  Hash Join
-                     Hash Cond: ((11) = t1.unique2)
-                     Join Filter: (t1.stringu1 > t2.stringu2)
-                     ->  Broadcast Motion 3:3  (slice3; segments: 3)
-                           ->  Nested Loop
-                                 Join Filter: (11 < 42)
-                                 ->  Broadcast Motion 3:3  (slice4; segments: 3)
-                                       ->  Seq Scan on onerow
-                                 ->  Materialize
-                                       ->  Hash Join
-                                             Hash Cond: (t2.unique1 = (3))
-                                             ->  Seq Scan on tenk1 t2
-                                             ->  Hash
-                                                   ->  Redistribute Motion 3:3  (slice5; segments: 3)
-                                                         Hash Key: (3)
-                                                         ->  Seq Scan on onerow onerow_1
-                     ->  Hash
-                           ->  Bitmap Heap Scan on tenk1 t1
-                                 Recheck Cond: (unique2 < 42)
-                                 ->  Bitmap Index Scan on tenk1_unique2
-                                       Index Cond: (unique2 < 42)
- Optimizer: Postgres query optimizer
-(28 rows)
+   ->  Hash Join
+         Hash Cond: (tenk1.unique1 = (3))
+         Join Filter: (tenk1_1.stringu1 > tenk1.stringu2)
+         ->  Seq Scan on tenk1
+         ->  Hash
+               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                     Hash Key: (3)
+                     ->  Hash Join
+                           Hash Cond: ((0) = int4_tbl.f1)
+                           ->  Hash Join
+                                 Hash Cond: (tenk1_1.unique2 = (11))
+                                 ->  Index Scan using tenk1_unique2 on tenk1 tenk1_1
+                                       Index Cond: ((unique2 < 42) AND (unique2 = 11))
+                                 ->  Hash
+                                       ->  Broadcast Motion 3:3  (slice3; segments: 3)
+                                             ->  Result
+                                                   Filter: (((11) < 42) AND ((11) = 11))
+                                                   ->  Hash Left Join
+                                                         Hash Cond: ((1) = (1))
+                                                         ->  Result
+                                                               Filter: ((0) = 0)
+                                                               ->  Seq Scan on onerow
+                                                         ->  Hash
+                                                               ->  Broadcast Motion 3:3  (slice4; segments: 3)
+                                                                     ->  Result
+                                                                           Filter: ((1) = 1)
+                                                                           ->  Seq Scan on onerow onerow_1
+                           ->  Hash
+                                 ->  Broadcast Motion 3:3  (slice5; segments: 3)
+                                       ->  Seq Scan on int4_tbl
+                                             Filter: (f1 = 0)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(33 rows)
 
 --end_ignore
 select t1.unique2, t1.stringu1, t2.unique1, t2.stringu2 from
@@ -3535,26 +3550,36 @@ select t1.unique2, t1.stringu1, t2.unique1, t2.stringu2 from
   left join tenk1 t2
   on (subq1.y1 = t2.unique1)
 where t1.unique2 < 42 and t1.stringu1 > t2.stringu2;
-                                   QUERY PLAN                                    
----------------------------------------------------------------------------------
- Gather Motion 3:1  (slice1; segments: 3)
-   ->  Hash Join
-         Hash Cond: (t2.unique1 = (3))
-         Join Filter: (t1.stringu1 > t2.stringu2)
-         ->  Seq Scan on tenk1 t2
-         ->  Hash
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Hash Join
+   Hash Cond: ((11) = t1.unique2)
+   Join Filter: (t1.stringu1 > t2.stringu2)
+   ->  Gather Motion 3:1  (slice1; segments: 3)
+         ->  Hash Join
+               Hash Cond: ((0) = i1.f1)
                ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                     Hash Key: (3)
-                     ->  Hash Join
-                           Hash Cond: (t1.unique2 = (11))
-                           ->  Index Scan using tenk1_unique2 on tenk1 t1
-                                 Index Cond: (unique2 < 42)
-                           ->  Hash
-                                 ->  Broadcast Motion 1:3  (slice3; segments: 1)
-                                       ->  Seq Scan on int4_tbl i1
-                                             Filter: ((11 < 42) AND (f1 = 0))
- Optimizer: Postgres query optimizer
-(17 rows)
+                     Hash Key: (0)
+                     ->  Nested Loop
+                           Join Filter: true
+                           ->  Result
+                                 ->  Hash Left Join
+                                       Hash Cond: ((1) = (1))
+                                       ->  Result
+                                             One-Time Filter: (11 < 42)
+                                             ->  Result
+                                       ->  Hash
+                                             ->  Result
+                           ->  Index Scan using tenk1_unique1 on tenk1 t2
+                                 Index Cond: (unique1 = (3))
+               ->  Hash
+                     ->  Seq Scan on int4_tbl i1
+   ->  Hash
+         ->  Gather Motion 3:1  (slice3; segments: 3)
+               ->  Index Scan using tenk1_unique2 on tenk1 t1
+                     Index Cond: ((unique2 < 42) AND (unique2 = 11))
+ Optimizer: GPORCA
+(27 rows)
 
 select t1.unique2, t1.stringu1, t2.unique1, t2.stringu2 from
   tenk1 t1
@@ -3650,45 +3675,61 @@ set enable_nestloop=on;
 explain (costs off)
 select unique1 from tenk1, (select * from f_immutable_int4(1) x) x
 where x = unique1;
-                     QUERY PLAN                     
-----------------------------------------------------
- Gather Motion 1:1  (slice1; segments: 1)
-   ->  Index Only Scan using tenk1_unique1 on tenk1
-         Index Cond: (unique1 = 1)
- Optimizer: Postgres query optimizer
-(4 rows)
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Nested Loop
+         Join Filter: true
+         ->  Result
+               ->  Result
+                     Filter: ((1) = 1)
+                     ->  Result
+         ->  Index Only Scan using tenk1_unique1 on tenk1
+               Index Cond: ((unique1 = (1)) AND (unique1 = 1))
+ Optimizer: GPORCA
+(10 rows)
 
 explain (verbose, costs off)
 select unique1, x.*
 from tenk1, (select *, random() from f_immutable_int4(1) x) x
 where x = unique1;
-                           QUERY PLAN                            
------------------------------------------------------------------
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   Output: tenk1.unique1, (1), (random())
+   Output: unique1, (1), (random())
    ->  Nested Loop
-         Output: tenk1.unique1, (1), (random())
-         ->  Redistribute Motion 1:3  (slice2; segments: 1)
+         Output: unique1, (1), (random())
+         Join Filter: true
+         ->  Redistribute Motion 1:3  (slice2)
                Output: (1), (random())
                Hash Key: (1)
                ->  Result
-                     Output: 1, random()
+                     Output: (1), random()
+                     Filter: ((1) = 1)
+                     ->  Result
+                           Output: 1
          ->  Index Only Scan using tenk1_unique1 on public.tenk1
-               Output: tenk1.unique1
-               Index Cond: (tenk1.unique1 = (1))
- Settings: enable_nestloop = 'on'
- Optimizer: Postgres query optimizer
-(14 rows)
+               Output: unique1
+               Index Cond: ((tenk1.unique1 = (1)) AND (tenk1.unique1 = 1))
+ Settings: enable_nestloop = 'on', enable_parallel = 'off', optimizer = 'on'
+ Optimizer: GPORCA
+(18 rows)
 
 explain (costs off)
 select unique1 from tenk1, f_immutable_int4(1) x where x = unique1;
-                     QUERY PLAN                     
-----------------------------------------------------
- Gather Motion 1:1  (slice1; segments: 1)
-   ->  Index Only Scan using tenk1_unique1 on tenk1
-         Index Cond: (unique1 = 1)
- Optimizer: Postgres query optimizer
-(4 rows)
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Nested Loop
+         Join Filter: true
+         ->  Result
+               ->  Result
+                     Filter: ((1) = 1)
+                     ->  Result
+         ->  Index Only Scan using tenk1_unique1 on tenk1
+               Index Cond: ((unique1 = (1)) AND (unique1 = 1))
+ Optimizer: GPORCA
+(10 rows)
 
 explain (costs off)
 select unique1 from tenk1, lateral f_immutable_int4(1) x where x = unique1;
@@ -3710,39 +3751,45 @@ select unique1 from tenk1, lateral f_immutable_int4(1) x where x in (select 17);
 
 explain (costs off)
 select unique1, x from tenk1 join f_immutable_int4(1) x on unique1 = x;
-                     QUERY PLAN                     
-----------------------------------------------------
- Gather Motion 1:1  (slice1; segments: 1)
-   ->  Index Only Scan using tenk1_unique1 on tenk1
-         Index Cond: (unique1 = 1)
- Optimizer: Postgres query optimizer
-(4 rows)
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Nested Loop
+         Join Filter: true
+         ->  Result
+               ->  Result
+                     Filter: ((1) = 1)
+                     ->  Result
+         ->  Index Only Scan using tenk1_unique1 on tenk1
+               Index Cond: ((unique1 = (1)) AND (unique1 = 1))
+ Optimizer: GPORCA
+(10 rows)
 
 explain (costs off)
 select unique1, x from tenk1 left join f_immutable_int4(1) x on unique1 = x;
-                   QUERY PLAN                   
-------------------------------------------------
- Hash Left Join
-   Hash Cond: (unique1 = (1))
-   ->  Gather Motion 3:1  (slice1; segments: 3)
+                QUERY PLAN                
+------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Left Join
+         Hash Cond: (unique1 = (1))
          ->  Seq Scan on tenk1
-   ->  Hash
-         ->  Result
+         ->  Hash
+               ->  Result
  Optimizer: Pivotal Optimizer (GPORCA)
 (7 rows)
 
 explain (costs off)
 select unique1, x from tenk1 right join f_immutable_int4(1) x on unique1 = x;
-                        QUERY PLAN                        
-----------------------------------------------------------
- Hash Right Join
-   Hash Cond: (unique1 = (1))
-   ->  Gather Motion 1:1  (slice1; segments: 1)
-         ->  Index Only Scan using tenk1_unique1 on tenk1
-               Index Cond: (unique1 = 1)
-   ->  Hash
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Nested Loop Left Join
+         Join Filter: true
          ->  Result
- Optimizer: Pivotal Optimizer (GPORCA)
+               ->  Result
+         ->  Index Only Scan using tenk1_unique1 on tenk1
+               Index Cond: ((unique1 = (1)) AND (unique1 = 1))
+ Optimizer: GPORCA
 (8 rows)
 
 explain (costs off)
@@ -3751,15 +3798,15 @@ select unique1, x from tenk1 full join f_immutable_int4(1) x on unique1 = x;
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Merge Full Join
-         Merge Cond: (unique1 = (1))
-         ->  Sort
-               Sort Key: unique1
-               ->  Seq Scan on tenk1
+         Merge Cond: ((1) = unique1)
          ->  Sort
                Sort Key: (1)
                ->  Result
                      ->  Result
- Optimizer: Pivotal Optimizer (GPORCA)
+         ->  Sort
+               Sort Key: unique1
+               ->  Seq Scan on tenk1
+ Optimizer: GPORCA
 (11 rows)
 
 -- check that pullup of a const function allows further const-folding
@@ -3786,22 +3833,22 @@ from nt3 as nt3
     ) as ss2
     on ss2.id = nt3.nt2_id
 where nt3.id = 1 and ss2.b3;
-                            QUERY PLAN                            
-------------------------------------------------------------------
+                       QUERY PLAN                        
+---------------------------------------------------------
  Hash Join
    Hash Cond: (nt3.nt2_id = nt2.id)
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Index Scan using nt3_pkey on nt3
                Index Cond: (id = 1)
    ->  Hash
-         ->  Result
-               Filter: ((nt2.b1 OR ((0) = 42)))
-               ->  Hash Left Join
-                     Hash Cond: (nt2.nt1_id = (0))
-                     ->  Gather Motion 3:1  (slice2; segments: 3)
+         ->  Gather Motion 3:1  (slice2; segments: 3)
+               ->  Result
+                     Filter: (nt2.b1 OR ((0) = 42))
+                     ->  Hash Left Join
+                           Hash Cond: (nt2.nt1_id = (0))
                            ->  Seq Scan on nt2
-                     ->  Hash
-                           ->  Result
+                           ->  Hash
+                                 ->  Result
  Optimizer: Pivotal Optimizer (GPORCA)
 (15 rows)
 
@@ -3813,18 +3860,14 @@ create function mki4(int) returns int4_tbl as
 $$select row($1)::int4_tbl$$ language sql;
 explain (verbose, costs off)
 select * from mki8(1,2);
-                    QUERY PLAN                    
---------------------------------------------------
- Subquery Scan on sirvf_sq
-   Output: (sirvf_sq.mki8).q1, (sirvf_sq.mki8).q2
-   ->  Result
-         Output: $0
-         InitPlan 1 (returns $0)
-           ->  Result
-                 Output: '(1,2)'::int8_tbl
+              QUERY PLAN               
+---------------------------------------
+ Function Scan on mki8
+   Output: q1, q2
+   Function Call: '(1,2)'::int8_tbl
  Settings: optimizer = 'on'
- Optimizer: Postgres query optimizer
-(9 rows)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(5 rows)
 
 select * from mki8(1,2);
  q1 | q2 
@@ -3834,18 +3877,14 @@ select * from mki8(1,2);
 
 explain (verbose, costs off)
 select * from mki4(42);
-                QUERY PLAN                
-------------------------------------------
- Subquery Scan on sirvf_sq
-   Output: (sirvf_sq.mki4).f1
-   ->  Result
-         Output: $0
-         InitPlan 1 (returns $0)
-           ->  Result
-                 Output: '(42)'::int4_tbl
+              QUERY PLAN               
+---------------------------------------
+ Function Scan on mki4
+   Output: f1
+   Function Call: '(42)'::int4_tbl
  Settings: optimizer = 'on'
- Optimizer: Postgres query optimizer
-(9 rows)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(5 rows)
 
 select * from mki4(42);
  f1 
@@ -3862,11 +3901,11 @@ drop function mki4(int);
 explain (costs off)
 select * from tenk1 a join tenk1 b on
   (a.unique1 = 1 and b.unique1 = 2) or (a.unique2 = 3 and b.hundred = 4);
-                                              QUERY PLAN                                               
--------------------------------------------------------------------------------------------------------
+                                                                    QUERY PLAN                                                                     
+---------------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
-         Join Filter: (((a.unique1 = 1) AND (b.unique1 = 2)) OR ((a.unique2 = 3) AND (b.hundred = 4)))
+         Join Filter: true
          ->  Broadcast Motion 3:3  (slice2; segments: 3)
                ->  Bitmap Heap Scan on tenk1 a
                      Recheck Cond: ((unique1 = 1) OR (unique2 = 3))
@@ -3875,68 +3914,85 @@ select * from tenk1 a join tenk1 b on
                                  Index Cond: (unique1 = 1)
                            ->  Bitmap Index Scan on tenk1_unique2
                                  Index Cond: (unique2 = 3)
-         ->  Materialize
-               ->  Bitmap Heap Scan on tenk1 b
-                     Recheck Cond: ((unique1 = 2) OR (hundred = 4))
+         ->  Bitmap Heap Scan on tenk1 b
+               Recheck Cond: (((unique1 = 2) OR (hundred = 4)) AND ((unique1 = 2) OR (hundred = 4)))
+               Filter: ((((a.unique1 = 1) AND (unique1 = 2)) OR ((a.unique2 = 3) AND (hundred = 4))) AND ((unique1 = 2) OR (hundred = 4)))
+               ->  BitmapAnd
                      ->  BitmapOr
                            ->  Bitmap Index Scan on tenk1_unique1
                                  Index Cond: (unique1 = 2)
                            ->  Bitmap Index Scan on tenk1_hundred
                                  Index Cond: (hundred = 4)
- Optimizer: Postgres query optimizer
-(20 rows)
+                     ->  BitmapOr
+                           ->  Bitmap Index Scan on tenk1_unique1
+                                 Index Cond: (unique1 = 2)
+                           ->  Bitmap Index Scan on tenk1_hundred
+                                 Index Cond: (hundred = 4)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(26 rows)
 
 explain (costs off)
 select * from tenk1 a join tenk1 b on
   (a.unique1 = 1 and b.unique1 = 2) or (a.unique2 = 3 and b.ten = 4);
-                                            QUERY PLAN                                             
----------------------------------------------------------------------------------------------------
+                                                                  QUERY PLAN                                                                   
+-----------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
-         Join Filter: (((a.unique1 = 1) AND (b.unique1 = 2)) OR ((a.unique2 = 3) AND (b.ten = 4)))
+         Join Filter: true
          ->  Broadcast Motion 3:3  (slice2; segments: 3)
-               ->  Bitmap Heap Scan on tenk1 a
-                     Recheck Cond: ((unique1 = 1) OR (unique2 = 3))
+               ->  Seq Scan on tenk1 b
+                     Filter: ((unique1 = 2) OR (ten = 4))
+         ->  Bitmap Heap Scan on tenk1 a
+               Recheck Cond: (((unique1 = 1) OR (unique2 = 3)) AND ((unique1 = 1) OR (unique2 = 3)))
+               Filter: ((((unique1 = 1) AND (b.unique1 = 2)) OR ((unique2 = 3) AND (b.ten = 4))) AND ((unique1 = 1) OR (unique2 = 3)))
+               ->  BitmapAnd
                      ->  BitmapOr
                            ->  Bitmap Index Scan on tenk1_unique1
                                  Index Cond: (unique1 = 1)
                            ->  Bitmap Index Scan on tenk1_unique2
                                  Index Cond: (unique2 = 3)
-         ->  Materialize
-               ->  Seq Scan on tenk1 b
-                     Filter: ((unique1 = 2) OR (ten = 4))
- Optimizer: Postgres query optimizer
-(15 rows)
+                     ->  BitmapOr
+                           ->  Bitmap Index Scan on tenk1_unique1
+                                 Index Cond: (unique1 = 1)
+                           ->  Bitmap Index Scan on tenk1_unique2
+                                 Index Cond: (unique2 = 3)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(21 rows)
 
 explain (costs off)
 select * from tenk1 a join tenk1 b on
   (a.unique1 = 1 and b.unique1 = 2) or
   ((a.unique2 = 3 or a.unique2 = 7) and b.hundred = 4);
-                                                         QUERY PLAN                                                         
-----------------------------------------------------------------------------------------------------------------------------
+                                                                                       QUERY PLAN                                                                                        
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
-         Join Filter: (((a.unique1 = 1) AND (b.unique1 = 2)) OR (((a.unique2 = 3) OR (a.unique2 = 7)) AND (b.hundred = 4)))
+         Join Filter: true
          ->  Broadcast Motion 3:3  (slice2; segments: 3)
-               ->  Bitmap Heap Scan on tenk1 a
-                     Recheck Cond: ((unique1 = 1) OR (unique2 = 3) OR (unique2 = 7))
+               ->  Seq Scan on tenk1 b
+                     Filter: ((unique1 = 2) OR (hundred = 4))
+         ->  Bitmap Heap Scan on tenk1 a
+               Recheck Cond: (((unique1 = 1) OR ((unique2 = 3) OR (unique2 = 7))) AND ((unique1 = 1) OR (unique2 = 3) OR (unique2 = 7)))
+               Filter: ((((unique1 = 1) AND (b.unique1 = 2)) OR (((unique2 = 3) OR (unique2 = 7)) AND (b.hundred = 4))) AND ((unique1 = 1) OR ((unique2 = 3) OR (unique2 = 7))))
+               ->  BitmapAnd
                      ->  BitmapOr
                            ->  Bitmap Index Scan on tenk1_unique1
                                  Index Cond: (unique1 = 1)
-                           ->  Bitmap Index Scan on tenk1_unique2
-                                 Index Cond: (unique2 = 3)
+                           ->  BitmapOr
+                                 ->  Bitmap Index Scan on tenk1_unique2
+                                       Index Cond: (unique2 = 3)
+                                 ->  Bitmap Index Scan on tenk1_unique2
+                                       Index Cond: (unique2 = 7)
+                     ->  BitmapOr
+                           ->  BitmapOr
+                                 ->  Bitmap Index Scan on tenk1_unique1
+                                       Index Cond: (unique1 = 1)
+                                 ->  Bitmap Index Scan on tenk1_unique2
+                                       Index Cond: (unique2 = 3)
                            ->  Bitmap Index Scan on tenk1_unique2
                                  Index Cond: (unique2 = 7)
-         ->  Materialize
-               ->  Bitmap Heap Scan on tenk1 b
-                     Recheck Cond: ((unique1 = 2) OR (hundred = 4))
-                     ->  BitmapOr
-                           ->  Bitmap Index Scan on tenk1_unique1
-                                 Index Cond: (unique1 = 2)
-                           ->  Bitmap Index Scan on tenk1_hundred
-                                 Index Cond: (hundred = 4)
- Optimizer: Postgres query optimizer
-(22 rows)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(27 rows)
 
 --
 -- test placement of movable quals in a parameterized join tree
@@ -3950,22 +4006,22 @@ where t1.unique1 = 1;
 ----------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Right Join
-         Hash Cond: ((tenk1.hundred = tenk1_2.hundred) AND (tenk1_1.ten = tenk1_2.ten))
+         Hash Cond: ((t2.hundred = t1.hundred) AND (t3.ten = t1.ten))
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
-               Hash Key: tenk1.hundred
+               Hash Key: t2.hundred
                ->  Hash Join
-                     Hash Cond: (tenk1.thousand = tenk1_1.unique2)
+                     Hash Cond: (t2.thousand = t3.unique2)
                      ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                           Hash Key: tenk1.thousand
-                           ->  Seq Scan on tenk1
+                           Hash Key: t2.thousand
+                           ->  Seq Scan on tenk1 t2
                      ->  Hash
                            ->  Redistribute Motion 3:3  (slice4; segments: 3)
-                                 Hash Key: tenk1_1.unique2
-                                 ->  Seq Scan on tenk1 tenk1_1
+                                 Hash Key: t3.unique2
+                                 ->  Seq Scan on tenk1 t3
          ->  Hash
                ->  Redistribute Motion 3:3  (slice5; segments: 3)
-                     Hash Key: tenk1_2.hundred
-                     ->  Index Scan using tenk1_unique1 on tenk1 tenk1_2
+                     Hash Key: t1.hundred
+                     ->  Index Scan using tenk1_unique1 on tenk1 t1
                            Index Cond: (unique1 = 1)
  Optimizer: Pivotal Optimizer (GPORCA)
 (20 rows)
@@ -3979,23 +4035,23 @@ where t1.unique1 = 1;
 ------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Right Join
-         Hash Cond: (tenk1.hundred = tenk1_2.hundred)
-         Join Filter: ((tenk1_2.ten + tenk1.ten) = tenk1_1.ten)
+         Hash Cond: (t2.hundred = t1.hundred)
+         Join Filter: ((t1.ten + t2.ten) = t3.ten)
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
-               Hash Key: tenk1.hundred
+               Hash Key: t2.hundred
                ->  Hash Join
-                     Hash Cond: (tenk1.thousand = tenk1_1.unique2)
+                     Hash Cond: (t2.thousand = t3.unique2)
                      ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                           Hash Key: tenk1.thousand
-                           ->  Seq Scan on tenk1
+                           Hash Key: t2.thousand
+                           ->  Seq Scan on tenk1 t2
                      ->  Hash
                            ->  Redistribute Motion 3:3  (slice4; segments: 3)
-                                 Hash Key: tenk1_1.unique2
-                                 ->  Seq Scan on tenk1 tenk1_1
+                                 Hash Key: t3.unique2
+                                 ->  Seq Scan on tenk1 t3
          ->  Hash
                ->  Redistribute Motion 3:3  (slice5; segments: 3)
-                     Hash Key: tenk1_2.hundred
-                     ->  Index Scan using tenk1_unique1 on tenk1 tenk1_2
+                     Hash Key: t1.hundred
+                     ->  Index Scan using tenk1_unique1 on tenk1 t1
                            Index Cond: (unique1 = 1)
  Optimizer: Pivotal Optimizer (GPORCA)
 (21 rows)
@@ -4005,33 +4061,33 @@ select count(*) from
   tenk1 a join tenk1 b on a.unique1 = b.unique2
   left join tenk1 c on a.unique2 = b.unique1 and c.thousand = a.thousand
   join int4_tbl on b.thousand = f1;
-                                                  QUERY PLAN                                                   
----------------------------------------------------------------------------------------------------------------
+                                           QUERY PLAN                                           
+------------------------------------------------------------------------------------------------
  Finalize Aggregate
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Partial Aggregate
-               ->  Hash Right Join
-                     Hash Cond: (c.thousand = a.thousand)
+               ->  Hash Left Join
+                     Hash Cond: (a.thousand = c.thousand)
                      Join Filter: (a.unique2 = b.unique1)
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                           Hash Key: c.thousand
-                           ->  Seq Scan on tenk1 c
+                           Hash Key: a.thousand
+                           ->  Nested Loop
+                                 Join Filter: true
+                                 ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                       Hash Key: b.unique2
+                                       ->  Nested Loop
+                                             Join Filter: true
+                                             ->  Broadcast Motion 3:3  (slice4; segments: 3)
+                                                   ->  Seq Scan on int4_tbl
+                                             ->  Index Scan using tenk1_thous_tenthous on tenk1 b
+                                                   Index Cond: (thousand = int4_tbl.f1)
+                                 ->  Index Scan using tenk1_unique1 on tenk1 a
+                                       Index Cond: (unique1 = b.unique2)
                      ->  Hash
-                           ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                                 Hash Key: a.thousand
-                                 ->  Hash Join
-                                       Hash Cond: (a.unique1 = b.unique2)
-                                       ->  Seq Scan on tenk1 a
-                                       ->  Hash
-                                             ->  Redistribute Motion 3:3  (slice4; segments: 3)
-                                                   Hash Key: b.unique2
-                                                   ->  Hash Join
-                                                         Hash Cond: (b.thousand = int4_tbl.f1)
-                                                         ->  Seq Scan on tenk1 b
-                                                         ->  Hash
-                                                               ->  Broadcast Motion 3:3  (slice5; segments: 3)
-                                                                     ->  Seq Scan on int4_tbl
- Optimizer: Postgres query optimizer
+                           ->  Redistribute Motion 3:3  (slice5; segments: 3)
+                                 Hash Key: c.thousand
+                                 ->  Seq Scan on tenk1 c
+ Optimizer: Pivotal Optimizer (GPORCA)
 (25 rows)
 
 select count(*) from
@@ -4050,8 +4106,8 @@ select b.unique1 from
   join int4_tbl i1 on b.thousand = f1
   right join int4_tbl i2 on i2.f1 = b.tenthous
   order by 1;
-                                                     QUERY PLAN                                                      
----------------------------------------------------------------------------------------------------------------------
+                                              QUERY PLAN                                              
+------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Merge Key: b.unique1
    ->  Sort
@@ -4060,30 +4116,30 @@ select b.unique1 from
                Hash Cond: (b.tenthous = i2.f1)
                ->  Redistribute Motion 3:3  (slice2; segments: 3)
                      Hash Key: b.tenthous
-                     ->  Hash Right Join
-                           Hash Cond: (c.thousand = a.thousand)
+                     ->  Hash Left Join
+                           Hash Cond: (a.thousand = c.thousand)
                            Join Filter: (b.unique1 = 42)
                            ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                                 Hash Key: c.thousand
-                                 ->  Seq Scan on tenk1 c
+                                 Hash Key: a.thousand
+                                 ->  Nested Loop
+                                       Join Filter: true
+                                       ->  Redistribute Motion 3:3  (slice4; segments: 3)
+                                             Hash Key: b.unique2
+                                             ->  Nested Loop
+                                                   Join Filter: true
+                                                   ->  Broadcast Motion 3:3  (slice5; segments: 3)
+                                                         ->  Seq Scan on int4_tbl i1
+                                                   ->  Index Scan using tenk1_thous_tenthous on tenk1 b
+                                                         Index Cond: (thousand = i1.f1)
+                                       ->  Index Scan using tenk1_unique1 on tenk1 a
+                                             Index Cond: (unique1 = b.unique2)
                            ->  Hash
-                                 ->  Redistribute Motion 3:3  (slice4; segments: 3)
-                                       Hash Key: a.thousand
-                                       ->  Hash Join
-                                             Hash Cond: (a.unique1 = b.unique2)
-                                             ->  Seq Scan on tenk1 a
-                                             ->  Hash
-                                                   ->  Redistribute Motion 3:3  (slice5; segments: 3)
-                                                         Hash Key: b.unique2
-                                                         ->  Hash Join
-                                                               Hash Cond: (b.thousand = i1.f1)
-                                                               ->  Seq Scan on tenk1 b
-                                                               ->  Hash
-                                                                     ->  Broadcast Motion 3:3  (slice6; segments: 3)
-                                                                           ->  Seq Scan on int4_tbl i1
+                                 ->  Redistribute Motion 3:3  (slice6; segments: 3)
+                                       Hash Key: c.thousand
+                                       ->  Seq Scan on tenk1 c
                ->  Hash
                      ->  Seq Scan on int4_tbl i2
- Optimizer: Postgres query optimizer
+ Optimizer: Pivotal Optimizer (GPORCA)
 (32 rows)
 
 select b.unique1 from
@@ -4116,7 +4172,7 @@ order by fault;
    ->  Sort
          Sort Key: ((COALESCE(tenk1.unique1, '-1'::integer) + int8_tbl.q1))
          ->  Result
-               Filter: (((COALESCE(tenk1.unique1, '-1'::integer) + int8_tbl.q1)) = 122)
+               Filter: ((COALESCE(tenk1.unique1, '-1'::integer) + int8_tbl.q1) = 122)
                ->  Hash Right Join
                      Hash Cond: ((tenk1.unique2)::bigint = int8_tbl.q2)
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
@@ -4180,14 +4236,14 @@ select q1, unique2, thousand, hundred
 ------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Result
-         Filter: ((COALESCE(tenk1.thousand, 123) = int8_tbl.q1) AND (int8_tbl.q1 = COALESCE(tenk1.hundred, 123)))
+         Filter: ((COALESCE(b.thousand, 123) = a.q1) AND (a.q1 = COALESCE(b.hundred, 123)))
          ->  Hash Right Join
-               Hash Cond: ((tenk1.unique2)::bigint = int8_tbl.q1)
+               Hash Cond: ((b.unique2)::bigint = a.q1)
                ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                     Hash Key: (tenk1.unique2)::bigint
-                     ->  Seq Scan on tenk1
+                     Hash Key: (b.unique2)::bigint
+                     ->  Seq Scan on tenk1 b
                ->  Hash
-                     ->  Seq Scan on int8_tbl
+                     ->  Seq Scan on int8_tbl a
  Optimizer: Pivotal Optimizer (GPORCA)
 (11 rows)
 
@@ -4202,20 +4258,20 @@ explain (costs off)
 select f1, unique2, case when unique2 is null then f1 else 0 end
   from int4_tbl a left join tenk1 b on f1 = unique2
   where (case when unique2 is null then f1 else 0 end) = 0;
-                                        QUERY PLAN                                         
--------------------------------------------------------------------------------------------
+                                   QUERY PLAN                                   
+--------------------------------------------------------------------------------
  Result
    ->  Gather Motion 3:1  (slice1; segments: 3)
          ->  Result
-               Filter: (CASE WHEN (tenk1.unique2 IS NULL) THEN int4_tbl.f1 ELSE 0 END = 0)
+               Filter: (CASE WHEN (b.unique2 IS NULL) THEN a.f1 ELSE 0 END = 0)
                ->  Hash Right Join
-                     Hash Cond: (tenk1.unique2 = int4_tbl.f1)
+                     Hash Cond: (b.unique2 = a.f1)
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                           Hash Key: tenk1.unique2
-                           ->  Seq Scan on tenk1
+                           Hash Key: b.unique2
+                           ->  Seq Scan on tenk1 b
                      ->  Hash
-                           ->  Seq Scan on int4_tbl
- Optimizer: Pivotal Optimizer (GPORCA)
+                           ->  Seq Scan on int4_tbl a
+ Optimizer: GPORCA
 (12 rows)
 
 select f1, unique2, case when unique2 is null then f1 else 0 end
@@ -4237,22 +4293,22 @@ select a.unique1, b.unique1, c.unique1, coalesce(b.twothousand, a.twothousand)
 ---------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Right Join
-         Hash Cond: (tenk1.unique2 = COALESCE(tenk1_1.twothousand, tenk1_2.twothousand))
+         Hash Cond: (c.unique2 = COALESCE(b.twothousand, a.twothousand))
          ->  Redistribute Motion 3:3  (slice2; segments: 3)
-               Hash Key: tenk1.unique2
-               ->  Seq Scan on tenk1
+               Hash Key: c.unique2
+               ->  Seq Scan on tenk1 c
          ->  Hash
                ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                     Hash Key: COALESCE(tenk1_1.twothousand, tenk1_2.twothousand)
+                     Hash Key: COALESCE(b.twothousand, a.twothousand)
                      ->  Result
-                           Filter: (COALESCE(tenk1_1.twothousand, tenk1_2.twothousand) = 44)
+                           Filter: (COALESCE(b.twothousand, a.twothousand) = 44)
                            ->  Hash Right Join
-                                 Hash Cond: (tenk1_1.thousand = tenk1_2.unique1)
+                                 Hash Cond: (b.thousand = a.unique1)
                                  ->  Redistribute Motion 3:3  (slice4; segments: 3)
-                                       Hash Key: tenk1_1.thousand
-                                       ->  Seq Scan on tenk1 tenk1_1
+                                       Hash Key: b.thousand
+                                       ->  Seq Scan on tenk1 b
                                  ->  Hash
-                                       ->  Index Scan using tenk1_unique2 on tenk1 tenk1_2
+                                       ->  Index Scan using tenk1_unique2 on tenk1 a
                                              Index Cond: (unique2 < 10)
  Optimizer: Pivotal Optimizer (GPORCA)
 (20 rows)
@@ -4283,28 +4339,28 @@ using (join_key);
                                QUERY PLAN                               
 ------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   Output: "Values".column1, int4_tbl.f1, (666)
+   Output: "Values".column1, i1.f1, (666)
    ->  Hash Left Join
-         Output: "Values".column1, int4_tbl.f1, (666)
-         Hash Cond: ("Values".column1 = int4_tbl.f1)
+         Output: "Values".column1, i1.f1, (666)
+         Hash Cond: ("Values".column1 = i1.f1)
          ->  Result
                Output: "Values".column1
                ->  Values Scan on "Values"
                      Output: "Values".column1
          ->  Hash
-               Output: int4_tbl.f1, (666)
+               Output: i1.f1, (666)
                ->  Hash Right Join
-                     Output: int4_tbl.f1, (666)
-                     Hash Cond: (tenk1.unique2 = int4_tbl.f1)
+                     Output: i1.f1, (666)
+                     Hash Cond: (i2.unique2 = i1.f1)
                      ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                           Output: tenk1.unique2
-                           Hash Key: tenk1.unique2
-                           ->  Seq Scan on public.tenk1
-                                 Output: tenk1.unique2
+                           Output: i2.unique2
+                           Hash Key: i2.unique2
+                           ->  Seq Scan on public.tenk1 i2
+                                 Output: i2.unique2
                      ->  Hash
-                           Output: (666), int4_tbl.f1
-                           ->  Seq Scan on public.int4_tbl
-                                 Output: 666, int4_tbl.f1
+                           Output: (666), i1.f1
+                           ->  Seq Scan on public.int4_tbl i1
+                                 Output: 666, i1.f1
  Optimizer: Pivotal Optimizer (GPORCA)
 (24 rows)
 
@@ -4343,51 +4399,49 @@ select t1.* from
                                        QUERY PLAN                                       
 ----------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   Output: text_tbl.f1
+   Output: t1.f1
    ->  Hash Left Join
-         Output: text_tbl.f1
-         Hash Cond: (int8_tbl.q2 = (int4_tbl.f1)::bigint)
+         Output: t1.f1
+         Hash Cond: (i8.q2 = (i4.f1)::bigint)
          ->  Redistribute Motion 1:3  (slice2)
-               Output: text_tbl.f1, int8_tbl.q2
-               Hash Key: int8_tbl.q2
+               Output: t1.f1, i8.q2
                ->  Hash Right Join
-                     Output: text_tbl.f1, int8_tbl.q2
-                     Hash Cond: (('***'::text) = text_tbl.f1)
+                     Output: t1.f1, i8.q2
+                     Hash Cond: (('***'::text) = t1.f1)
                      ->  Hash Right Join
-                           Output: ('***'::text), int8_tbl.q2
-                           Hash Cond: (((NULL::integer))::bigint = int8_tbl_2.q2)
+                           Output: ('***'::text), i8.q2
+                           Hash Cond: (((NULL::integer))::bigint = i8b1.q2)
                            ->  Gather Motion 3:1  (slice3; segments: 3)
-                                 Output: int8_tbl.q2, (NULL::integer)
+                                 Output: i8.q2, (NULL::integer)
                                  ->  Hash Left Join
-                                       Output: int8_tbl.q2, (NULL::integer)
-                                       Hash Cond: (int8_tbl.q1 = int8_tbl_1.q1)
-                                       ->  Seq Scan on public.int8_tbl
-                                             Output: int8_tbl.q1, int8_tbl.q2
+                                       Output: i8.q2, (NULL::integer)
+                                       Hash Cond: (i8.q1 = i8b2.q1)
+                                       ->  Seq Scan on public.int8_tbl i8
+                                             Output: i8.q1, i8.q2
                                        ->  Hash
-                                             Output: (NULL::integer), int8_tbl_1.q1
-                                             ->  Seq Scan on public.int8_tbl int8_tbl_1
-                                                   Output: NULL::integer, int8_tbl_1.q1
+                                             Output: (NULL::integer), i8b2.q1
+                                             ->  Seq Scan on public.int8_tbl i8b2
+                                                   Output: NULL::integer, i8b2.q1
                            ->  Hash
-                                 Output: ('***'::text), int8_tbl_2.q2
+                                 Output: ('***'::text), i8b1.q2
                                  ->  Result
-                                       Output: '***'::text, int8_tbl_2.q2
+                                       Output: '***'::text, i8b1.q2
                                        ->  Gather Motion 3:1  (slice4; segments: 3)
-                                             Output: int8_tbl_2.q2
-                                             ->  Seq Scan on public.int8_tbl int8_tbl_2
-                                                   Output: int8_tbl_2.q2
+                                             Output: i8b1.q2
+                                             ->  Seq Scan on public.int8_tbl i8b1
+                                                   Output: i8b1.q2
                      ->  Hash
-                           Output: text_tbl.f1
+                           Output: t1.f1
                            ->  Gather Motion 3:1  (slice5; segments: 3)
-                                 Output: text_tbl.f1
-                                 ->  Seq Scan on public.text_tbl
-                                       Output: text_tbl.f1
+                                 Output: t1.f1
+                                 ->  Seq Scan on public.text_tbl t1
+                                       Output: t1.f1
          ->  Hash
-               Output: int4_tbl.f1
-               ->  Redistribute Motion 3:3  (slice6; segments: 3)
-                     Output: int4_tbl.f1
-                     Hash Key: (int4_tbl.f1)::bigint
-                     ->  Seq Scan on public.int4_tbl
-                           Output: int4_tbl.f1
+               Output: i4.f1
+               ->  Broadcast Motion 3:3  (slice6; segments: 3)
+                     Output: i4.f1
+                     ->  Seq Scan on public.int4_tbl i4
+                           Output: i4.f1
  Optimizer: Pivotal Optimizer (GPORCA)
 (48 rows)
 
@@ -4421,57 +4475,55 @@ select t1.* from
                                                QUERY PLAN                                                
 ---------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   Output: text_tbl.f1
+   Output: t1.f1
    ->  Hash Left Join
-         Output: text_tbl.f1
-         Hash Cond: (int8_tbl.q2 = (int4_tbl_1.f1)::bigint)
+         Output: t1.f1
+         Hash Cond: (i8.q2 = (i4.f1)::bigint)
          ->  Redistribute Motion 1:3  (slice2)
-               Output: text_tbl.f1, int8_tbl.q2
-               Hash Key: int8_tbl.q2
+               Output: t1.f1, i8.q2
                ->  Hash Right Join
-                     Output: text_tbl.f1, int8_tbl.q2
-                     Hash Cond: (('***'::text) = text_tbl.f1)
+                     Output: t1.f1, i8.q2
+                     Hash Cond: (('***'::text) = t1.f1)
                      ->  Hash Right Join
-                           Output: ('***'::text), int8_tbl.q2
-                           Hash Cond: (((NULL::integer))::bigint = int8_tbl_2.q2)
+                           Output: ('***'::text), i8.q2
+                           Hash Cond: (((NULL::integer))::bigint = i8b1.q2)
                            ->  Gather Motion 3:1  (slice3; segments: 3)
-                                 Output: int8_tbl.q2, (NULL::integer)
+                                 Output: i8.q2, (NULL::integer)
                                  ->  Hash Left Join
-                                       Output: int8_tbl.q2, (NULL::integer)
-                                       Hash Cond: (int8_tbl.q1 = int8_tbl_1.q1)
-                                       ->  Seq Scan on public.int8_tbl
-                                             Output: int8_tbl.q1, int8_tbl.q2
+                                       Output: i8.q2, (NULL::integer)
+                                       Hash Cond: (i8.q1 = i8b2.q1)
+                                       ->  Seq Scan on public.int8_tbl i8
+                                             Output: i8.q1, i8.q2
                                        ->  Hash
-                                             Output: (NULL::integer), int8_tbl_1.q1
+                                             Output: (NULL::integer), i8b2.q1
                                              ->  Nested Loop
-                                                   Output: NULL::integer, int8_tbl_1.q1
+                                                   Output: NULL::integer, i8b2.q1
                                                    Join Filter: true
-                                                   ->  Seq Scan on public.int8_tbl int8_tbl_1
-                                                         Output: int8_tbl_1.q1
+                                                   ->  Seq Scan on public.int8_tbl i8b2
+                                                         Output: i8b2.q1
                                                    ->  Materialize
                                                          ->  Broadcast Motion 3:3  (slice4; segments: 3)
-                                                               ->  Seq Scan on public.int4_tbl
+                                                               ->  Seq Scan on public.int4_tbl i4b2
                            ->  Hash
-                                 Output: ('***'::text), int8_tbl_2.q2
+                                 Output: ('***'::text), i8b1.q2
                                  ->  Result
-                                       Output: '***'::text, int8_tbl_2.q2
+                                       Output: '***'::text, i8b1.q2
                                        ->  Gather Motion 3:1  (slice5; segments: 3)
-                                             Output: int8_tbl_2.q2
-                                             ->  Seq Scan on public.int8_tbl int8_tbl_2
-                                                   Output: int8_tbl_2.q2
+                                             Output: i8b1.q2
+                                             ->  Seq Scan on public.int8_tbl i8b1
+                                                   Output: i8b1.q2
                      ->  Hash
-                           Output: text_tbl.f1
+                           Output: t1.f1
                            ->  Gather Motion 3:1  (slice6; segments: 3)
-                                 Output: text_tbl.f1
-                                 ->  Seq Scan on public.text_tbl
-                                       Output: text_tbl.f1
+                                 Output: t1.f1
+                                 ->  Seq Scan on public.text_tbl t1
+                                       Output: t1.f1
          ->  Hash
-               Output: int4_tbl_1.f1
-               ->  Redistribute Motion 3:3  (slice7; segments: 3)
-                     Output: int4_tbl_1.f1
-                     Hash Key: (int4_tbl_1.f1)::bigint
-                     ->  Seq Scan on public.int4_tbl int4_tbl_1
-                           Output: int4_tbl_1.f1
+               Output: i4.f1
+               ->  Broadcast Motion 3:3  (slice7; segments: 3)
+                     Output: i4.f1
+                     ->  Seq Scan on public.int4_tbl i4
+                           Output: i4.f1
  Optimizer: Pivotal Optimizer (GPORCA)
 (54 rows)
 
@@ -4506,61 +4558,59 @@ select t1.* from
                                                QUERY PLAN                                                
 ---------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   Output: text_tbl.f1
+   Output: t1.f1
    ->  Hash Left Join
-         Output: text_tbl.f1
-         Hash Cond: (int8_tbl.q2 = (int4_tbl_1.f1)::bigint)
+         Output: t1.f1
+         Hash Cond: (i8.q2 = (i4.f1)::bigint)
          ->  Redistribute Motion 1:3  (slice2)
-               Output: text_tbl.f1, int8_tbl.q2
-               Hash Key: int8_tbl.q2
+               Output: t1.f1, i8.q2
                ->  Hash Right Join
-                     Output: text_tbl.f1, int8_tbl.q2
-                     Hash Cond: (('***'::text) = text_tbl.f1)
+                     Output: t1.f1, i8.q2
+                     Hash Cond: (('***'::text) = t1.f1)
                      ->  Hash Right Join
-                           Output: ('***'::text), int8_tbl.q2
-                           Hash Cond: (((NULL::integer))::bigint = int8_tbl_2.q2)
+                           Output: ('***'::text), i8.q2
+                           Hash Cond: (((NULL::integer))::bigint = i8b1.q2)
                            ->  Gather Motion 3:1  (slice3; segments: 3)
-                                 Output: int8_tbl.q2, (NULL::integer)
+                                 Output: i8.q2, (NULL::integer)
                                  ->  Hash Left Join
-                                       Output: int8_tbl.q2, (NULL::integer)
-                                       Hash Cond: (int8_tbl.q1 = int8_tbl_1.q1)
-                                       ->  Seq Scan on public.int8_tbl
-                                             Output: int8_tbl.q1, int8_tbl.q2
+                                       Output: i8.q2, (NULL::integer)
+                                       Hash Cond: (i8.q1 = i8b2.q1)
+                                       ->  Seq Scan on public.int8_tbl i8
+                                             Output: i8.q1, i8.q2
                                        ->  Hash
-                                             Output: (NULL::integer), int8_tbl_1.q1
+                                             Output: (NULL::integer), i8b2.q1
                                              ->  Hash Join
-                                                   Output: NULL::integer, int8_tbl_1.q1
-                                                   Hash Cond: (int8_tbl_1.q1 = (int4_tbl.f1)::bigint)
-                                                   ->  Seq Scan on public.int8_tbl int8_tbl_1
-                                                         Output: int8_tbl_1.q1
+                                                   Output: NULL::integer, i8b2.q1
+                                                   Hash Cond: (i8b2.q1 = (i4b2.f1)::bigint)
+                                                   ->  Seq Scan on public.int8_tbl i8b2
+                                                         Output: i8b2.q1
                                                    ->  Hash
-                                                         Output: int4_tbl.f1
+                                                         Output: i4b2.f1
                                                          ->  Redistribute Motion 3:3  (slice4; segments: 3)
-                                                               Output: int4_tbl.f1
-                                                               Hash Key: (int4_tbl.f1)::bigint
-                                                               ->  Seq Scan on public.int4_tbl
-                                                                     Output: int4_tbl.f1
+                                                               Output: i4b2.f1
+                                                               Hash Key: (i4b2.f1)::bigint
+                                                               ->  Seq Scan on public.int4_tbl i4b2
+                                                                     Output: i4b2.f1
                            ->  Hash
-                                 Output: ('***'::text), int8_tbl_2.q2
+                                 Output: ('***'::text), i8b1.q2
                                  ->  Result
-                                       Output: '***'::text, int8_tbl_2.q2
+                                       Output: '***'::text, i8b1.q2
                                        ->  Gather Motion 3:1  (slice5; segments: 3)
-                                             Output: int8_tbl_2.q2
-                                             ->  Seq Scan on public.int8_tbl int8_tbl_2
-                                                   Output: int8_tbl_2.q2
+                                             Output: i8b1.q2
+                                             ->  Seq Scan on public.int8_tbl i8b1
+                                                   Output: i8b1.q2
                      ->  Hash
-                           Output: text_tbl.f1
+                           Output: t1.f1
                            ->  Gather Motion 3:1  (slice6; segments: 3)
-                                 Output: text_tbl.f1
-                                 ->  Seq Scan on public.text_tbl
-                                       Output: text_tbl.f1
+                                 Output: t1.f1
+                                 ->  Seq Scan on public.text_tbl t1
+                                       Output: t1.f1
          ->  Hash
-               Output: int4_tbl_1.f1
-               ->  Redistribute Motion 3:3  (slice7; segments: 3)
-                     Output: int4_tbl_1.f1
-                     Hash Key: (int4_tbl_1.f1)::bigint
-                     ->  Seq Scan on public.int4_tbl int4_tbl_1
-                           Output: int4_tbl_1.f1
+               Output: i4.f1
+               ->  Broadcast Motion 3:3  (slice7; segments: 3)
+                     Output: i4.f1
+                     ->  Seq Scan on public.int4_tbl i4
+                           Output: i4.f1
  Optimizer: Pivotal Optimizer (GPORCA)
 (58 rows)
 
@@ -4593,39 +4643,38 @@ select * from
                                        QUERY PLAN                                       
 ----------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   Output: text_tbl.f1, int8_tbl.q1, int8_tbl.q2, text_tbl_1.f1, int4_tbl.f1
+   Output: t1.f1, i8.q1, i8.q2, t2.f1, i4.f1
    ->  Hash Left Join
-         Output: text_tbl.f1, int8_tbl.q1, int8_tbl.q2, text_tbl_1.f1, int4_tbl.f1
-         Hash Cond: (int8_tbl.q1 = (int4_tbl.f1)::bigint)
+         Output: t1.f1, i8.q1, i8.q2, t2.f1, i4.f1
+         Hash Cond: (i8.q1 = (i4.f1)::bigint)
          ->  Nested Loop Left Join
-               Output: text_tbl_1.f1, text_tbl.f1, int8_tbl.q1, int8_tbl.q2
+               Output: t2.f1, t1.f1, i8.q1, i8.q2
                Join Filter: true
-               ->  Seq Scan on public.text_tbl text_tbl_1
-                     Output: text_tbl_1.f1
+               ->  Seq Scan on public.text_tbl t2
+                     Output: t2.f1
                ->  Materialize
-                     Output: text_tbl.f1, int8_tbl.q1, int8_tbl.q2
+                     Output: t1.f1, i8.q1, i8.q2
                      ->  Broadcast Motion 3:3  (slice2; segments: 3)
-                           Output: text_tbl.f1, int8_tbl.q1, int8_tbl.q2
+                           Output: t1.f1, i8.q1, i8.q2
                            ->  Nested Loop
-                                 Output: text_tbl.f1, int8_tbl.q1, int8_tbl.q2
+                                 Output: t1.f1, i8.q1, i8.q2
                                  Join Filter: true
-                                 ->  Seq Scan on public.int8_tbl
-                                       Output: int8_tbl.q1, int8_tbl.q2
-                                       Filter: (int8_tbl.q2 = 456)
+                                 ->  Seq Scan on public.int8_tbl i8
+                                       Output: i8.q1, i8.q2
+                                       Filter: (i8.q2 = 456)
                                  ->  Materialize
-                                       Output: text_tbl.f1
+                                       Output: t1.f1
                                        ->  Broadcast Motion 3:3  (slice3; segments: 3)
-                                             Output: text_tbl.f1
-                                             ->  Seq Scan on public.text_tbl
-                                                   Output: text_tbl.f1
-                                                   Filter: (text_tbl.f1 = 'doh!'::text)
+                                             Output: t1.f1
+                                             ->  Seq Scan on public.text_tbl t1
+                                                   Output: t1.f1
+                                                   Filter: (t1.f1 = 'doh!'::text)
          ->  Hash
-               Output: int4_tbl.f1
+               Output: i4.f1
                ->  Broadcast Motion 3:3  (slice4; segments: 3)
-                     Output: int4_tbl.f1
-                     ->  Seq Scan on public.int4_tbl
-                           Output: int4_tbl.f1
- Settings: optimizer = 'on'
+                     Output: i4.f1
+                     ->  Seq Scan on public.int4_tbl i4
+                           Output: i4.f1
  Optimizer: Pivotal Optimizer (GPORCA)
 (35 rows)
 
@@ -4786,20 +4835,16 @@ select * from
 ------------------------------------------------
  Hash Right Join
    Hash Cond: (COALESCE((1)) = (1))
-   ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Merge Full Join
-               Merge Cond: (unique1 = (1))
-               ->  Sort
-                     Sort Key: unique1
-                     ->  Seq Scan on tenk1
-               ->  Sort
-                     Sort Key: (1)
-                     ->  Result
-                           ->  Result
+   ->  Hash Full Join
+         Hash Cond: (unique1 = (1))
+         ->  Gather Motion 3:1  (slice1; segments: 3)
+               ->  Seq Scan on tenk1 a1
+         ->  Hash
+               ->  Result
    ->  Hash
          ->  Result
- Optimizer: Pivotal Optimizer (GPORCA)
-(15 rows)
+ Optimizer: GPORCA
+(11 rows)
 
 select * from
   (select 1 as id) as xx
@@ -4819,13 +4864,13 @@ explain (costs off)
                       QUERY PLAN                      
 ------------------------------------------------------
  Hash Right Join
-   Hash Cond: (tenk1.unique2 = int4_tbl.f1)
+   Hash Cond: (b.unique2 = a.f1)
    ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Index Scan using tenk1_unique2 on tenk1
+         ->  Index Scan using tenk1_unique2 on tenk1 b
                Index Cond: (unique2 = 0)
    ->  Hash
          ->  Gather Motion 3:1  (slice2; segments: 3)
-               ->  Seq Scan on int4_tbl
+               ->  Seq Scan on int4_tbl a
                      Filter: (f1 = 0)
  Optimizer: Pivotal Optimizer (GPORCA)
 (10 rows)
@@ -4836,21 +4881,18 @@ explain (costs off)
 ------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Result
-         Filter: ((COALESCE(tenk1.unique2, tenk1_1.unique2)) = 42)
-         ->  Merge Full Join
-               Merge Cond: (tenk1.unique2 = tenk1_1.unique2)
-               ->  Sort
-                     Sort Key: tenk1.unique2
-                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                           Hash Key: tenk1.unique2
-                           ->  Seq Scan on tenk1
-               ->  Sort
-                     Sort Key: tenk1_1.unique2
+         Filter: ((COALESCE(a.unique2, b.unique2)) = 42)
+         ->  Hash Full Join
+               Hash Cond: (a.unique2 = b.unique2)
+               ->  Redistribute Motion 3:3  (slice2; segments: 3)
+                     Hash Key: a.unique2
+                     ->  Seq Scan on tenk1 a
+               ->  Hash
                      ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                           Hash Key: tenk1_1.unique2
-                           ->  Seq Scan on tenk1 tenk1_1
- Optimizer: Pivotal Optimizer (GPORCA)
-(16 rows)
+                           Hash Key: b.unique2
+                           ->  Seq Scan on tenk1 b
+ Optimizer: GPORCA
+(13 rows)
 
 --
 -- test that quals attached to an outer join have correct semantics,
@@ -4867,27 +4909,27 @@ explain (verbose, costs off)
                                   QUERY PLAN                                   
 -------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   Output: int8_tbl.q2, int8_tbl_1.q1
+   Output: a.q2, b.q1
    ->  Result
-         Output: int8_tbl.q2, int8_tbl_1.q1
-         Filter: (COALESCE(int8_tbl_1.q1, '1'::bigint) > 0)
+         Output: a.q2, b.q1
+         Filter: (COALESCE(b.q1, '1'::bigint) > 0)
          ->  Hash Left Join
-               Output: int8_tbl.q2, int8_tbl_1.q1
-               Hash Cond: (int8_tbl.q2 = COALESCE(int8_tbl_1.q1, '1'::bigint))
+               Output: a.q2, b.q1
+               Hash Cond: (a.q2 = COALESCE(b.q1, '1'::bigint))
                ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                     Output: int8_tbl.q2
-                     Hash Key: int8_tbl.q2
-                     ->  Seq Scan on public.int8_tbl
-                           Output: int8_tbl.q2
+                     Output: a.q2
+                     Hash Key: a.q2
+                     ->  Seq Scan on public.int8_tbl a
+                           Output: a.q2
                ->  Hash
-                     Output: int8_tbl_1.q1
+                     Output: b.q1
                      ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                           Output: int8_tbl_1.q1
-                           Hash Key: COALESCE(int8_tbl_1.q1, '1'::bigint)
-                           ->  Seq Scan on public.int8_tbl int8_tbl_1
-                                 Output: int8_tbl_1.q1
- Settings: enable_hashjoin = 'off', enable_mergejoin = 'on', enable_nestloop = 'off', optimizer = 'on'
- Optimizer: Pivotal Optimizer (GPORCA)
+                           Output: b.q1
+                           Hash Key: COALESCE(b.q1, '1'::bigint)
+                           ->  Seq Scan on public.int8_tbl b
+                                 Output: b.q1
+ Optimizer: GPORCA
+ Settings: enable_hashjoin = 'off', enable_mergejoin = 'on'
 (22 rows)
 
 select a.q2, b.q1
@@ -4918,7 +4960,7 @@ CREATE TEMP TABLE a (id int PRIMARY KEY, b_id int);
 CREATE TEMP TABLE b (id int PRIMARY KEY, c_id int);
 CREATE TEMP TABLE c (id int PRIMARY KEY);
 CREATE TEMP TABLE d (a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO a VALUES (0, 0), (1, NULL);
 INSERT INTO b VALUES (0, 0), (1, NULL);
@@ -4930,76 +4972,46 @@ ANALYZE c;
 ANALYZE d;
 -- all three cases should be optimizable into a simple seqscan
 explain (costs off) SELECT a.* FROM a LEFT JOIN b ON a.b_id = b.id;
-                         QUERY PLAN                         
-------------------------------------------------------------
+                QUERY PLAN                
+------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Nested Loop Left Join
-         Join Filter: true
-         ->  Redistribute Motion 3:3  (slice2; segments: 3)
-               Hash Key: a.b_id
-               ->  Seq Scan on a
-         ->  Index Scan using b_pkey on b
-               Index Cond: (id = a.b_id)
+   ->  Seq Scan on a
  Optimizer: Pivotal Optimizer (GPORCA)
-(9 rows)
+(3 rows)
 
 explain (costs off) SELECT b.* FROM b LEFT JOIN c ON b.c_id = c.id;
-                         QUERY PLAN                         
-------------------------------------------------------------
+                QUERY PLAN                
+------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Nested Loop Left Join
-         Join Filter: true
-         ->  Redistribute Motion 3:3  (slice2; segments: 3)
-               Hash Key: b.c_id
-               ->  Seq Scan on b
-         ->  Index Scan using c_pkey on c
-               Index Cond: (id = b.c_id)
+   ->  Seq Scan on b
  Optimizer: Pivotal Optimizer (GPORCA)
-(9 rows)
+(3 rows)
 
 explain (costs off)
   SELECT a.* FROM a LEFT JOIN (b left join c on b.c_id = c.id)
   ON (a.b_id = b.id);
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
+                QUERY PLAN                
+------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Hash Left Join
-         Hash Cond: (a.b_id = b.id)
-         ->  Redistribute Motion 3:3  (slice2; segments: 3)
-               Hash Key: a.b_id
-               ->  Seq Scan on a
-         ->  Hash
-               ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                     Hash Key: b.id
-                     ->  Nested Loop Left Join
-                           Join Filter: true
-                           ->  Redistribute Motion 3:3  (slice4; segments: 3)
-                                 Hash Key: b.c_id
-                                 ->  Seq Scan on b
-                           ->  Index Scan using c_pkey on c
-                                 Index Cond: (id = b.c_id)
+   ->  Seq Scan on a
  Optimizer: Pivotal Optimizer (GPORCA)
-(17 rows)
+(3 rows)
 
 -- check optimization of outer join within another special join
 explain (costs off)
 select id from a where id in (
 	select b.id from b left join c on b.id = c.id
 );
-                      QUERY PLAN                      
-------------------------------------------------------
+                QUERY PLAN                
+------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Hash Semi Join
-         Hash Cond: (a.id = b.id)
+   ->  Nested Loop
+         Join Filter: true
          ->  Seq Scan on a
-         ->  Hash
-               ->  Nested Loop Left Join
-                     Join Filter: true
-                     ->  Seq Scan on b
-                     ->  Index Scan using c_pkey on c
-                           Index Cond: (id = b.id)
+         ->  Index Scan using b_pkey on b
+               Index Cond: (id = a.id)
  Optimizer: Pivotal Optimizer (GPORCA)
-(11 rows)
+(7 rows)
 
 -- check that join removal works for a left join when joining a subquery
 -- that is guaranteed to be unique by its GROUP BY clause
@@ -5009,14 +5021,9 @@ select d.* from d left join (select * from b group by b.id, b.c_id) s
                 QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Nested Loop Left Join
-         Join Filter: true
-         ->  Seq Scan on d
-         ->  Index Scan using b_pkey on b
-               Index Cond: (id = d.a)
-               Filter: (d.b = c_id)
+   ->  Seq Scan on d
  Optimizer: Pivotal Optimizer (GPORCA)
-(8 rows)
+(3 rows)
 
 -- similarly, but keying off a DISTINCT clause
 explain (costs off)
@@ -5025,14 +5032,9 @@ select d.* from d left join (select distinct * from b) s
                 QUERY PLAN                
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Nested Loop Left Join
-         Join Filter: true
-         ->  Seq Scan on d
-         ->  Index Scan using b_pkey on b
-               Index Cond: (id = d.a)
-               Filter: (d.b = c_id)
+   ->  Seq Scan on d
  Optimizer: Pivotal Optimizer (GPORCA)
-(8 rows)
+(3 rows)
 
 -- join removal is not possible when the GROUP BY contains a column that is
 -- not in the join condition.  (Note: as of 9.6, we notice that b.id is a
@@ -5072,50 +5074,23 @@ select d.* from d left join (select distinct * from b) s
 explain (costs off)
 select d.* from d left join (select id from a union select id from b) s
   on d.a = s.id;
-                                           QUERY PLAN                                           
-------------------------------------------------------------------------------------------------
+                QUERY PLAN                
+------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Hash Left Join
-         Hash Cond: (d.a = a.id)
-         ->  Seq Scan on d
-         ->  Hash
-               ->  GroupAggregate
-                     Group Key: a.id
-                     ->  Sort
-                           Sort Key: a.id
-                           ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                                 Hash Key: a.id
-                                 ->  GroupAggregate
-                                       Group Key: a.id
-                                       ->  Sort
-                                             Sort Key: a.id
-                                             ->  Redistribute Motion 3:3  (slice3; segments: 3)
-                                                   ->  Append
-                                                         ->  Seq Scan on a
-                                                         ->  Seq Scan on b
+   ->  Seq Scan on d
  Optimizer: Pivotal Optimizer (GPORCA)
-(20 rows)
+(3 rows)
 
 -- check join removal with a cross-type comparison operator
 explain (costs off)
 select i8.* from int8_tbl i8 left join (select f1 from int4_tbl group by f1) i4
   on i8.q1 = i4.f1;
-                            QUERY PLAN                            
-------------------------------------------------------------------
+                QUERY PLAN                
+------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Hash Left Join
-         Hash Cond: (int8_tbl.q1 = (int4_tbl.f1)::bigint)
-         ->  Seq Scan on int8_tbl
-         ->  Hash
-               ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                     Hash Key: (int4_tbl.f1)::bigint
-                     ->  GroupAggregate
-                           Group Key: int4_tbl.f1
-                           ->  Sort
-                                 Sort Key: int4_tbl.f1
-                                 ->  Seq Scan on int4_tbl
+   ->  Seq Scan on int8_tbl i8
  Optimizer: Pivotal Optimizer (GPORCA)
-(13 rows)
+(3 rows)
 
 -- check join removal with lateral references
 explain (costs off)
@@ -5147,16 +5122,12 @@ select p.* from parent p left join child c on (p.k = c.k);
 
 explain (costs off)
   select p.* from parent p left join child c on (p.k = c.k);
-                    QUERY PLAN                     
----------------------------------------------------
+                QUERY PLAN                
+------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Nested Loop Left Join
-         Join Filter: true
-         ->  Seq Scan on parent
-         ->  Index Scan using child_k_key on child
-               Index Cond: (k = parent.k)
+   ->  Seq Scan on parent p
  Optimizer: Pivotal Optimizer (GPORCA)
-(7 rows)
+(3 rows)
 
 -- this case is not
 select p.*, linked from parent p
@@ -5178,9 +5149,9 @@ explain (costs off)
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop Left Join
          Join Filter: true
-         ->  Seq Scan on parent
-         ->  Index Scan using child_k_key on child
-               Index Cond: (k = parent.k)
+         ->  Seq Scan on parent p
+         ->  Index Scan using child_k_key on child c
+               Index Cond: (k = p.k)
  Optimizer: Pivotal Optimizer (GPORCA)
 (7 rows)
 
@@ -5270,22 +5241,16 @@ select t1.* from
   on t1.f1 = t2.f1
   left join uniquetbl t3
   on t2.d1 = t3.f1;
-                                     QUERY PLAN                                     
-------------------------------------------------------------------------------------
+                               QUERY PLAN                               
+------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop Left Join
          Join Filter: true
-         ->  Redistribute Motion 3:3  (slice2; segments: 3)
-               Hash Key: ('***'::text)
-               ->  Nested Loop Left Join
-                     Join Filter: true
-                     ->  Seq Scan on uniquetbl
-                     ->  Index Scan using uniquetbl_f1_key on uniquetbl uniquetbl_1
-                           Index Cond: (f1 = uniquetbl.f1)
-         ->  Index Scan using uniquetbl_f1_key on uniquetbl uniquetbl_2
-               Index Cond: (f1 = ('***'::text))
+         ->  Seq Scan on uniquetbl t1
+         ->  Index Scan using uniquetbl_f1_key on uniquetbl
+               Index Cond: (f1 = t1.f1)
  Optimizer: Pivotal Optimizer (GPORCA)
-(13 rows)
+(7 rows)
 
 explain (costs off)
 select t0.*
@@ -5299,23 +5264,24 @@ from
      left join uniquetbl u1 ON u1.f1 = t1.string4) ss
   on t0.f1 = ss.case1
 where ss.stringu2 !~* ss.case1;
-                                            QUERY PLAN                                            
---------------------------------------------------------------------------------------------------
+                                               QUERY PLAN                                               
+--------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
-         Hash Cond: (CASE t1.ten WHEN 0 THEN 'doh!'::text ELSE NULL::text END = t0.f1)
-         ->  Hash Join
-               Hash Cond: (t1.unique2 = i4.f1)
-               ->  Seq Scan on tenk1 t1
-                     Filter: (stringu2 !~* CASE ten WHEN 0 THEN 'doh!'::text ELSE NULL::text END)
-               ->  Hash
-                     ->  Broadcast Motion 3:3  (slice2; segments: 3)
+         Hash Cond: ((CASE t1.ten WHEN 0 THEN 'doh!'::text ELSE NULL::text END) = t0.f1)
+         ->  Redistribute Motion 3:3  (slice2; segments: 3)
+               Hash Key: (CASE t1.ten WHEN 0 THEN 'doh!'::text ELSE NULL::text END)
+               ->  Nested Loop
+                     Join Filter: true
+                     ->  Broadcast Motion 3:3  (slice3; segments: 3)
                            ->  Seq Scan on int4_tbl i4
+                     ->  Index Scan using tenk1_unique2 on tenk1 t1
+                           Index Cond: (unique2 = i4.f1)
+                           Filter: (stringu2 !~* CASE ten WHEN 0 THEN 'doh!'::text ELSE NULL::text END)
          ->  Hash
-               ->  Broadcast Motion 3:3  (slice3; segments: 3)
-                     ->  Seq Scan on text_tbl t0
- Optimizer: Postgres query optimizer
-(14 rows)
+               ->  Seq Scan on text_tbl t0
+ Optimizer: Pivotal Optimizer (GPORCA)
+(15 rows)
 
 select t0.*
 from
@@ -5390,29 +5356,30 @@ where q2 = 456;
 create temp table parttbl (a integer primary key) partition by range (a);
 create temp table parttbl1 partition of parttbl for values from (1) to (100);
 insert into parttbl values (11), (12);
+set optimizer_enable_dynamicindexonlyscan=off;
 explain (costs off)
 select * from
   (select *, 12 as phv from parttbl) as ss
   right join int4_tbl on true
 where ss.a = ss.phv and f1 = 0;
-             QUERY PLAN             
-------------------------------------
+                           QUERY PLAN                            
+-----------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Nested Loop
          Join Filter: true
          ->  Result
-               Filter: (((12) = 12) AND (parttbl1.a = (12)))
-               ->  Result
-                     ->  Append
-                           ->  Index Scan using parttbl1_pkey on parttbl1
-                                 Index Cond: (a = 12)
+               Filter: (((12) = 12) AND (parttbl.a = (12)))
+               ->  Dynamic Index Scan on parttbl_pkey on parttbl
+                     Index Cond: (a = 12)
+                     Number of partitions to scan: 1 (out of 1)
          ->  Materialize
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
                      ->  Seq Scan on int4_tbl
                            Filter: (f1 = 0)
  Optimizer: Pivotal Optimizer (GPORCA)
-(14 rows)
+(13 rows)
 
+reset optimizer_enable_dynamicindexonlyscan;
 select * from
   (select *, 12 as phv from parttbl) as ss
   right join int4_tbl on true
@@ -6540,7 +6507,7 @@ HINT:  There is an entry for table "xx1", but it cannot be referenced from this 
 -- produced for a multi-level partitioned table hierarchy.
 --
 create table join_pt1 (a int, b int, c varchar) partition by range(a);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table join_pt1p1 partition of join_pt1 for values from (0) to (100) partition by range(b);
 NOTICE:  table has parent, setting distribution columns to match parent table
@@ -6550,7 +6517,7 @@ create table join_pt1p1p1 partition of join_pt1p1 for values from (0) to (100);
 NOTICE:  table has parent, setting distribution columns to match parent table
 insert into join_pt1 values (1, 1, 'x'), (101, 101, 'y');
 create table join_ut1 (a int, b int, c varchar);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into join_ut1 values (101, 101, 'y'), (2, 2, 'z');
 -- GPDB_12_MERGE_FIXME: The query fails. This test query is new with v12,
@@ -6586,45 +6553,46 @@ select * from fkest f1
   join fkest f2 on (f1.x = f2.x and f1.x10 = f2.x10b and f1.x100 = f2.x100)
   join fkest f3 on f1.x = f3.x
   where f1.x100 = 2;
-                        QUERY PLAN                         
------------------------------------------------------------
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
-         Hash Cond: ((fkest_1.x = fkest_2.x) AND (fkest_1.x10b = fkest_2.x10) AND (fkest_1.x100 = fkest_2.x100))
+         Hash Cond: ((f2.x = f1.x) AND (f2.x10b = f1.x10) AND (f2.x100 = f1.x100))
          ->  Hash Join
-               Hash Cond: (fkest.x = fkest_1.x)
-               ->  Seq Scan on fkest
+               Hash Cond: (f3.x = f2.x)
+               ->  Seq Scan on fkest f3
                ->  Hash
-                     ->  Index Scan using fkest_x_x10_x100_idx on fkest fkest_1
+                     ->  Index Scan using fkest_x_x10_x100_idx on fkest f2
                            Index Cond: (x100 = 2)
          ->  Hash
-               ->  Index Scan using fkest_x_x10_x100_idx on fkest fkest_2
+               ->  Index Scan using fkest_x_x10_x100_idx on fkest f1
                      Index Cond: (x100 = 2)
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (13 rows)
 
 alter table fkest add constraint fk
   foreign key (x, x10b, x100) references fkest (x, x10, x100);
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 explain (costs off)
 select * from fkest f1
   join fkest f2 on (f1.x = f2.x and f1.x10 = f2.x10b and f1.x100 = f2.x100)
   join fkest f3 on f1.x = f3.x
   where f1.x100 = 2;
-                     QUERY PLAN                      
------------------------------------------------------
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
-         Hash Cond: ((fkest_1.x = fkest_2.x) AND (fkest_1.x10b = fkest_2.x10) AND (fkest_1.x100 = fkest_2.x100))
+         Hash Cond: ((f2.x = f1.x) AND (f2.x10b = f1.x10) AND (f2.x100 = f1.x100))
          ->  Hash Join
-               Hash Cond: (fkest.x = fkest_1.x)
-               ->  Seq Scan on fkest
+               Hash Cond: (f3.x = f2.x)
+               ->  Seq Scan on fkest f3
                ->  Hash
-                     ->  Index Scan using fkest_x_x10_x100_idx on fkest fkest_1
+                     ->  Index Scan using fkest_x_x10_x100_idx on fkest f2
                            Index Cond: (x100 = 2)
          ->  Hash
-               ->  Index Scan using fkest_x_x10_x100_idx on fkest fkest_2
+               ->  Index Scan using fkest_x_x10_x100_idx on fkest f1
                      Index Cond: (x100 = 2)
- Optimizer: Postgres query optimizer
+ Optimizer: GPORCA
 (13 rows)
 
 rollback;
@@ -6647,7 +6615,7 @@ insert into fkest select x/10, x%10, x from generate_series(1,1000*10) x;
 insert into fkest1 select x/10, x%10 from generate_series(1,1000*10) x;
 alter table fkest1
   add constraint fkest1_a_b_fkey foreign key (a,b) references fkest;
-WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Cloudberry Database, will not be enforced
+WARNING:  referential integrity (FOREIGN KEY) constraints are not supported in Apache Cloudberry, will not be enforced
 analyze fkest;
 analyze fkest1;
 explain (costs off)
@@ -6666,14 +6634,14 @@ where f.c = 1;
                Join Filter: true
                ->  Nested Loop Left Join
                      Join Filter: true
-                     ->  Index Scan using fkest_c_key on fkest
+                     ->  Index Scan using fkest_c_key on fkest f
                            Index Cond: (c = 1)
-                     ->  Index Scan using fkest1_pkey on fkest1
-                           Index Cond: ((a = fkest.a) AND (b = fkest.b))
-               ->  Index Scan using fkest1_pkey on fkest1 fkest1_1
-                     Index Cond: ((a = fkest.a) AND (b = fkest.b))
-         ->  Index Scan using fkest1_pkey on fkest1 fkest1_2
-               Index Cond: ((a = fkest.a) AND (b = fkest.b))
+                     ->  Index Scan using fkest1_pkey on fkest1 f1
+                           Index Cond: ((a = f.a) AND (b = f.b))
+               ->  Index Scan using fkest1_pkey on fkest1 f2
+                     Index Cond: ((a = f.a) AND (b = f.b))
+         ->  Index Scan using fkest1_pkey on fkest1 f3
+               Index Cond: ((a = f.a) AND (b = f.b))
  Optimizer: Pivotal Optimizer (GPORCA)
 (16 rows)
 
@@ -6684,7 +6652,7 @@ rollback;
 create table j1 (id int primary key);
 create table j2 (id int primary key);
 create table j3 (id int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'id' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'id' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into j1 values(1),(2),(3);
 insert into j2 values(1),(2),(3);
@@ -6730,15 +6698,16 @@ select * from j1 inner join j2 on j1.id > j2.id;
    Output: j1.id, j2.id
    ->  Nested Loop
          Output: j1.id, j2.id
+         Join Filter: true
          ->  Broadcast Motion 3:3  (slice2; segments: 3)
                Output: j1.id
                ->  Seq Scan on public.j1
                      Output: j1.id
-         ->  Index Only Scan using j2_pkey on public.j2
+         ->  Index Scan using j2_pkey on public.j2
                Output: j2.id
                Index Cond: (j2.id < j1.id)
- Optimizer: Postgres query optimizer
-(12 rows)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(13 rows)
 
 -- ensure non-unique rel is not chosen as inner
 explain (verbose, costs off)
@@ -6804,21 +6773,17 @@ select * from j1 full join j2 on j1.id = j2.id;
 ------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: j1.id, j2.id
-   ->  Merge Full Join
+   ->  Hash Full Join
          Output: j1.id, j2.id
-         Merge Cond: (j1.id = j2.id)
-         ->  Sort
+         Hash Cond: (j1.id = j2.id)
+         ->  Seq Scan on public.j1
                Output: j1.id
-               Sort Key: j1.id
-               ->  Seq Scan on public.j1
-                     Output: j1.id
-         ->  Sort
+         ->  Hash
                Output: j2.id
-               Sort Key: j2.id
                ->  Seq Scan on public.j2
                      Output: j2.id
- Optimizer: Pivotal Optimizer (GPORCA)
-(16 rows)
+ Optimizer: GPORCA
+(12 rows)
 
 -- a clauseless (cross) join can't be unique
 explain (verbose, costs off)
@@ -6862,49 +6827,73 @@ select * from j1 natural join j2;
 explain (verbose, costs off)
 select * from j1
 inner join (select distinct id from j3) j3 on j1.id = j3.id;
-                  QUERY PLAN                   
------------------------------------------------
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: j1.id, j3.id
-   ->  Hash Join
+   ->  Nested Loop
          Output: j1.id, j3.id
-         Inner Unique: true
-         Hash Cond: (j1.id = j3.id)
-         ->  Seq Scan on public.j1
-               Output: j1.id
-         ->  Hash
+         Join Filter: true
+         ->  GroupAggregate
                Output: j3.id
-               ->  HashAggregate
+               Group Key: j3.id
+               ->  Sort
                      Output: j3.id
-                     Group Key: j3.id
-                     ->  Seq Scan on public.j3
+                     Sort Key: j3.id
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
                            Output: j3.id
- Optimizer: Postgres query optimizer
-(16 rows)
+                           Hash Key: j3.id
+                           ->  GroupAggregate
+                                 Output: j3.id
+                                 Group Key: j3.id
+                                 ->  Sort
+                                       Output: j3.id
+                                       Sort Key: j3.id
+                                       ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                             Output: j3.id
+                                             ->  Seq Scan on public.j3
+                                                   Output: j3.id
+         ->  Index Scan using j1_pkey on public.j1
+               Output: j1.id
+               Index Cond: (j1.id = j3.id)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(28 rows)
 
 -- ensure group by clause allows the inner to become unique
 explain (verbose, costs off)
 select * from j1
 inner join (select id from j3 group by id) j3 on j1.id = j3.id;
-                  QUERY PLAN                   
------------------------------------------------
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: j1.id, j3.id
-   ->  Hash Join
+   ->  Nested Loop
          Output: j1.id, j3.id
-         Inner Unique: true
-         Hash Cond: (j1.id = j3.id)
-         ->  Seq Scan on public.j1
-               Output: j1.id
-         ->  Hash
+         Join Filter: true
+         ->  GroupAggregate
                Output: j3.id
-               ->  HashAggregate
+               Group Key: j3.id
+               ->  Sort
                      Output: j3.id
-                     Group Key: j3.id
-                     ->  Seq Scan on public.j3
+                     Sort Key: j3.id
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)
                            Output: j3.id
- Optimizer: Postgres query optimizer
-(16 rows)
+                           Hash Key: j3.id
+                           ->  GroupAggregate
+                                 Output: j3.id
+                                 Group Key: j3.id
+                                 ->  Sort
+                                       Output: j3.id
+                                       Sort Key: j3.id
+                                       ->  Redistribute Motion 3:3  (slice3; segments: 3)
+                                             Output: j3.id
+                                             ->  Seq Scan on public.j3
+                                                   Output: j3.id
+         ->  Index Scan using j1_pkey on public.j1
+               Output: j1.id
+               Index Cond: (j1.id = j3.id)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(28 rows)
 
 drop table j1;
 drop table j2;
@@ -6924,48 +6913,41 @@ analyze j3;
 explain (verbose, costs off)
 select * from j1
 inner join j2 on j1.id1 = j2.id1;
-                            QUERY PLAN                            
-------------------------------------------------------------------
+                       QUERY PLAN                        
+---------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: j1.id1, j1.id2, j2.id1, j2.id2
-   ->  Hash Join
+   ->  Nested Loop
          Output: j1.id1, j1.id2, j2.id1, j2.id2
-         Hash Cond: (j1.id1 = j2.id1)
-         ->  Redistribute Motion 3:3  (slice2; segments: 3)
-               Output: j1.id1, j1.id2
-               Hash Key: j1.id1
-               ->  Seq Scan on public.j1
-                     Output: j1.id1, j1.id2
-         ->  Hash
+         Join Filter: true
+         ->  Broadcast Motion 3:3  (slice2; segments: 3)
                Output: j2.id1, j2.id2
-               ->  Redistribute Motion 3:3  (slice3; segments: 3)
+               ->  Seq Scan on public.j2
                      Output: j2.id1, j2.id2
-                     Hash Key: j2.id1
-                     ->  Seq Scan on public.j2
-                           Output: j2.id1, j2.id2
- Optimizer: Postgres query optimizer
-(18 rows)
+         ->  Index Scan using j1_pkey on public.j1
+               Output: j1.id1, j1.id2
+               Index Cond: (j1.id1 = j2.id1)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(13 rows)
 
 -- ensure proper unique detection with multiple join quals
 explain (verbose, costs off)
 select * from j1
 inner join j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2;
-                          QUERY PLAN                          
---------------------------------------------------------------
+                             QUERY PLAN                              
+---------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: j1.id1, j1.id2, j2.id1, j2.id2
-   ->  Hash Join
+   ->  Nested Loop
          Output: j1.id1, j1.id2, j2.id1, j2.id2
-         Inner Unique: true
-         Hash Cond: ((j1.id1 = j2.id1) AND (j1.id2 = j2.id2))
-         ->  Seq Scan on public.j1
-               Output: j1.id1, j1.id2
-         ->  Hash
+         Join Filter: true
+         ->  Seq Scan on public.j2
                Output: j2.id1, j2.id2
-               ->  Seq Scan on public.j2
-                     Output: j2.id1, j2.id2
- Optimizer: Postgres query optimizer
-(13 rows)
+         ->  Index Scan using j1_pkey on public.j1
+               Output: j1.id1, j1.id2
+               Index Cond: ((j1.id1 = j2.id1) AND (j1.id2 = j2.id2))
+ Optimizer: Pivotal Optimizer (GPORCA)
+(11 rows)
 
 -- ensure we don't detect the join to be unique when quals are not part of the
 -- join condition
@@ -6973,26 +6955,24 @@ set enable_nestloop=on;
 explain (verbose, costs off)
 select * from j1
 inner join j2 on j1.id1 = j2.id1 where j1.id2 = 1;
-                            QUERY PLAN                            
-------------------------------------------------------------------
+                       QUERY PLAN                        
+---------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    Output: j1.id1, j1.id2, j2.id1, j2.id2
    ->  Nested Loop
          Output: j1.id1, j1.id2, j2.id1, j2.id2
-         Join Filter: (j1.id1 = j2.id1)
-         ->  Seq Scan on public.j1
+         Join Filter: true
+         ->  Broadcast Motion 3:3  (slice2; segments: 3)
                Output: j1.id1, j1.id2
-               Filter: (j1.id2 = 1)
-         ->  Materialize
+               ->  Index Scan using j1_pkey on public.j1
+                     Output: j1.id1, j1.id2
+                     Index Cond: (j1.id2 = 1)
+         ->  Index Scan using j2_pkey on public.j2
                Output: j2.id1, j2.id2
-               ->  Redistribute Motion 3:3  (slice2; segments: 3)
-                     Output: j2.id1, j2.id2
-                     Hash Key: j2.id1, 1
-                     ->  Seq Scan on public.j2
-                           Output: j2.id1, j2.id2
- Settings: enable_nestloop = 'on'
- Optimizer: Postgres query optimizer
-(17 rows)
+               Index Cond: (j2.id1 = j1.id1)
+ Optimizer: Pivotal Optimizer (GPORCA)
+ Settings: enable_nestloop=on
+(15 rows)
 
 -- as above, but for left joins.
 explain (verbose, costs off)
@@ -7035,16 +7015,18 @@ analyze j1; -- GPDB also needs this to get the same plan as in upstream
 explain (costs off) select * from j1
 inner join j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2
 where j1.id1 % 1000 = 1 and j2.id1 % 1000 = 1;
-                  QUERY PLAN                   
------------------------------------------------
+                          QUERY PLAN                           
+---------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Merge Join
-         Merge Cond: (j1.id1 = j2.id1)
-         Join Filter: (j1.id2 = j2.id2)
-         ->  Index Scan using j1_id1_idx on j1
-         ->  Index Scan using j2_id1_idx on j2
- Optimizer: Postgres query optimizer
-(7 rows)
+   ->  Nested Loop
+         Join Filter: true
+         ->  Seq Scan on j1
+               Filter: ((id1 % 1000) = 1)
+         ->  Index Scan using j2_pkey on j2
+               Index Cond: ((id1 = j1.id1) AND (id2 = j1.id2))
+               Filter: ((id1 % 1000) = 1)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(9 rows)
 
 select * from j1
 inner join j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2
@@ -7059,18 +7041,19 @@ where j1.id1 % 1000 = 1 and j2.id1 % 1000 = 1;
 explain (costs off) select * from j1
 inner join j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2
 where j1.id1 % 1000 = 1 and j2.id1 % 1000 = 1 and j2.id1 = any (array[1]);
-                        QUERY PLAN                        
-----------------------------------------------------------
+                                                   QUERY PLAN                                                   
+----------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Merge Join
-         Merge Cond: (j1.id1 = j2.id1)
-         Join Filter: (j1.id2 = j2.id2)
-         ->  Index Scan using j1_id1_idx on j1
-               Index Cond: (id1 = ANY ('{1}'::integer[]))
-         ->  Index Scan using j2_id1_idx on j2
-               Index Cond: (id1 = ANY ('{1}'::integer[]))
- Optimizer: Postgres query optimizer
-(9 rows)
+   ->  Nested Loop
+         Join Filter: true
+         ->  Index Scan using j1_pkey on j1
+               Index Cond: (id1 = 1)
+               Filter: ((id1 % 1000) = 1)
+         ->  Index Scan using j2_pkey on j2
+               Index Cond: ((id1 = j1.id1) AND (id1 = ANY ('{1}'::integer[])) AND (id1 = 1) AND (id2 = j1.id2))
+               Filter: ((id1 % 1000) = 1)
+ Optimizer: Pivotal Optimizer (GPORCA)
+(10 rows)
 
 select * from j1
 inner join j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2
@@ -7088,15 +7071,15 @@ where j1.id1 % 1000 = 1 and j2.id1 % 1000 = 1 and j2.id1 >= any (array[1,5]);
                           QUERY PLAN                           
 ---------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Merge Join
-         Merge Cond: ((j1.id1 = j2.id1) AND (j1.id2 = j2.id2))
-         ->  Index Only Scan using j1_pkey on j1
+   ->  Nested Loop
+         Join Filter: true
+         ->  Index Scan using j2_pkey on j2
                Index Cond: (id1 >= ANY ('{1,5}'::integer[]))
                Filter: ((id1 % 1000) = 1)
-         ->  Index Only Scan using j2_pkey on j2
-               Index Cond: (id1 >= ANY ('{1,5}'::integer[]))
+         ->  Index Scan using j1_pkey on j1
+               Index Cond: ((id1 = j2.id1) AND (id2 = j2.id2))
                Filter: ((id1 % 1000) = 1)
- Optimizer: Postgres query optimizer
+ Optimizer: Pivotal Optimizer (GPORCA)
 (10 rows)
 
 select * from j1
@@ -7126,32 +7109,32 @@ from onek t1, tenk1 t2
 where exists (select 1 from tenk1 t3
               where t3.thousand = t1.unique1 and t3.tenthous = t2.hundred)
       and t1.unique1 < 1;
-                                                    QUERY PLAN                                                     
--------------------------------------------------------------------------------------------------------------------
+                                                                                    QUERY PLAN                                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   Output: onek.unique1, tenk1.hundred
+   Output: t1.unique1, t2.hundred
    ->  Hash Semi Join
-         Output: onek.unique1, tenk1.hundred
-         Hash Cond: ((onek.unique1 = tenk1_1.thousand) AND (tenk1.hundred = tenk1_1.tenthous))
+         Output: t1.unique1, t2.hundred
+         Hash Cond: ((t1.unique1 = t3.thousand) AND (t2.hundred = t3.tenthous))
          ->  Nested Loop
-               Output: onek.unique1, tenk1.hundred
+               Output: t1.unique1, t2.hundred
                Join Filter: true
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
-                     Output: onek.unique1
-                     ->  Index Only Scan using onek_unique1 on public.onek
-                           Output: onek.unique1
-                           Index Cond: (onek.unique1 < 1)
-               ->  Seq Scan on public.tenk1
-                     Output: tenk1.hundred
+                     Output: t1.unique1
+                     ->  Index Only Scan using onek_unique1 on public.onek t1
+                           Output: t1.unique1
+                           Index Cond: (t1.unique1 < 1)
+               ->  Seq Scan on public.tenk1 t2
+                     Output: t2.hundred
          ->  Hash
-               Output: tenk1_1.thousand, tenk1_1.tenthous
+               Output: t3.thousand, t3.tenthous
                ->  Broadcast Motion 3:3  (slice3; segments: 3)
-                     Output: tenk1_1.thousand, tenk1_1.tenthous
-                     ->  Index Only Scan using tenk1_thous_tenthous on public.tenk1 tenk1_1
-                           Output: tenk1_1.thousand, tenk1_1.tenthous
-                           Index Cond: (tenk1_1.thousand < 1)
- Optimizer: Pivotal Optimizer (GPORCA)
- Settings: enable_bitmapscan=off, enable_hashjoin=off, enable_mergejoin=on, enable_nestloop=on, enable_seqscan=off
+                     Output: t3.thousand, t3.tenthous
+                     ->  Index Only Scan using tenk1_thous_tenthous on public.tenk1 t3
+                           Output: t3.thousand, t3.tenthous
+                           Index Cond: (t3.thousand < 1)
+ Settings: enable_bitmapscan = 'off', enable_hashjoin = 'off', enable_mergejoin = 'on', enable_nestloop = 'on', enable_parallel = 'off', enable_seqscan = 'off', optimizer = 'on'
+ Optimizer: GPORCA
 (24 rows)
 
 -- ... unless it actually is unique
@@ -7169,20 +7152,20 @@ where exists (select 1 from j3
                                                     QUERY PLAN                                                     
 -------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   Output: onek.unique1, tenk1.hundred
+   Output: t1.unique1, t2.hundred
    ->  Hash Semi Join
-         Output: onek.unique1, tenk1.hundred
-         Hash Cond: ((onek.unique1 = j3.unique1) AND (tenk1.hundred = j3.tenthous))
+         Output: t1.unique1, t2.hundred
+         Hash Cond: ((t1.unique1 = j3.unique1) AND (t2.hundred = j3.tenthous))
          ->  Nested Loop
-               Output: onek.unique1, tenk1.hundred
+               Output: t1.unique1, t2.hundred
                Join Filter: true
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
-                     Output: onek.unique1
-                     ->  Index Only Scan using onek_unique1 on public.onek
-                           Output: onek.unique1
-                           Index Cond: (onek.unique1 < 1)
-               ->  Seq Scan on public.tenk1
-                     Output: tenk1.hundred
+                     Output: t1.unique1
+                     ->  Index Only Scan using onek_unique1 on public.onek t1
+                           Output: t1.unique1
+                           Index Cond: (t1.unique1 < 1)
+               ->  Seq Scan on public.tenk1 t2
+                     Output: t2.hundred
          ->  Hash
                Output: j3.unique1, j3.tenthous
                ->  Broadcast Motion 3:3  (slice3; segments: 3)

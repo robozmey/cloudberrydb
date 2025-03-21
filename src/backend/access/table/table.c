@@ -198,6 +198,7 @@ Relation
 CdbTryOpenTable(Oid relid, LOCKMODE reqmode, bool *lockUpgraded)
 {
 	LOCKMODE    lockmode;
+
 	Relation    rel;
 
 	/*
@@ -230,7 +231,9 @@ CdbTryOpenTable(Oid relid, LOCKMODE reqmode, bool *lockUpgraded)
 		{
 			lockmode = RowExclusiveLock;
 			rel = try_table_open(relid, lockmode, false);
-			if (RelationIsAppendOptimized(rel))
+
+			if (RelationIsValid(rel) &&
+				RelationIsNonblockRelation(rel))
 			{
 				/*
 				 * AO|AOCO table does not support concurrently
@@ -246,6 +249,7 @@ CdbTryOpenTable(Oid relid, LOCKMODE reqmode, bool *lockUpgraded)
 				rel = try_table_open(relid, lockmode, false);
 			}
 		}
+
 	}
 	else
 	{

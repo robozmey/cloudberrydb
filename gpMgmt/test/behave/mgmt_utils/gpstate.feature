@@ -160,6 +160,7 @@ Feature: gpstate tests
         Given a standard local demo cluster is running
         Given all files in gpAdminLogs directory are deleted
         And a sample recovery_progress.file is created with ongoing recoveries in gpAdminLogs
+        And a sample gprecoverseg.lock directory is created in coordinator_data_directory
         When the user runs "gpstate -e"
         Then gpstate should print "Segments in recovery" to stdout
         And gpstate output contains "full,incremental" entries for mirrors of content 0,1
@@ -168,11 +169,13 @@ Feature: gpstate tests
             | \S+     | [0-9]+ | full           | 1164848                | 1371715            | 84%                  |
             | \S+     | [0-9]+ | incremental    | 1                      | 1371875            | 1%                   |
         And all files in gpAdminLogs directory are deleted
+        And the gprecoverseg lock directory is removed
 
     Scenario: gpstate -e does not show information about segments with completed recovery
         Given a standard local demo cluster is running
         Given all files in gpAdminLogs directory are deleted
         And a sample recovery_progress.file is created with completed recoveries in gpAdminLogs
+        And a sample gprecoverseg.lock directory is created in coordinator_data_directory
         When the user runs "gpstate -e"
         Then gpstate should print "Segments in recovery" to stdout
         And gpstate output contains "full" entries for mirrors of content 1
@@ -182,6 +185,7 @@ Feature: gpstate tests
         And gpstate should not print "incremental" to stdout
         And gpstate should not print "All segments are running normally" to stdout
         And all files in gpAdminLogs directory are deleted
+        Then the gprecoverseg lock directory is removed
 
     Scenario: gpstate -c logs cluster info for a mirrored cluster
         Given a standard local demo cluster is running
@@ -293,7 +297,7 @@ Feature: gpstate tests
             | Coordinator port                   = [0-9]+                 |
             | Coordinator current role           = dispatch               |
             | Cloudberry initsystem version  = [0-9]+\.[0-9]+\.[0-9]+ |
-            | Cloudberry current version     = PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
+            | Cloudberry current version     = PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
             | Postgres version              = \d+.*                  |
             | Coordinator standby           =                        |
             | Standby coordinator state     = Standby host passive   |
@@ -394,14 +398,14 @@ Feature: gpstate tests
         When the user runs "gpstate -i"
         Then gpstate output looks like
 		  | Host | Datadir                        | Port   | Version                                                                           |
-		  | \S+  | .*/qddir/demoDataDir-1         | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/standby                     | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/dbfast1/demoDataDir0        | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/dbfast_mirror1/demoDataDir0 | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/dbfast2/demoDataDir1        | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/dbfast_mirror2/demoDataDir1 | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/dbfast3/demoDataDir2        | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/dbfast_mirror3/demoDataDir2 | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/qddir/demoDataDir-1         | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/standby                     | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast1/demoDataDir0        | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast_mirror1/demoDataDir0 | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast2/demoDataDir1        | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast_mirror2/demoDataDir1 | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast3/demoDataDir2        | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast_mirror3/demoDataDir2 | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
 		And gpstate should print "All segments are running the same software version" to stdout
 
     Scenario: gpstate -i warns if any mirrors are marked down
@@ -411,13 +415,13 @@ Feature: gpstate tests
         When the user runs "gpstate -i"
         Then gpstate output looks like
 		  | Host | Datadir                        | Port   | Version                                                                           |
-		  | \S+  | .*/qddir/demoDataDir-1         | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/standby                     | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/dbfast1/demoDataDir0        | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/qddir/demoDataDir-1         | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/standby                     | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast1/demoDataDir0        | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
 		  | \S+  | .*/dbfast_mirror1/demoDataDir0 | [0-9]+ | unable to retrieve version                                                        |
-		  | \S+  | .*/dbfast2/demoDataDir1        | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast2/demoDataDir1        | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
 		  | \S+  | .*/dbfast_mirror2/demoDataDir1 | [0-9]+ | unable to retrieve version                                                        |
-		  | \S+  | .*/dbfast3/demoDataDir2        | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast3/demoDataDir2        | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
 		  | \S+  | .*/dbfast_mirror3/demoDataDir2 | [0-9]+ | unable to retrieve version                                                        |
 		And gpstate should print "Unable to retrieve version data from all segments" to stdout
 
@@ -429,13 +433,13 @@ Feature: gpstate tests
         When the user runs "gpstate -i"
         Then gpstate output looks like
 		  | Host | Datadir                        | Port   | Version                                                                           |
-		  | \S+  | .*/qddir/demoDataDir-1         | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/standby                     | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
-		  | \S+  | .*/dbfast1/demoDataDir0        | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/qddir/demoDataDir-1         | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/standby                     | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast1/demoDataDir0        | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
 		  | \S+  | .*/dbfast_mirror1/demoDataDir0 | [0-9]+ | unable to retrieve version                                                        |
-		  | \S+  | .*/dbfast2/demoDataDir1        | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast2/demoDataDir1        | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
 		  | \S+  | .*/dbfast_mirror2/demoDataDir1 | [0-9]+ | unable to retrieve version                                                        |
-		  | \S+  | .*/dbfast3/demoDataDir2        | [0-9]+ | PostgreSQL \d+.* \(Cloudberry Database [0-9]+\.[0-9]+\.[0-9]+.*\) |
+		  | \S+  | .*/dbfast3/demoDataDir2        | [0-9]+ | PostgreSQL \d+.* \(Apache Cloudberry [0-9]+\.[0-9]+\.[0-9]+.*\) |
 		  | \S+  | .*/dbfast_mirror3/demoDataDir2 | [0-9]+ | unable to retrieve version                                                        |
 		And gpstate should print "Unable to retrieve version data from all segments" to stdout
 
@@ -588,6 +592,55 @@ Feature: gpstate tests
         And the pg_log files on primary segments should not contain "connections to primary segments are not allowed"
         And the user drops log_timestamp table
 
+    Scenario: gpstate runs with given coordinator data directory option
+        Given the cluster is generated with "3" primaries only
+         And "COORDINATOR_DATA_DIRECTORY" environment variable is not set
+        Then the user runs utility "gpstate" with coordinator data directory and "-a -b"
+         And gpstate should return a return code of 0
+         And gpstate output has rows with keys values
+            | Coordinator instance                              = Active                            |
+            | Coordinator standby                               = No coordinator standby configured |
+            | Total segment instance count from metadata        = 3                                 |
+            | Primary Segment Status                                                                |
+            | Total primary segments                            = 3                                 |
+            | Total primary segment valid \(at coordinator\)    = 3                                 |
+            | Total primary segment failures \(at coordinator\) = 0                                 |
+            | Total number of postmaster.pid files missing      = 0                                 |
+            | Total number of postmaster.pid files found        = 3                                 |
+            | Total number of postmaster.pid PIDs missing       = 0                                 |
+            | Total number of postmaster.pid PIDs found         = 3                                 |
+            | Total number of /tmp lock files missing           = 0                                 |
+            | Total number of /tmp lock files found             = 3                                 |
+            | Total number postmaster processes missing         = 0                                 |
+            | Total number postmaster processes found           = 3                                 |
+            | Mirror Segment Status                                                                 |
+            | Mirrors not configured on this array
+         And "COORDINATOR_DATA_DIRECTORY" environment variable should be restored
+
+    Scenario: gpstate priorities given coordinator data directory over env option
+        Given the cluster is generated with "3" primaries only
+          And the environment variable "COORDINATOR_DATA_DIRECTORY" is set to "/tmp/"
+        Then the user runs utility "gpstate" with coordinator data directory and "-a -b"
+         And gpstate should return a return code of 0
+         And gpstate output has rows with keys values
+            | Coordinator instance                              = Active                            |
+            | Coordinator standby                               = No coordinator standby configured |
+            | Total segment instance count from metadata        = 3                                 |
+            | Primary Segment Status                                                                |
+            | Total primary segments                            = 3                                 |
+            | Total primary segment valid \(at coordinator\)    = 3                                 |
+            | Total primary segment failures \(at coordinator\) = 0                                 |
+            | Total number of postmaster.pid files missing      = 0                                 |
+            | Total number of postmaster.pid files found        = 3                                 |
+            | Total number of postmaster.pid PIDs missing       = 0                                 |
+            | Total number of postmaster.pid PIDs found         = 3                                 |
+            | Total number of /tmp lock files missing           = 0                                 |
+            | Total number of /tmp lock files found             = 3                                 |
+            | Total number postmaster processes missing         = 0                                 |
+            | Total number postmaster processes found           = 3                                 |
+            | Mirror Segment Status                                                                 |
+            | Mirrors not configured on this array
+        And "COORDINATOR_DATA_DIRECTORY" environment variable should be restored
 
 ########################### @concourse_cluster tests ###########################
 # The @concourse_cluster tag denotes the scenario that requires a remote cluster

@@ -7,7 +7,6 @@
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2008-2009, Greenplum Inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Portions Copyright (c) 2023, HashData Technology Limited.
  *
  *
  * IDENTIFICATION
@@ -105,6 +104,8 @@ static void appendonly_insert_finish_guts(AppendOnlyInsertDesc aoInsertDesc);
 
 /* Hook for plugins to get control in appendonly_delete() */
 appendonly_delete_hook_type appendonly_delete_hook = NULL;
+static void AppendOnlyScanDesc_UpdateTotalBytesRead(
+										AppendOnlyScanDesc scan);
 
 /* ----------------
  *		initscan - scan code common to appendonly_beginscan and appendonly_rescan
@@ -123,7 +124,7 @@ initscan(AppendOnlyScanDesc scan, ScanKey key)
 	scan->aos_segfiles_processed = 0;
 	scan->aos_need_new_segfile = true;	/* need to assign a file to be scanned */
 	scan->aos_done_all_segfiles = false;
-	scan->bufferDone = true;
+	scan->needNextBuffer = true;
 
 	if (scan->initedStorageRoutines)
 		AppendOnlyExecutorReadBlock_ResetCounts(
@@ -137,7 +138,7 @@ initscan(AppendOnlyScanDesc scan, ScanKey key)
 /*
  * Open the next file segment to scan and allocate all resources needed for it.
  */
-static bool
+bool
 SetNextFileSegForRead(AppendOnlyScanDesc scan)
 {
 	Relation	reln = scan->aos_rd;
@@ -165,15 +166,17 @@ SetNextFileSegForRead(AppendOnlyScanDesc scan)
 	if (!scan->initedStorageRoutines)
 	{
 		PGFunction *fns = NULL;
+		RelationOpenSmgr(reln);
 
 		AppendOnlyStorageRead_Init(
 								   &scan->storageRead,
 								   scan->aoScanInitContext,
 								   scan->usableBlockSize,
 								   NameStr(scan->aos_rd->rd_rel->relname),
+								   RelationGetRelid(scan->aos_rd),
 								   scan->title,
 								   &scan->storageAttributes,
-								   &scan->aos_rd->rd_node);
+								   &scan->aos_rd->rd_node, reln->rd_smgr->smgr_ao);
 
 		/*
 		 * There is no guarantee that the current memory context will be
@@ -219,7 +222,7 @@ SetNextFileSegForRead(AppendOnlyScanDesc scan)
 										 &scan->storageRead,
 										 scan->usableBlockSize);
 
-		scan->bufferDone = true;	/* so we read a new buffer right away */
+		scan->needNextBuffer = true;	/* so we read a new buffer right away */
 
 		scan->initedStorageRoutines = true;
 	}
@@ -282,10 +285,11 @@ SetNextFileSegForRead(AppendOnlyScanDesc scan)
 		return false;
 	}
 
-	MakeAOSegmentFileName(reln, segno, -1, &fileSegNo, scan->aos_filenamepath);
+	MakeAOSegmentFileName(reln, segno, InvalidFileNumber, &fileSegNo, scan->aos_filenamepath);
 	Assert(strlen(scan->aos_filenamepath) + 1 <= scan->aos_filenamepath_maxlen);
 
 	Assert(scan->initedStorageRoutines);
+
 
 	AppendOnlyStorageRead_OpenFile(
 								   &scan->storageRead,
@@ -356,7 +360,7 @@ SetCurrentFileSegForWrite(AppendOnlyInsertDesc aoInsertDesc)
 
 	/* Make the 'segment' file name */
 	MakeAOSegmentFileName(aoInsertDesc->aoi_rel,
-						  aoInsertDesc->cur_segno, -1,
+						  aoInsertDesc->cur_segno, InvalidFileNumber,
 						  &fileSegNo,
 						  aoInsertDesc->appendFilePathName);
 	Assert(strlen(aoInsertDesc->appendFilePathName) + 1 <= aoInsertDesc->appendFilePathNameMaxLen);
@@ -468,7 +472,7 @@ CloseWritableFileSeg(AppendOnlyInsertDesc aoInsertDesc)
 
 /* ------------------------------------------------------------------------------ */
 
-static void
+void
 AppendOnlyExecutorReadBlock_GetContents(AppendOnlyExecutorReadBlock *executorReadBlock)
 {
 	VarBlockCheckError varBlockCheckError;
@@ -667,7 +671,7 @@ AppendOnlyExecutorReadBlock_GetContents(AppendOnlyExecutorReadBlock *executorRea
 	}
 }
 
-static bool
+bool
 AppendOnlyExecutorReadBlock_GetBlockInfo(AppendOnlyStorageRead *storageRead,
 										 AppendOnlyExecutorReadBlock *executorReadBlock)
 {
@@ -776,7 +780,7 @@ AppendOnlyExecutorReadBlock_Finish(AppendOnlyExecutorReadBlock *executorReadBloc
 static void
 AppendOnlyExecutorReadBlock_ResetCounts(AppendOnlyExecutorReadBlock *executorReadBlock)
 {
-	executorReadBlock->totalRowsScannned = 0;
+	executorReadBlock->totalRowsScanned = 0;
 }
 
 /*
@@ -1009,7 +1013,8 @@ AppendOnlyExecutorReadBlock_ProcessTuple(AppendOnlyExecutorReadBlock *executorRe
 	return valid;
 }
 
-static bool
+
+bool
 AppendOnlyExecutorReadBlock_ScanNextTuple(AppendOnlyExecutorReadBlock *executorReadBlock,
 										  int nkeys,
 										  ScanKey key,
@@ -1046,7 +1051,7 @@ AppendOnlyExecutorReadBlock_ScanNextTuple(AppendOnlyExecutorReadBlock *executorR
 
 				executorReadBlock->currentItemCount++;
 
-				executorReadBlock->totalRowsScannned++;
+				executorReadBlock->totalRowsScanned++;
 
 				if (itemLen > 0)
 				{
@@ -1099,7 +1104,7 @@ AppendOnlyExecutorReadBlock_ScanNextTuple(AppendOnlyExecutorReadBlock *executorR
 				executorReadBlock->singleRow = NULL;
 				executorReadBlock->singleRowLen = 0;
 
-				executorReadBlock->totalRowsScannned++;
+				executorReadBlock->totalRowsScanned++;
 
 				if (AppendOnlyExecutorReadBlock_ProcessTuple(
 															 executorReadBlock,
@@ -1248,6 +1253,8 @@ getNextBlock(AppendOnlyScanDesc scan)
 	AppendOnlyExecutorReadBlock_GetContents(
 											&scan->executorReadBlock);
 
+	AppendOnlyScanDesc_UpdateTotalBytesRead(scan);
+
 	return true;
 }
 
@@ -1279,7 +1286,7 @@ appendonlygettup(AppendOnlyScanDesc scan,
 	{
 		bool		found;
 
-		if (scan->bufferDone)
+		if (scan->needNextBuffer)
 		{
 			/*
 			 * Get the next block. We call this function until we successfully
@@ -1293,7 +1300,7 @@ appendonlygettup(AppendOnlyScanDesc scan,
 					return false;
 			}
 
-			scan->bufferDone = false;
+			scan->needNextBuffer = false;
 			scan->rs_nblocks++;
 		}
 
@@ -1327,7 +1334,7 @@ appendonlygettup(AppendOnlyScanDesc scan,
 		else
 		{
 			/* no more items in the varblock, get new buffer */
-			scan->bufferDone = true;
+			scan->needNextBuffer = true;
 		}
 	}
 }
@@ -1473,12 +1480,11 @@ appendonly_beginrangescan_internal(Relation relation,
 	AppendOnlyStorageAttributes *attr;
 	StringInfoData titleBuf;
 	int32 blocksize;
-	int32 safefswritesize;
 	int16 compresslevel;
 	bool checksum;
 	NameData compresstype;
 
-	GetAppendOnlyEntryAttributes(relation->rd_id, &blocksize, &safefswritesize, &compresslevel, &checksum, &compresstype);
+	GetAppendOnlyEntryAttributes(relation->rd_id, &blocksize, &compresslevel, &checksum, &compresstype);
 
 	/*
 	 * increment relation ref count while scanning relation
@@ -1537,7 +1543,6 @@ appendonly_beginrangescan_internal(Relation relation,
 	}
 	attr->compressLevel = compresslevel;
 	attr->checksum = checksum;
-	attr->safeFSWriteSize = safefswritesize;
 
 	/* UNDONE: We are calling the static header length routine here. */
 	scan->maxDataLen =
@@ -1580,6 +1585,9 @@ appendonly_beginrangescan_internal(Relation relation,
 							   AccessShareLock,
 							   appendOnlyMetaDataSnapshot);
 	}
+
+	scan->totalBytesRead = 0;
+
 	return scan;
 }
 
@@ -1864,7 +1872,7 @@ openFetchSegmentFile(AppendOnlyFetchDesc aoFetchDesc,
 
 	MakeAOSegmentFileName(
 						  aoFetchDesc->relation,
-						  openSegmentFileNum, -1,
+						  openSegmentFileNum, InvalidFileNumber,
 						  &fileSegNo,
 						  aoFetchDesc->segmentFileName);
 	Assert(strlen(aoFetchDesc->segmentFileName) + 1 <=
@@ -1916,11 +1924,6 @@ fetchNextBlock(AppendOnlyFetchDesc aoFetchDesc)
 		executorReadBlock->blockFirstRowNum +
 		executorReadBlock->rowCount - 1;
 
-	aoFetchDesc->currentBlock.isCompressed =
-		executorReadBlock->isCompressed;
-	aoFetchDesc->currentBlock.isLargeContent =
-		executorReadBlock->isLarge;
-
 	aoFetchDesc->currentBlock.gotContents = false;
 
 	return true;
@@ -1936,7 +1939,7 @@ fetchFromCurrentBlock(AppendOnlyFetchDesc aoFetchDesc,
 					  TupleTableSlot *slot)
 {
 	bool							fetched;
-	CurrentBlock 					*currentBlock = &aoFetchDesc->currentBlock;
+	AOFetchBlockMetadata 			*currentBlock = &aoFetchDesc->currentBlock;
 	AppendOnlyExecutorReadBlock 	*executorReadBlock = &aoFetchDesc->executorReadBlock;
 	AppendOnlyBlockDirectoryEntry 	*entry = &currentBlock->blockDirectoryEntry;
 
@@ -2120,7 +2123,7 @@ scanToFetchTuple(AppendOnlyFetchDesc aoFetchDesc,
 }
 
 static void
-resetCurrentBlockInfo(CurrentBlock * currentBlock)
+resetCurrentBlockInfo(AOFetchBlockMetadata * currentBlock)
 {
 	currentBlock->have = false;
 	currentBlock->firstRowNum = 0;
@@ -2192,7 +2195,6 @@ appendonly_fetch_init(Relation relation,
 	}
 	attr->compressLevel = aoFormData.compresslevel;
 	attr->checksum = aoFormData.checksum;
-	attr->safeFSWriteSize = aoFormData.safefswritesize;
 	aoFetchDesc->usableBlockSize = aoFormData.blocksize;
 
 	/*
@@ -2210,7 +2212,7 @@ appendonly_fetch_init(Relation relation,
 	 * rather than all AOTupleId_MultiplierSegmentFileNum ones that introducing
 	 * too many unnecessary calls in most cases.
 	 */
-	memset(aoFetchDesc->lastSequence, -1, sizeof(aoFetchDesc->lastSequence));
+	memset(aoFetchDesc->lastSequence, InvalidAORowNum, sizeof(aoFetchDesc->lastSequence));
 	for (int i = -1; i < aoFetchDesc->totalSegfiles; i++)
 	{
 		/* always initailize segment 0 */
@@ -2219,14 +2221,17 @@ appendonly_fetch_init(Relation relation,
 		aoFetchDesc->lastSequence[segno] = ReadLastSequence(aoFormData.segrelid, segno);
 	}
 
+	RelationOpenSmgr(relation);
+
 	AppendOnlyStorageRead_Init(
 							   &aoFetchDesc->storageRead,
 							   aoFetchDesc->initContext,
 							   aoFetchDesc->usableBlockSize,
 							   NameStr(aoFetchDesc->relation->rd_rel->relname),
+							   RelationGetRelid(aoFetchDesc->relation),
 							   aoFetchDesc->title,
 							   &aoFetchDesc->storageAttributes,
-							   &relation->rd_node);
+							   &relation->rd_node, relation->rd_smgr->smgr_ao);
 
 
 	fns = get_funcs_for_compression(NameStr(aoFormData.compresstype));
@@ -2423,18 +2428,6 @@ appendonly_fetch(AppendOnlyFetchDesc aoFetchDesc,
 	if (aoFetchDesc->currentSegmentFile.isOpen &&
 		segmentFileNum != aoFetchDesc->currentSegmentFile.num)
 	{
-#ifdef USE_ASSERT_CHECKING
-		/*
-		 * Currently, we only support Index Scan on bitmap index and Bitmap Index Scan
-		 * on AO tables, so normally the below warning should not happen.
-		 * See get_index_paths in indxpath.c.
-		 */
-		if (segmentFileNum < aoFetchDesc->currentSegmentFile.num)
-			ereport(WARNING,
-					(errmsg("append-only fetch requires scan prior segment file: segmentFileNum %d, rowNum " INT64_FORMAT ", currentSegmentFileNum %d",
-							segmentFileNum, rowNum,
-							aoFetchDesc->currentSegmentFile.num)));
-#endif
 		closeFetchSegmentFile(aoFetchDesc);
 
 		Assert(!aoFetchDesc->currentSegmentFile.isOpen);
@@ -2635,12 +2628,11 @@ appendonly_insert_init(Relation rel, int segno)
 
 	StringInfoData titleBuf;
 	int32 blocksize;
-	int32 safefswritesize;
 	int16 compresslevel;
 	bool checksum;
 	NameData compresstype;
 
-	GetAppendOnlyEntryAttributes(rel->rd_id, &blocksize, &safefswritesize, &compresslevel, &checksum, &compresstype);
+	GetAppendOnlyEntryAttributes(rel->rd_id, &blocksize, &compresslevel, &checksum, &compresstype);
 
 	/*
 	 * Get the pg_appendonly information for this table
@@ -2711,7 +2703,6 @@ appendonly_insert_init(Relation rel, int segno)
 	}
 	attr->compressLevel = compresslevel;
 	attr->checksum = checksum;
-	attr->safeFSWriteSize = safefswritesize;
 
 	fns = get_funcs_for_compression(NameStr(compresstype));
 
@@ -2758,14 +2749,17 @@ appendonly_insert_init(Relation rel, int segno)
 					 RelationGetRelationName(aoInsertDesc->aoi_rel));
 	aoInsertDesc->title = titleBuf.data;
 
+	RelationOpenSmgr(rel);
+
 	AppendOnlyStorageWrite_Init(
 								&aoInsertDesc->storageWrite,
 								NULL,
 								aoInsertDesc->usableBlockSize,
 								RelationGetRelationName(aoInsertDesc->aoi_rel),
+								RelationGetRelid(aoInsertDesc->aoi_rel),
 								aoInsertDesc->title,
 								&aoInsertDesc->storageAttributes,
-								XLogIsNeeded() && RelationNeedsWAL(aoInsertDesc->aoi_rel));
+								XLogIsNeeded() && RelationNeedsWAL(aoInsertDesc->aoi_rel), rel->rd_smgr->smgr_ao);
 
 	aoInsertDesc->storageWrite.compression_functions = fns;
 	aoInsertDesc->storageWrite.compressionState = cs;
@@ -2895,7 +2889,7 @@ appendonly_insert(AppendOnlyInsertDesc aoInsertDesc,
 	 */
 	if (need_toast)
 		tup = memtup_toast_insert_or_update(relation, instup,
-											NULL, aoInsertDesc->mt_bind, 0);
+											NULL, aoInsertDesc->mt_bind, aoInsertDesc->toast_tuple_target, 0);
 	else
 		tup = instup;
 

@@ -89,6 +89,9 @@ CREATE
 create or replace function wait_until_all_segments_synchronized() returns text as $$ begin for i in 1..6000 loop if (select count(*) = 0 from gp_segment_configuration where content != -1 and mode != 's') then return 'OK'; /* in func */ end if; /* in func */ perform pg_sleep(0.1); /* in func */ perform gp_request_fts_probe_scan(); /* in func */ end loop; /* in func */ return 'Fail'; /* in func */ end; /* in func */ $$ language plpgsql;
 CREATE
 
+CREATE OR REPLACE FUNCTION is_query_waiting_for_syncrep(iterations int, check_query text) RETURNS bool AS $$ for i in range(iterations): results = plpy.execute("SELECT gp_execution_segment() AS content, query, wait_event\ FROM gp_dist_random('pg_stat_activity')\ WHERE gp_execution_segment() = 1 AND\ query = '%s' AND\ wait_event = 'SyncRep'" % check_query ) if results: return True return False $$ LANGUAGE plpython3u VOLATILE;
+CREATE
+
 create or replace function wait_for_replication_replay (segid int, retries int) returns bool as $$ declare i int; /* in func */ result bool; /* in func */ begin i := 0; /* in func */ -- Wait until the mirror/standby has replayed up to flush location loop SELECT flush_lsn = replay_lsn INTO result from gp_stat_replication where gp_segment_id = segid; /* in func */ if result then return true; /* in func */ end if; /* in func */ 
 if i >= retries then return false; /* in func */ end if; /* in func */ perform pg_sleep(0.1); /* in func */ perform pg_stat_clear_snapshot(); /* in func */ i := i + 1; /* in func */ end loop; /* in func */ end; /* in func */ $$ language plpgsql;
 CREATE
@@ -112,8 +115,8 @@ if create_slot: cmd += ' --create-slot'
 if slotname is not None: cmd += ' --slot %s' % (slotname) 
 if force_overwrite: cmd += ' --force-overwrite' 
 if xlog_method == 'stream': cmd += ' --wal-method stream' elif xlog_method == 'fetch': cmd += ' --wal-method fetch' else: plpy.error('invalid xlog method') 
-# GPDB_12_MERGE_FIXME: avoid checking checksum for heap tables # till we code logic to skip/verify checksum for # appendoptimized tables. Enabling this results in basebackup # failures with appendoptimized tables. cmd += ' --no-verify-checksums' 
-try: # Unset PGAPPNAME so that the pg_stat_replication.application_name is not affected if os.getenv('PGAPPNAME') is not None: os.environ.pop('PGAPPNAME') results = subprocess.check_output(cmd, stderr=subprocess.STDOUT, shell=True).replace(b'.', b'').decode() except subprocess.CalledProcessError as e: results = str(e) + "\ncommand output: " + str(e.output) 
+cmd += ' --no-verify-checksums' 
+try: # Unset PGAPPNAME so that the pg_stat_replication.application_name is not affected if os.getenv('PGAPPNAME') is not None: os.environ.pop('PGAPPNAME') results = subprocess.check_output(cmd, stderr=subprocess.STDOUT, shell=True).replace(b'.', b'').decode() except subprocess.CalledProcessError as e: results = str(e) + "\ncommand output: " + (e.output.decode()) 
 return results $$ language plpython3u;
 CREATE
 
@@ -135,4 +138,31 @@ CREATE
 
 -- Helper function that ensures stats collector receives stat from the latest operation.
 create or replace function wait_until_dead_tup_change_to(relid oid, stat_val_expected bigint) returns text as $$ declare stat_val int; /* in func */ i int; /* in func */ begin i := 0; /* in func */ while i < 1200 loop select pg_stat_get_dead_tuples(relid) into stat_val; /* in func */ if stat_val = stat_val_expected then /* in func */ return 'OK'; /* in func */ end if; /* in func */ perform pg_sleep(0.1); /* in func */ perform pg_stat_clear_snapshot(); /* in func */ i := i + 1; /* in func */ end loop; /* in func */ return 'Fail'; /* in func */ end; /* in func */ $$ language plpgsql;
+CREATE
+
+-- Helper function that ensures mirror of the specified contentid is down.
+create or replace function wait_for_mirror_down(contentid smallint, timeout_sec integer) returns bool as $$ declare i int; /* in func */ begin /* in func */ i := 0; /* in func */ loop /* in func */ perform gp_request_fts_probe_scan(); /* in func */ if (select count(1) from gp_segment_configuration where role='m' and content=$1 and status='d') = 1 then /* in func */ return true; /* in func */ end if; /* in func */ if i >= 2 * $2 then /* in func */ return false; /* in func */ end if; /* in func */ perform pg_sleep(0.5); /* in func */ i = i + 1; /* in func */ end loop; /* in func */ end; /* in func */ $$ language plpgsql;
+CREATE
+
+-- Helper function that ensures stats collector receives stat from the latest operation.
+create or replace function wait_until_vacuum_count_change_to(relid oid, stat_val_expected bigint) returns text as $$ declare stat_val int; /* in func */ i int; /* in func */ begin i := 0; /* in func */ while i < 1200 loop select pg_stat_get_vacuum_count(relid) into stat_val; /* in func */ if stat_val = stat_val_expected then /* in func */ return 'OK'; /* in func */ end if; /* in func */ perform pg_sleep(0.1); /* in func */ perform pg_stat_clear_snapshot(); /* in func */ i := i + 1; /* in func */ end loop; /* in func */ return 'Fail'; /* in func */ end; /* in func */ $$ language plpgsql;
+CREATE
+
+-- Helper function to get the number of blocks in a relation.
+CREATE OR REPLACE FUNCTION nblocks(rel regclass) RETURNS int AS $$ /* in func */ BEGIN /* in func */ RETURN pg_relation_size(rel) / current_setting('block_size')::int; /* in func */ END; $$ /* in func */ LANGUAGE PLPGSQL;
+CREATE
+
+-- Helper function to populate logical heap pages in a certain block sequence.
+-- Can be used for both heap and AO/CO tables. The target block sequence into
+-- which we insert the pages depends on the session which is inserting the data.
+-- This is currently meant to be used with a single column integer table.
+--
+-- Sample usage: SELECT populate_pages('foo', 1, tid '(33554435,0)')
+-- This will insert tuples with value=1 into a single QE such that logical
+-- heap blocks [33554432, 33554434] will be full and 33554435 will have only
+-- 1 tuple.
+--
+-- Note: while using this with AO/CO tables, please account for how the block
+-- sequences start/end based on the concurrency level (see AOSegmentGet_startHeapBlock())
+CREATE OR REPLACE FUNCTION populate_pages(relname text, value int, upto tid) RETURNS VOID AS $$ /* in func */ DECLARE curtid tid; /* in func */ BEGIN /* in func */ LOOP /* in func */ EXECUTE format('INSERT INTO %I VALUES($1) RETURNING ctid', relname) INTO curtid USING value; /* in func */ EXIT WHEN curtid > upto; /* in func */ END LOOP; /* in func */ END; $$ /* in func */ LANGUAGE PLPGSQL;
 CREATE

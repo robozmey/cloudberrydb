@@ -1,8 +1,9 @@
 create schema qp_subquery;
 set search_path to qp_subquery;
+set optimizer_trace_fallback to on;
 begin;
 CREATE TABLE SUBSELECT_TBL1 (f1 integer, f2 integer, f3 float);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'f1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO SUBSELECT_TBL1 VALUES (1, 2, 3); 
 INSERT INTO SUBSELECT_TBL1 VALUES (2, 3, 4); 
@@ -70,6 +71,8 @@ SELECT '' AS three, f1, f2
   				FROM SUBSELECT_TBL1
   				WHERE (f1, f2) NOT IN (SELECT f2, CAST(f3 AS int4) FROM SUBSELECT_TBL1
                          	WHERE f3 IS NOT NULL) ORDER BY 2,3;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  three | f1 | f2 
 -------+----+----
        |  1 |  2
@@ -139,6 +142,8 @@ SELECT '' AS five, f1 AS "Correlated Field"
                                 FROM SUBSELECT_TBL1
                                 WHERE (f1, f2) IN (SELECT f2, CAST(f3 AS int4) FROM SUBSELECT_TBL1
                                 WHERE f3 IS NOT NULL);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  five | Correlated Field 
 ------+------------------
       |                3
@@ -150,7 +155,7 @@ SELECT '' AS five, f1 AS "Correlated Field"
 
 begin;
 create table join_tab1 ( i integer, j integer, t text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO join_tab1 VALUES (1, 4, 'one');
 ANALYZE join_tab1;
@@ -165,7 +170,7 @@ INSERT INTO join_tab1 VALUES (0, NULL, 'zero');
 INSERT INTO join_tab1 VALUES (NULL, NULL, 'null');
 INSERT INTO join_tab1 VALUES (NULL, 0, 'zero');
 create table join_tab2 ( i integer, k integer);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO join_tab2 VALUES (1, -1);
 ANALYZE join_tab2;
@@ -288,7 +293,7 @@ select 'abc' = any('{abc,d,e}');
 
                          
 create table subq_abc(a int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into subq_abc values(1);
 insert into subq_abc values(9);
@@ -379,7 +384,7 @@ select 33.4 > all (array[1,2,3]);
 (1 row)
 
 create table emp_list(empid int,name char(20),sal float); 
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'empid' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'empid' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into emp_list values(1,'empone',1000); 
 insert into emp_list values(2,'emptwo',2000); 
@@ -419,7 +424,7 @@ select name from emp_list where sal<(select avg(sal) from emp_list);
 
                       
 CREATE TABLE subq_test1 (s1 INT, s2 CHAR(5), s3 FLOAT);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 's1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 's1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO subq_test1 VALUES (1,'1',1.0); 
 INSERT INTO subq_test1 VALUES (2,'2',2.0);
@@ -450,7 +455,7 @@ select g2,count(*) from (select I, count(*) as g2 from join_tab1 group by I) as 
 
 begin;
 create table join_tab4 ( i integer, j integer, t text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'i' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into join_tab4 values (1,7,'sunday'); 
 insert into join_tab4 values (2,6,'monday');
@@ -507,12 +512,12 @@ FROM subselect_tbl1 out;
                                       QUERY PLAN                                      
 --------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
-   ->  Seq Scan on subselect_tbl1
+   ->  Seq Scan on subselect_tbl1 "out"
          SubPlan 1
            ->  Result
                  ->  Limit
                        ->  Result
-                             One-Time Filter: (subselect_tbl1.f1 > 0)
+                             One-Time Filter: ("out".f1 > 0)
                              ->  Materialize
                                    ->  Broadcast Motion 3:3  (slice2; segments: 3)
                                          ->  Hash Join
@@ -551,20 +556,20 @@ FROM join_tab1 out1, join_tab2 out2;
    ->  Nested Loop
          Join Filter: true
          ->  Broadcast Motion 3:3  (slice2; segments: 3)
-               ->  Seq Scan on join_tab1
-         ->  Seq Scan on join_tab2
+               ->  Seq Scan on join_tab1 out1
+         ->  Seq Scan on join_tab2 out2
          SubPlan 1
            ->  Result
                  ->  Limit
                        ->  Result
-                             One-Time Filter: (join_tab1.i = join_tab2.i)
+                             One-Time Filter: (out1.i = out2.i)
                              ->  Materialize
                                    ->  Broadcast Motion 3:3  (slice3; segments: 3)
                                          ->  Hash Join
-                                               Hash Cond: (join_tab1_1.i = join_tab2_1.i)
-                                               ->  Seq Scan on join_tab1 join_tab1_1
+                                               Hash Cond: (join_tab1.i = join_tab2.i)
+                                               ->  Seq Scan on join_tab1
                                                ->  Hash
-                                                     ->  Seq Scan on join_tab2 join_tab2_1
+                                                     ->  Seq Scan on join_tab2
  Optimizer: Pivotal Optimizer (GPORCA)
 (19 rows)
 
@@ -690,12 +695,12 @@ FROM subselect_tbl1 out;
 ----------------------------------------------------------------------------------------------
  Result
    ->  Gather Motion 3:1  (slice1; segments: 3)
-         ->  Seq Scan on subselect_tbl1
+         ->  Seq Scan on subselect_tbl1 "out"
    SubPlan 1
      ->  Result
            ->  Limit
                  ->  Nested Loop Left Join
-                       Join Filter: ((join_tab1.i = join_tab2.i) AND (subselect_tbl1.f1 > 0))
+                       Join Filter: ((join_tab1.i = join_tab2.i) AND ("out".f1 > 0))
                        ->  Materialize
                              ->  Gather Motion 3:1  (slice3; segments: 3)
                                    ->  Seq Scan on join_tab1
@@ -733,19 +738,19 @@ FROM join_tab1 out1, join_tab2 out2;
          ->  Nested Loop
                Join Filter: true
                ->  Broadcast Motion 3:3  (slice2; segments: 3)
-                     ->  Seq Scan on join_tab1
-               ->  Seq Scan on join_tab2
+                     ->  Seq Scan on join_tab1 out1
+               ->  Seq Scan on join_tab2 out2
    SubPlan 1
      ->  Result
            ->  Limit
                  ->  Nested Loop Left Join
-                       Join Filter: ((join_tab1_1.i = join_tab2_1.i) AND (join_tab1.i = join_tab2.i))
+                       Join Filter: ((join_tab1.i = join_tab2.i) AND (out1.i = out2.i))
                        ->  Materialize
                              ->  Gather Motion 3:1  (slice4; segments: 3)
-                                   ->  Seq Scan on join_tab1 join_tab1_1
+                                   ->  Seq Scan on join_tab1
                        ->  Materialize
                              ->  Gather Motion 3:1  (slice3; segments: 3)
-                                   ->  Seq Scan on join_tab2 join_tab2_1
+                                   ->  Seq Scan on join_tab2
  Optimizer: Pivotal Optimizer (GPORCA)
 (19 rows)
 
@@ -864,6 +869,8 @@ create table Tbl8352_t2(a int, b int) distributed by (a);
 insert into Tbl8352_t1 values(1,null),(null,1),(1,1),(null,null);
 insert into Tbl8352_t2 values(1,1);
 select * from Tbl8352_t1 where (Tbl8352_t1.a,Tbl8352_t1.b) not in (select Tbl8352_t2.a,Tbl8352_t2.b from Tbl8352_t2);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
 (0 rows)
@@ -873,6 +880,8 @@ create table Tbl8352_t2a(a int, b int) distributed by (a);
 insert into Tbl8352_t1a values(1,2),(3,null),(null,4),(null,null);
 insert into Tbl8352_t2a values(1,2);
 select * from Tbl8352_t1a where (Tbl8352_t1a.a,Tbl8352_t1a.b) not in (select Tbl8352_t2a.a,Tbl8352_t2a.b from Tbl8352_t2a) order by 1,2;
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 |  
@@ -880,12 +889,16 @@ select * from Tbl8352_t1a where (Tbl8352_t1a.a,Tbl8352_t1a.b) not in (select Tbl
 (2 rows)
 
 select (1,null::int) not in (select 1,1);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  ?column? 
 ----------
  
 (1 row)
 
 select (3,null::int) not in (select 1,1);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  ?column? 
 ----------
  t
@@ -893,16 +906,16 @@ select (3,null::int) not in (select 1,1);
 
 begin;
 create table t1(a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table t2(a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table t3(a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table t4(a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into t1 values(1,2);
 analyze t1;
@@ -916,10 +929,10 @@ insert into t3 values(1,2);
 insert into t3 values(3,4);
 insert into t4 values(1,2);
 create table i1(a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table i2(a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into i1 values(1,2);
 analyze i1;
@@ -928,18 +941,24 @@ commit;
 -- not in subquery involving vars from different rels with inner join
 --
 select t1.a, t2.b from t1, t2 where t1.a=t2.a and ((t1.a,t2.b) not in (select i1.a,i1.b from i1));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
 (1 row)
 
 select t1.a, t2.b from t1 inner join t2 on  (t1.a=t2.a and ((t1.a,t2.b) not in (select i1.a,i1.b from i1)));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
 (1 row)
 
 select t1.a, t2.b from t1 inner join t2 on  (t1.a=t2.a) where ((t1.a,t2.b) not in (select i1.a,i1.b from i1));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -947,6 +966,8 @@ select t1.a, t2.b from t1 inner join t2 on  (t1.a=t2.a) where ((t1.a,t2.b) not i
 
 -- unsupported case
 explain select t1.a, t2.b from t1, t2 where t1.a=t2.a or ((t1.a,t2.b) not in (select i1.a,i1.b from i1));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
                                            QUERY PLAN                                           
 ------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=10000000000.00..10000000002.10 rows=3 width=8)
@@ -965,6 +986,8 @@ explain select t1.a, t2.b from t1, t2 where t1.a=t2.a or ((t1.a,t2.b) not in (se
 -- not in subquery involving vars from different rels with left join. 
 --
 select t1.a, t2.b from t1 left join t2 on  (t1.a=t2.a) where ((t1.a,t2.b) not in (select i1.a,i1.b from i1));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -972,6 +995,8 @@ select t1.a, t2.b from t1 left join t2 on  (t1.a=t2.a) where ((t1.a,t2.b) not in
 (2 rows)
 
 select t1.a, t2.b from t1 left join t2 on  (t1.a=t2.a and ((t1.a,t2.b) not in (select i1.a,i1.b from i1)));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  1 |  
@@ -983,6 +1008,8 @@ select t1.a, t2.b from t1 left join t2 on  (t1.a=t2.a and ((t1.a,t2.b) not in (s
 -- not in subquery involving vars from different rels with outer join
 --
 select t1.a, t2.b from t1 full outer join t2 on  (t1.a=t2.a) where ((t1.a,t2.b) not in (select i1.a,i1.b from i1));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -992,6 +1019,8 @@ select t1.a, t2.b from t1 full outer join t2 on  (t1.a=t2.a) where ((t1.a,t2.b) 
 
 -- not in subquery with a row var in FULL JOIN condition
 select t1.a, t2.b from t1 full outer join t2 on  (t1.a=t2.a and ((t1.a,t2.b) not in (select i1.a,i1.b from i1))); 
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1014,14 +1043,14 @@ select t1.a,t2.b from t1 left join (t2 inner join t3 on (t3.a not in (select t4.
 
 begin;
 create table Tbl01(a int, b int, c int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into Tbl01 values(1,2,3);
 insert into Tbl01 values(4,5,6);
 insert into Tbl01 values(7,8,9);
 insert into Tbl01 values(null,11,12);
 create table Tbl03(a int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into Tbl03 values(1),(4);
 create or replace function foo(int) returns int as $$
@@ -1046,7 +1075,7 @@ select Tbl01.* from Tbl01 where foo(Tbl01.a) not in (select a from Tbl03);
 (1 row)
 
 create table Tbl02 as select Tbl01.*,foo(Tbl01.a) as foo from Tbl01;
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column(s) named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 select Tbl02.* from Tbl02 where foo not in (select a from Tbl03);
  a | b  | c  | foo 
@@ -1082,6 +1111,8 @@ commit;
 --
 -- non-nullability due to inner join
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b from Tbl05,Tbl06 where Tbl05.a=Tbl06.a and Tbl05.b < 10); -- expected: (3,4),(5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1089,6 +1120,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b
 (2 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b from Tbl07 inner join Tbl08 on (Tbl07.a=Tbl08.a and Tbl07.b=Tbl08.b) inner join i3 on (i3.a=Tbl08.a and i3.b=Tbl08.b)); -- expected:(3,4), (5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1097,6 +1130,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b
 
 -- non-nullability due to where clause condition
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b from Tbl05 where Tbl05.a < 2 and Tbl05.b < 10); -- expected: (3,4), (5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1104,6 +1139,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b
 (2 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b from Tbl07 left join Tbl08 on (Tbl07.a=Tbl08.a) where Tbl07.a = 1 and Tbl07.b = 2); -- expected: (3,4),(5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1112,12 +1149,16 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b
 
 -- not null condition in the where clause
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b from Tbl07 full outer join Tbl08 on (Tbl07.a=Tbl08.a) where Tbl07.a is not null and Tbl07.b is not null); -- (5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  5 | 6
 (1 row)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b from Tbl07 left join Tbl08 on (Tbl07.a=Tbl08.a) where Tbl07.a is not null and Tbl07.b is not null); -- (5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  5 | 6
@@ -1125,6 +1166,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b
 
 -- or clauses that should lead to non-nullability
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b from Tbl05 where (Tbl05.a < 2 or Tbl05.a > 100) AND (Tbl05.b < 4 or Tbl05.b > 100)); -- expected: (3,4), (5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1133,6 +1176,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b
 
 -- base-table constraints
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a,i3.b from i3); -- expected: (3,4),(5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1140,6 +1185,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a,i3.b from 
 (2 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b from Tbl05,i3 where	Tbl05.a = i3.a and	Tbl05.b = i3.b);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1147,6 +1194,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b
 (2 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b from Tbl05,i3 where Tbl05.a < i3.a and Tbl05.b > i3.b);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1156,6 +1205,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b
 
 -- non-null constant values
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select 1,2); -- (3,4),(5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1171,6 +1222,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in ((1,2));
 
 -- multiple NOT-IN expressions
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl06.a,Tbl06.b from Tbl06) and (Tbl04.a,Tbl04.b) not in (select i3.a, i3.b from i3); -- expected: (5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  5 | 6
@@ -1178,6 +1231,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl06.a,Tbl06.b
 
 explain (costs off)
 select Tbl04.* from Tbl04 where not ((Tbl04.a,Tbl04.b) in (select Tbl06.a,Tbl06.b from Tbl06) or (Tbl04.a,Tbl04.b) in (select i3.a, i3.b from i3));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
                                 QUERY PLAN                                
 --------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
@@ -1196,6 +1251,8 @@ select Tbl04.* from Tbl04 where not ((Tbl04.a,Tbl04.b) in (select Tbl06.a,Tbl06.
 (13 rows)
 
 select Tbl04.* from Tbl04 where not ((Tbl04.a,Tbl04.b) in (select Tbl06.a,Tbl06.b from Tbl06) or (Tbl04.a,Tbl04.b) in (select i3.a, i3.b from i3)); -- expected: (5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  5 | 6
@@ -1228,6 +1285,8 @@ select Tbl04.* from Tbl04 where Tbl04.a NOT IN (select Tbl05.a from	Tbl05 left	j
 --
 -- No where clause
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b from Tbl05); -- expected: (3,4), (5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1236,29 +1295,39 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b
 
 -- INDF in the where clause
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b from Tbl07,Tbl08 where Tbl07.a is not distinct from Tbl08.a and Tbl07.b is not distinct from Tbl08.b); -- no rows
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
 (0 rows)
 
 -- null conditions in the where clause
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b from Tbl07 left join Tbl08 on (Tbl07.a=Tbl08.a and Tbl07.b=Tbl08.b) where Tbl07.a is null and Tbl07.b is null); -- no rows
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
 (0 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b from Tbl07 full outer join Tbl08 on (Tbl07.a=Tbl08.a and Tbl07.b=Tbl08.b) where Tbl07.a is null and Tbl07.b is null); -- no rows
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
 (0 rows)
 
 -- OR clauses that should not lead to non-nullability
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl07.a,Tbl07.b from Tbl07,Tbl08 where Tbl07.a is not distinct from Tbl08.a or Tbl07.a=1); -- no rows
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
 (0 rows)
 
 -- values list: we don't support it yet. not worth the effort.
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (values(1,2),(3,4)); -- (3,4),(5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  5 | 6
@@ -1266,6 +1335,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (values(1,2),(3,4)); --
 
 -- functions/ops in the target list of the subquery
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a+2,i3.b+2 from i3); -- expected: (5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  1 | 2
@@ -1282,6 +1353,8 @@ select Tbl09.a, Tbl09.b from Tbl09;
 (3 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl09.a,Tbl09.b from Tbl09); -- expected: (3,4)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1296,12 +1369,16 @@ select Tbl09.a, Tbl09.b from Tbl09 group by Tbl09.a, Tbl09.b;
 (3 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl09.a, Tbl09.b from Tbl09 group by Tbl09.a, Tbl09.b); -- expected: (3,4)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
 (1 row)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select sum(i3.b),i3.a from i3 group by i3.a); -- (1,2),(3,4),(5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  1 | 2
@@ -1311,6 +1388,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select sum(i3.b),i3.a 
 
 -- infering not-nullability for only one of the columns
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a,Tbl05.b from i3,Tbl05 where	i3.a=Tbl05.a); -- (3,4),(5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1318,6 +1397,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a,Tbl05.b fr
 (2 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) NOT IN (select i3.a,i3.b from Tbl07 left join i3 on (i3.a=Tbl07.a and i3.b=Tbl07.b) where i3.a > 2);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1330,22 +1411,30 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) NOT IN (select i3.a,i3.b from 
 -- Started supporting since RIO
 --
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a,i3.b from i3 union select Tbl07.a, Tbl07.b from Tbl07); -- nulls in the inner side, should not return any rows
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
 (0 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a,i3.b from i3 union all select Tbl07.a, Tbl07.b from Tbl07); -- nulls in the innder side, should not return any rows
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
 (0 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select 1,2 union select 3,4); --(5,6)
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  5 | 6
 (1 row)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a,i3.b from i3) or (Tbl04.a,Tbl04.b) not in (select Tbl07.a, Tbl07.b from Tbl07);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1354,6 +1443,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a,i3.b from 
 
 -- Cases where the planner "should have" determined not-nullabitlity
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a,i3.b from i3 left join Tbl07 on (i3.a=Tbl07.a and i3.b=Tbl07.b));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1361,6 +1452,8 @@ select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select i3.a,i3.b from 
 (2 rows)
 
 select Tbl04.* from Tbl04 where (Tbl04.a,Tbl04.b) not in (select Tbl05.a,Tbl05.b from Tbl05 where (Tbl05.a IN (select i3.a from i3)) AND (Tbl05.b IN (select i3.b from i3)));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  a | b 
 ---+---
  3 | 4
@@ -1375,12 +1468,16 @@ insert into Tbl04 values(3,4);
 create table Tbl10(x int, y int);
 insert into Tbl10 values(1,null);
 select * from Tbl04 where (x,y) not in (select x,y from Tbl10);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  x | y 
 ---+---
  3 | 4
 (1 row)
 
 select * from Tbl04 where (x,y) not in (select 1,y from Tbl10);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  x | y 
 ---+---
  3 | 4
@@ -1394,6 +1491,8 @@ select * from tbl10 where y not in (select 1 where false);
 
 alter table Tbl10 alter column x set not null;
 select * from Tbl04 where (x,y) not in (select x,y from Tbl10);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
  x | y 
 ---+---
  3 | 4
@@ -1401,13 +1500,13 @@ select * from Tbl04 where (x,y) not in (select x,y from Tbl10);
 
 begin;
 create table TblText1(a text, b text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table TblText2(a text, b text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table TblText3(a text, b text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into TblText1 values('rob', 'klopp');
 insert into TblText1 values('florian','waas');
@@ -1418,6 +1517,8 @@ insert into TblText3 values('florian','waas');
 insert into TblText3 values('oak','barrett');
 commit;
 SELECT TblText1.a, TblText2.b FROM TblText1 JOIN TblText2 ON TblText1.a = TblText2.a WHERE ((NOT (TblText1.a, TblText2.b) IN (SELECT TblText3.a, TblText3.b FROM TblText3)));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
    a    |    b     
 --------+----------
  tushar | pednekar
@@ -1425,6 +1526,8 @@ SELECT TblText1.a, TblText2.b FROM TblText1 JOIN TblText2 ON TblText1.a = TblTex
 (2 rows)
 
 SELECT TblText1.a, TblText2.b FROM TblText1 JOIN TblText2 ON TblText1.a = TblText2.a WHERE (( (TblText1.a, TblText2.b) IN (SELECT TblText3.a, TblText3.b FROM TblText3)));
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-Scalar Subquery
     a    |    b    
 ---------+---------
  florian | waas
@@ -1448,8 +1551,8 @@ explain delete from TabDel1 where TabDel1.a not in (select a from TabDel3); -- d
 ---------------------------------------------------------------------------------------------------
  Delete on tabdel1  (cost=0.00..862.04 rows=1 width=1)
    ->  Hash Left Anti Semi (Not-In) Join  (cost=0.00..862.00 rows=1 width=18)
-         Hash Cond: (tabdel1_1.a = tabdel3.a)
-         ->  Seq Scan on tabdel1 tabdel1_1  (cost=0.00..431.00 rows=1 width=18)
+         Hash Cond: (tabdel1.a = tabdel3.a)
+         ->  Seq Scan on tabdel1  (cost=0.00..431.00 rows=1 width=18)
          ->  Hash  (cost=431.00..431.00 rows=1 width=4)
                ->  Broadcast Motion 3:3  (slice1; segments: 3)  (cost=0.00..431.00 rows=1 width=4)
                      ->  Seq Scan on tabdel3  (cost=0.00..431.00 rows=1 width=4)
@@ -1461,8 +1564,8 @@ explain delete from TabDel2 where TabDel2.a not in (select a from TabDel4); -- s
 ---------------------------------------------------------------------------------------------------
  Delete on tabdel2  (cost=0.00..862.03 rows=1 width=1)
    ->  Hash Left Anti Semi (Not-In) Join  (cost=0.00..862.00 rows=1 width=18)
-         Hash Cond: (tabdel2_1.a = tabdel4.a)
-         ->  Seq Scan on tabdel2 tabdel2_1  (cost=0.00..431.00 rows=1 width=18)
+         Hash Cond: (tabdel2.a = tabdel4.a)
+         ->  Seq Scan on tabdel2  (cost=0.00..431.00 rows=1 width=18)
          ->  Hash  (cost=431.00..431.00 rows=3 width=4)
                ->  Broadcast Motion 3:3  (slice1; segments: 3)  (cost=0.00..431.00 rows=3 width=4)
                      ->  Seq Scan on tabdel4  (cost=0.00..431.00 rows=1 width=4)
@@ -1481,17 +1584,17 @@ select * from TabDel2;
 --
 begin;
 create table TblUp1(a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into TblUp1 values(1,2),(3,4),(5,6);
 create table TblUp2 as select * from TblUp1;
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
 create table TblUp3(a int, b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into TblUp3 values(1,2);
 create table TblUp4(a int not null, b int not null);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into TblUp4 values(1,2);
 commit;
@@ -1519,13 +1622,13 @@ select * from TblUp2;
 --
 begin;
 create table subselect_tab1 (a int, b text, c int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table subselect_tab2 (a int, b int, c int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table subselect_tab3 (a int, b text, c int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into subselect_tab1 VALUES (100, 'false', 1);
 insert into subselect_tab1 VALUES (200, 'true', 2);
@@ -1590,15 +1693,19 @@ SELECT * FROM subselect_tab3 WHERE (NOT EXISTS(SELECT c FROM subselect_tab2)) IN
 -- Test to verify that planner for subqueries, generates different copy of SubPlans referring to the same initplan
 -- and does not Assert on the subplan's being same
 create table append_rel(att1 int, att2 int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'att1' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'att1' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table append_rel1(att3 int) INHERITS (append_rel);
 NOTICE:  table has parent, setting distribution columns to match parent table
 create table append_rel2(att4 int) INHERITS(append_rel);
 NOTICE:  table has parent, setting distribution columns to match parent table
 insert into append_rel values(1,10),(2,20),(3,30);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
 analyze append_rel;
 explain with test as (select * from (select * from append_rel) p where att1 in (select att1 from append_rel where att2 >= 19) ) select att2 from append_rel where att1 in (select att1 from test where att2 <= 21);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
                                                           QUERY PLAN                                                          
 ------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=2296.15..4165.55 rows=51935 width=4)
@@ -1633,6 +1740,8 @@ explain with test as (select * from (select * from append_rel) p where att1 in (
 (29 rows)
 
 with test as (select * from (select * from append_rel) p where att1 in (select att1 from append_rel where att2 >= 19) ) select att2 from append_rel where att1 in (select att1 from test where att2 <= 21);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Inherited tables
  att2 
 ------
    20
@@ -1645,13 +1754,13 @@ NOTICE:  table "temp_a" does not exist, skipping
 NOTICE:  table "temp_b" does not exist, skipping
 NOTICE:  table "temp_c" does not exist, skipping
 create table temp_a (a int ,b int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table temp_b (b int ,c int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'b' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'b' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 create table temp_c (c int, d int);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c' as the Cloudberry Database data distribution key for this table.
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c' as the Apache Cloudberry data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 insert into temp_a values (1,2), (2,3), (3,4), (4,7), (5,19), (6,13), (7,23), (7,17);
 insert into temp_b values (1,2), (2,2), (3,2), (4,2), (5,3), (6,3), (7,3), (8,3), (10,4);
@@ -1675,5 +1784,338 @@ select sum(case when b in (select b from temp_b where EXISTS (select sum(d) from
    4 |   6
 (1 row)
 
+-- Check that predicate with set-returning function is not pushed down
+create table table_with_array_column (an_array_column double precision[]);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'an_array_column' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into table_with_array_column values (array[1.1, 2.2]);
+explain (costs off)
+select *
+from (
+  select unnest(t1.an_array_column) unnested_array_column
+  from table_with_array_column t1, table_with_array_column t2) zz
+where unnested_array_column is not null;
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: (NOT ((unnest(t1.an_array_column)) IS NULL))
+         ->  ProjectSet
+               ->  Nested Loop
+                     Join Filter: true
+                     ->  Seq Scan on table_with_array_column t1
+                     ->  Materialize
+                           ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                                 ->  Seq Scan on table_with_array_column t2
+ Optimizer: Pivotal Optimizer (GPORCA)
+(11 rows)
+
+select *
+from (
+  select unnest(t1.an_array_column) unnested_array_column
+  from table_with_array_column t1, table_with_array_column t2) zz
+where unnested_array_column is not null;
+ unnested_array_column 
+-----------------------
+                   1.1
+                   2.2
+(2 rows)
+
+-- check that predicate is not pushed through a projected non-correlated subquery
+create table subquery_nonpush_through_1(a int, b int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table subquery_nonpush_through_2(a int, b int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+explain (costs off)
+select *
+from(
+  select (subquery_nonpush_through_1.a in (select a from subquery_nonpush_through_2))::text as xx, subquery_nonpush_through_1.b
+  from subquery_nonpush_through_1,subquery_nonpush_through_2) t
+where xx='dd';
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Result
+         Filter: ((((hashed SubPlan 1))::text) = 'dd'::text)
+         ->  Nested Loop
+               Join Filter: true
+               ->  Seq Scan on subquery_nonpush_through_1
+               ->  Materialize
+                     ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                           ->  Seq Scan on subquery_nonpush_through_2
+               SubPlan 1
+                 ->  Result
+                       ->  Result
+                             ->  Materialize
+                                   ->  Broadcast Motion 3:3  (slice3; segments: 3)
+                                         ->  Seq Scan on subquery_nonpush_through_2 subquery_nonpush_through_2_1
+ Optimizer: Pivotal Optimizer (GPORCA)
+(19 rows)
+
+select *
+from(
+  select (subquery_nonpush_through_1.a in (select a from subquery_nonpush_through_2))::text as xx, subquery_nonpush_through_1.b
+  from subquery_nonpush_through_1,subquery_nonpush_through_2) t
+where xx='dd';
+ xx | b 
+----+---
+(0 rows)
+
+-- Ensure we produce a hashed subplan when there are no outer references
+CREATE TABLE a1 AS (
+    SELECT * FROM generate_series(1, 5) AS a1)
+    WITH data distributed replicated;
+CREATE TABLE a2 AS (
+    SELECT * FROM generate_series(1, 10) AS a1)
+    WITH data distributed BY (a1);
+CREATE TABLE a3 AS (
+	SELECT a1, row_to_json(a2) AS rj FROM a2)
+	WITH data distributed BY (a1);
+INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner
+DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Whole-row variable
+-- explain "verbose" is needed to show that the subplan is hashed
+explain (verbose, costs off) select a1,case when a2 in (select a1::text from a1 where a1 is not null) then 'true' else 'false' end as checkcol
+from (
+      select a1,rj->>'a1'::text as a2
+      from a3
+      )t;
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   Output: a3.a1, (CASE WHEN (hashed SubPlan 1) THEN 'true'::text ELSE 'false'::text END)
+   ->  Seq Scan on qp_subquery.a3
+         Output: a3.a1, CASE WHEN (hashed SubPlan 1) THEN 'true'::text ELSE 'false'::text END
+         SubPlan 1
+           ->  Result
+                 Output: ((a1.a1)::text)
+                 ->  Result
+                       Output: (a1.a1)::text, true
+                       ->  Seq Scan on qp_subquery.a1
+                             Output: a1.a1
+                             Filter: (NOT (a1.a1 IS NULL))
+ Optimizer: GPORCA
+(13 rows)
+
+select a1,case when a2 in (select a1::text from a1 where a1 is not null) then 'true' else 'false' end as checkcol
+from (
+      select a1,rj->>'a1'::text as a2
+      from a3
+      )t;
+ a1 | checkcol 
+----+----------
+  2 | true
+  3 | true
+  4 | true
+  7 | false
+  8 | false
+  1 | true
+  5 | true
+  6 | false
+  9 | false
+ 10 | false
+(10 rows)
+
+-- check various [NOT] EXISTS subqueries on materialized views
+create table t (a int, b int) distributed by (a);
+insert into t values (1, 1), (2, NULL), (NULL, 3);
+create materialized view v as select a, b from t distributed randomly;
+select * from v where exists (select a from v);
+ a | b 
+---+---
+ 2 |  
+   | 3
+ 1 | 1
+(3 rows)
+
+select * from v where exists (select a from v limit 0);
+ a | b 
+---+---
+(0 rows)
+
+select * from v where exists (select a from v where a=2);
+ a | b 
+---+---
+ 2 |  
+   | 3
+ 1 | 1
+(3 rows)
+
+select * from v where exists (select a from v where a<>2);
+ a | b 
+---+---
+ 2 |  
+   | 3
+ 1 | 1
+(3 rows)
+
+select * from v where not exists (select a from v);
+ a | b 
+---+---
+(0 rows)
+
+select * from v where not exists (select a from v limit 0);
+ a | b 
+---+---
+ 2 |  
+   | 3
+ 1 | 1
+(3 rows)
+
+select * from v where not exists (select a from v where a=2);
+ a | b 
+---+---
+(0 rows)
+
+select * from v where not exists (select a from v where a<>2);
+ a | b 
+---+---
+(0 rows)
+
+select * from v where exists (select b from v);
+ a | b 
+---+---
+ 2 |  
+   | 3
+ 1 | 1
+(3 rows)
+
+select * from v where exists (select b from v limit 0);
+ a | b 
+---+---
+(0 rows)
+
+select * from v where exists (select b from v where b=2);
+ a | b 
+---+---
+(0 rows)
+
+select * from v where exists (select b from v where b<>2);
+ a | b 
+---+---
+ 2 |  
+   | 3
+ 1 | 1
+(3 rows)
+
+select * from v where not exists (select b from v);
+ a | b 
+---+---
+(0 rows)
+
+select * from v where not exists (select b from v limit 0);
+ a | b 
+---+---
+ 2 |  
+   | 3
+ 1 | 1
+(3 rows)
+
+select * from v where not exists (select b from v where b=2);
+ a | b 
+---+---
+ 2 |  
+   | 3
+ 1 | 1
+(3 rows)
+
+select * from v where not exists (select b from v where b<>2);
+ a | b 
+---+---
+(0 rows)
+
+-- Check that a query having pattern of Select-Project-NaryJoin,
+-- also containing a Select predicate condition with the same pattern nested in a subquery runs
+CREATE TABLE tab1(a TEXT, b TEXT) DISTRIBUTED RANDOMLY;
+INSERT INTO tab1 SELECT i,i FROM GENERATE_SERIES(1,3)i;
+SELECT * FROM (SELECT BTRIM(p1.b) AS param FROM tab1 p1 JOIN tab1 p2 USING(a)) t1
+WHERE EXISTS
+          (SELECT 1 FROM
+              (SELECT BTRIM(p1.b) AS param FROM tab1 p1 JOIN tab1 p2 USING(a)) t2
+           WHERE t2.param = t1.param);
+ param 
+-------
+ 3
+ 1
+ 2
+(3 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT BTRIM(p1.b) AS param FROM tab1 p1 JOIN tab1 p2 USING(a)) t1
+WHERE EXISTS
+          (SELECT 1 FROM
+              (SELECT BTRIM(p1.b) AS param FROM tab1 p1 JOIN tab1 p2 USING(a)) t2
+           WHERE t2.param = t1.param);
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Hash Semi Join
+         Hash Cond: (btrim(p1.b) = btrim(p1_1.b))
+         ->  Hash Join
+               Hash Cond: (p1.a = p2.a)
+               ->  Seq Scan on tab1 p1
+                     Filter: (NOT (btrim(b) IS NULL))
+               ->  Hash
+                     ->  Broadcast Motion 3:3  (slice2; segments: 3)
+                           ->  Seq Scan on tab1 p2
+         ->  Hash
+               ->  Broadcast Motion 3:3  (slice3; segments: 3)
+                     ->  Hash Join
+                           Hash Cond: (p1_1.a = p2_1.a)
+                           ->  Seq Scan on tab1 p1_1
+                           ->  Hash
+                                 ->  Broadcast Motion 3:3  (slice4; segments: 3)
+                                       ->  Seq Scan on tab1 p2_1
+ Optimizer: GPORCA
+(19 rows)
+
+-- Check that a query having pattern of Select-Project-NaryJoin,
+-- also containing a Select predicate condition with the same pattern nested in a subquery runs when subplan is enforced
+SET optimizer_enforce_subplans TO on;
+SELECT * FROM (SELECT BTRIM(p1.b) AS param FROM tab1 p1 JOIN tab1 p2 USING(a)) t1
+WHERE EXISTS
+          (SELECT 1 FROM
+              (SELECT BTRIM(p1.b) AS param FROM tab1 p1 JOIN tab1 p2 USING(a)) t2
+           WHERE t2.param = t1.param);
+ param 
+-------
+ 2
+ 1
+ 3
+(3 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM (SELECT BTRIM(p1.b) AS param FROM tab1 p1 JOIN tab1 p2 USING(a)) t1
+WHERE EXISTS
+          (SELECT 1 FROM
+              (SELECT BTRIM(p1.b) AS param FROM tab1 p1 JOIN tab1 p2 USING(a)) t2
+           WHERE t2.param = t1.param);
+                                       QUERY PLAN                                        
+-----------------------------------------------------------------------------------------
+ Hash Join
+   Hash Cond: (p1.a = p2_1.a)
+   ->  Result
+         Filter: (SubPlan 1)
+         ->  Gather Motion 3:1  (slice1; segments: 3)
+               ->  Seq Scan on tab1 p1
+                     Filter: (NOT (btrim(b) IS NULL))
+         SubPlan 1
+           ->  Result
+                 Filter: (btrim(p1_1.b) = btrim(p1.b))
+                 ->  Materialize
+                       ->  Gather Motion 3:1  (slice2; segments: 3)
+                             ->  Hash Join
+                                   Hash Cond: (p1_1.a = p2.a)
+                                   ->  Seq Scan on tab1 p1_1
+                                   ->  Hash
+                                         ->  Broadcast Motion 3:3  (slice3; segments: 3)
+                                               ->  Seq Scan on tab1 p2
+   ->  Hash
+         ->  Gather Motion 3:1  (slice4; segments: 3)
+               ->  Seq Scan on tab1 p2_1
+ Optimizer: GPORCA
+(22 rows)
+
+reset optimizer_enforce_subplans;
 set client_min_messages='warning';
 drop schema qp_subquery cascade;
+reset optimizer_trace_fallback;

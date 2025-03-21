@@ -29,7 +29,8 @@ class GpCoordinatorEnvironment:
         """
         if coordinatorDataDir is None:
             self.__coordinatorDataDir = gp.get_coordinatordatadir()
-        else: self.__coordinatorDataDir = coordinatorDataDir
+        else:
+            self.__coordinatorDataDir = coordinatorDataDir
 
         logger.debug("Obtaining coordinator's port from coordinator data directory")
         pgconf_dict = pgconf.readfile(self.__coordinatorDataDir + "/postgresql.conf")
@@ -42,7 +43,7 @@ class GpCoordinatorEnvironment:
         self.__gpVersion = gp.GpVersion.local('local DB software version check',self.__gpHome)
         
         if verbose:
-            logger.info("local CloudberryDB Version: '%s'" % self.__gpVersion)
+            logger.info("local Cloudberry Version: '%s'" % self.__gpVersion)
 
         # read collation settings from coordinator
         if readFromCoordinatorCatalog:
@@ -51,7 +52,7 @@ class GpCoordinatorEnvironment:
 
             # MPP-13807, read/show the coordinator's database version too
             self.__pgVersion = dbconn.queryRow(conn, "select version();")[0]
-            logger.info("coordinator CloudberryDB Version: '%s'" % self.__pgVersion)
+            logger.info("coordinator Cloudberry Version: '%s'" % self.__pgVersion)
             conn.close()
         else:
             self.__pgVersion = None

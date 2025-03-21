@@ -2,7 +2,6 @@
  * dbsize.c
  *		Database object size functions, and related inquiries
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Copyright (c) 2002-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -642,7 +641,7 @@ calculate_table_size(Relation rel)
 	if (OidIsValid(rel->rd_rel->reltoastrelid))
 		size += calculate_toast_table_size(rel->rd_rel->reltoastrelid);
 
-	if (RelationIsAppendOptimized(rel))
+	if (RelationStorageIsAO(rel))
 	{
 		Oid	auxRelIds[3];
 		GetAppendOnlyEntryAuxOids(rel, &auxRelIds[0],
@@ -656,9 +655,20 @@ calculate_table_size(Relation rel)
 			if (!OidIsValid(auxRelIds[i]))
 				continue;
 
-			auxRel = try_relation_open(auxRelIds[i], AccessShareLock, false);
-			size += calculate_total_relation_size(auxRel);
-			relation_close(auxRel, AccessShareLock);
+			if ((auxRel = try_relation_open(auxRelIds[i], AccessShareLock, false)) != NULL)
+			{
+				size += calculate_total_relation_size(auxRel);
+				relation_close(auxRel, AccessShareLock);
+			}
+			else
+			{
+				/*
+				 * This error may occur when the auxiliary relations' records of
+				 * the appendonly table are corrupted.
+				 */
+				elog(ERROR, "invalid auxiliary relation oid %u for appendonly relation '%s'",
+							auxRelIds[i], rel->rd_rel->relname.data);
+			}
 		}
 	}
 

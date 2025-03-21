@@ -32,6 +32,13 @@ namespace gpopt
 {
 using namespace gpos;
 
+// Scan direction of the index
+enum EIndexScanDirection
+{
+	EBackwardScan = 0,
+	EForwardScan,
+	EisdSentinel
+};
 // forward declaration
 class CColRefSet;
 class CKeyCollection;
@@ -56,11 +63,6 @@ public:
 		EspMedium,	// operator has medium priority for stat derivation
 		EspHigh		// operator has high priority for stat derivation
 	};
-
-private:
-	// private copy ctor
-	CLogical(const CLogical &);
-
 
 protected:
 	// set of locally used columns
@@ -156,7 +158,8 @@ protected:
 	// compute order spec based on an index
 	static COrderSpec *PosFromIndex(CMemoryPool *mp, const IMDIndex *pmdindex,
 									CColRefArray *colref_array,
-									const CTableDescriptor *ptabdesc);
+									const CTableDescriptor *ptabdesc,
+									EIndexScanDirection scan_direction);
 
 	// derive function properties using data access property of scalar child
 	static CFunctionProp *PfpDeriveFromScalar(CMemoryPool *mp,
@@ -168,6 +171,8 @@ protected:
 											 CColRefSet *pcrsUsedAdditional);
 
 public:
+	CLogical(const CLogical &) = delete;
+
 	// ctor
 	explicit CLogical(CMemoryPool *mp);
 
@@ -250,9 +255,6 @@ public:
 	virtual CFunctionProp *DeriveFunctionProperties(
 		CMemoryPool *mp, CExpressionHandle &exprhdl) const;
 
-	virtual CTableDescriptor *DeriveTableDescriptor(
-		CMemoryPool *mp, CExpressionHandle &exprhdl) const;
-
 	//-------------------------------------------------------------------------------------
 	// Derived Stats
 	//-------------------------------------------------------------------------------------
@@ -276,12 +278,6 @@ public:
 	virtual CColRefSet *PcrsStat(CMemoryPool *mp, CExpressionHandle &exprhdl,
 								 CColRefSet *pcrsInput,
 								 ULONG child_index) const = 0;
-
-	// compute partition predicate to pass down to n-th child
-	virtual CExpression *PexprPartPred(CMemoryPool *mp,
-									   CExpressionHandle &exprhdl,
-									   CExpression *pexprInput,
-									   ULONG child_index) const;
 
 	//-------------------------------------------------------------------------------------
 	// Transformations
@@ -327,9 +323,6 @@ public:
 
 	// returns the table descriptor for (Dynamic)(BitmapTable)Get operators
 	static CTableDescriptor *PtabdescFromTableGet(COperator *pop);
-
-	// returns the output columns for selected operator
-	static CColRefArray *PoutputColsFromTableGet(COperator *pop);
 
 	// extract the output columns descriptor from a logical get or dynamic get operator
 	static CColRefArray *PdrgpcrOutputFromLogicalGet(CLogical *pop);

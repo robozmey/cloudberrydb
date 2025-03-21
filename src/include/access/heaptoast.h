@@ -4,7 +4,6 @@
  *	  Heap-specific definitions for external and compressed storage
  *	  of variable size attributes.
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Copyright (c) 2000-2021, PostgreSQL Global Development Group
  *
  * src/include/access/heaptoast.h
@@ -104,7 +103,7 @@
  */
 extern HeapTuple heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup, int options);
 extern MemTuple memtup_toast_insert_or_update(Relation rel, MemTuple newtup, MemTuple oldtup,
-											  MemTupleBinding *pbind, int options);
+											  MemTupleBinding *pbind, int toast_tuple_target, int options);
 
 /* ----------
  * heap_toast_delete -

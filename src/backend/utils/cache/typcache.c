@@ -31,7 +31,6 @@
  * constraint changes are also tracked properly.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -73,6 +72,7 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 #include "cdb/cdbvars.h"
+#include "cdb/cdbendpoint.h"
 
 
 /* The main type cache hashtable searched by lookup_type_cache */
@@ -1915,6 +1915,30 @@ lookup_rowtype_tupdesc_domain(Oid type_id, int32 typmod, bool noError)
 	if (tupDesc != NULL)
 		PinTupleDesc(tupDesc);
 	return tupDesc;
+}
+
+/*
+ * GPDB: In order to reuse the retrieve conn for different endpoints,
+ * it is necessary to detach from the old session DSM segment during
+ * start_retrieve(), which will invalidate the record cache. The record
+ * cache of the retrieve connection is a pointer to the shared memory
+ * segment, so we can directly reset the RecordCacheArray.
+ */
+void
+reset_record_cache(void)
+{
+	if (RecordCacheArray != NULL)
+	{
+		Assert(RecordCacheArrayLen != 0);
+		Assert(RecordIdentifierArray != NULL);
+
+		pfree(RecordCacheArray);
+		pfree(RecordIdentifierArray);
+
+		RecordCacheArray = NULL;
+		RecordIdentifierArray = NULL;
+		RecordCacheArrayLen = 0;
+	}
 }
 
 /*

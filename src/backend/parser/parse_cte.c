@@ -171,7 +171,7 @@ transformWithClause(ParseState *pstate, WithClause *withClause)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("only one modifying WITH clause allowed per query"),
-						 errdetail("Cloudberry Database currently only support CTEs with one writable clause."),
+						 errdetail("Apache Cloudberry currently only support CTEs with one writable clause."),
 						 errhint("Rewrite the query to only include one writable CTE clause.")));
 
 			pstate->p_hasModifyingCTE = true;
@@ -1137,19 +1137,7 @@ checkWellFormedRecursionWalker(Node *node, CteState *cstate)
 		checkWellFormedRecursionWalker(sl->testexpr, cstate);
 		return false;
 	}
-	if (IsA(node, RangeSubselect))
-	{
-		RangeSubselect *rs = (RangeSubselect *) node;
 
-		/*
-		 * we intentionally override outer context, since subquery is
-		 * independent
-		 */
-		cstate->context = RECURSION_SUBLINK;
-		checkWellFormedRecursionWalker(rs->subquery, cstate);
-		cstate->context = save_context;
-		return false;
-	}
 	return raw_expression_tree_walker(node,
 									  checkWellFormedRecursionWalker,
 									  (void *) cstate);
@@ -1249,30 +1237,57 @@ checkSelfRefInRangeSubSelect(SelectStmt *stmt, CteState *cstate)
 }
 
 /*
- * Check if the recursive term of a recursive cte contains a window function.
- * This is currently not supported and is checked for in the parsing stage
+ * GPDB:
+ * Check if the recursive term of a recursive cte contains a window function
+ * or ordered set aggregate function (special aggs). This is currently not
+ * supported and is checked for in the parsing stage. Refer to dicussion:
+ * https://groups.google.com/a/greenplum.org/g/gpdb-dev/c/GIYw6t-uX7s
  */
+typedef struct CTEWindowAggSearchContext
+{
+	bool       found; /* flag to show if we have found */
+	FuncCall  *func;  /* if found is true, this field is the Agg */
+} CTEWindowAggSearchContext;
+
+static bool
+cte_window_agg_walker(Node *node, CTEWindowAggSearchContext *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, FuncCall))
+	{
+		FuncCall *fc = (FuncCall *) node;
+		if (fc->over != NULL)
+		{
+			context->found = true;
+			context->func  = fc;
+
+			return true;
+		}
+	}
+
+	return raw_expression_tree_walker(node, cte_window_agg_walker, context);
+}
+
 static void
 checkWindowFuncInRecursiveTerm(SelectStmt *stmt, CteState *cstate)
 {
-	ListCell *lc;
-	foreach(lc, stmt->targetList)
+	CTEWindowAggSearchContext context;
+
+	context.found = false;
+	context.func  = NULL;
+
+	(void) raw_expression_tree_walker((Node *) stmt->targetList,
+									  cte_window_agg_walker,
+									  (void *) &context);
+
+	if (context.found)
 	{
-		if (IsA((Node *) lfirst(lc), ResTarget))
-		{
-			ResTarget *rt = (ResTarget *) lfirst(lc);
-			if (IsA(rt->val, FuncCall))
-			{
-				FuncCall *fc = (FuncCall *) rt->val;
-				if (fc->over != NULL)
-				{
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("window functions in a recursive query is not implemented"),
-							 parser_errposition(cstate->pstate,
-												exprLocation((Node *) fc))));
-				}
-			}
-		}
+		ereport(ERROR,
+				(errcode(ERRCODE_GP_FEATURE_NOT_YET),
+				 errmsg("window functions in the target list of a recursive query is not supported"),
+				 parser_errposition(cstate->pstate,
+									exprLocation((Node *) context.func))));
 	}
 }

@@ -4,7 +4,6 @@
  *	  Routines to support inter-object dependencies.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -70,6 +69,7 @@
 #include "catalog/pg_type.h"
 #include "catalog/pg_type_encoding.h"
 #include "catalog/pg_user_mapping.h"
+#include "catalog/storage_directory_table.h"
 #include "commands/comment.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
@@ -1489,12 +1489,22 @@ doDeletion(const ObjectAddress *object, int flags)
 				}
 				else
 				{
+					bool 		drop_with_content = (flags & PERFORM_DELETION_WITH_CONTENT) != 0;
+
 					if (object->objectSubId != 0)
 						RemoveAttributeById(object->objectId,
 											object->objectSubId);
 					else
 					{
 						heap_drop_with_catalog(object->objectId);
+
+						/*
+						 * Remove driectory table file conteng
+						 */
+						if (drop_with_content)
+						{
+							DirectoryTableDropStorage(object->objectId);
+						}
 						
 						/*
 						 * Delete tag description.

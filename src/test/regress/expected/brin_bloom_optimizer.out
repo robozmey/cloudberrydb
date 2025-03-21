@@ -307,6 +307,7 @@ WARNING:  did not get seqscan plan for (int8col,=,int8,1257141600,1)
 WARNING:  did not get seqscan plan for (intervalcol,=,interval,"1 mons 13 days 12:24",1)
 WARNING:  did not get seqscan plan for (lsncol,=,pg_lsn,44/455222,1)
 WARNING:  did not get seqscan plan for (macaddrcol,=,macaddr,2c:00:2d:00:16:00,2)
+WARNING:  did not get seqscan plan for (namecol,=,name,MAAAAA,2)
 WARNING:  did not get seqscan plan for (numericcol,=,numeric,2268164.347826086956521739130434782609,1)
 WARNING:  did not get seqscan plan for (oidcol,=,oid,8800,1)
 WARNING:  did not get seqscan plan for (textcol,=,text,BNAAAABNAAAABNAAAABNAAAABNAAAABNAAAABNAAAABNAAAA,1)
@@ -360,7 +361,7 @@ CONTEXT:  SQL function "brin_summarize_new_values" statement 1
 SELECT brin_summarize_new_values('brinidx_bloom'); -- ok, no change expected (except for ORCA, which uses split updates)
  brin_summarize_new_values 
 ---------------------------
-                        25
+                         0
 (1 row)
 
 -- Tests for brin_desummarize_range
@@ -401,21 +402,30 @@ END;
 $$;
 -- summarize one range
 SELECT brin_summarize_range('brin_summarize_bloom_idx', 0);
-ERROR:  Cloudberry could not summarize indicated page range
-CONTEXT:  SQL function "brin_summarize_range" statement 1
+ brin_summarize_range 
+----------------------
+                    0
+(1 row)
+
 -- nothing: already summarized
 SELECT brin_summarize_range('brin_summarize_bloom_idx', 1);
-ERROR:  Cloudberry could not summarize indicated page range
-CONTEXT:  SQL function "brin_summarize_range" statement 1
+ brin_summarize_range 
+----------------------
+                    0
+(1 row)
+
 -- summarize one range
 SELECT brin_summarize_range('brin_summarize_bloom_idx', 2);
-ERROR:  Cloudberry could not summarize indicated page range
-CONTEXT:  SQL function "brin_summarize_range" statement 1
+ brin_summarize_range 
+----------------------
+                    1
+(1 row)
+
 -- nothing: page doesn't exist in table
 SELECT brin_summarize_range('brin_summarize_bloom_idx', 4294967295);
  brin_summarize_range 
 ----------------------
-                    1
+                    0
 (1 row)
 
 -- invalid block number values

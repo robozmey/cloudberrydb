@@ -226,7 +226,7 @@ CREATE TABLE test_inherits4(b text) INHERITS(dir_table1, dir_table2);   -- fail
 
 -- Test DROP DIRECTORY TABLE
 DROP DIRECTORY TABLE dir_table4;
-DROP DIRECTORY TABLE dir_table4;    -- fail
+DROP DIRECTORY TABLE dir_table4;
 DROP DIRECTORY TABLE IF EXISTS dir_table5;
 DROP DIRECTORY TABLE IF EXISTS dir_table5;  -- skip
 
@@ -318,6 +318,19 @@ SELECT relative_path, size, tag FROM dir_table2 ORDER BY 1;
 \COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation3' WITH TAG 'nation2';    -- fail
 \COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation4' WITH TAG 'nation';
 \COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation5' WITH TAG 'nation' WITH TAG 'nation2';    -- fail
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation6';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation7';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation8';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation9';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation10';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation11';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation12';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation13';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation14';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation15';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation16';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation17';
+\COPY BINARY dir_table1 FROM '@abs_srcdir@/data/nation.csv' 'nation18';
 SELECT relative_path, size, tag FROM dir_table1 ORDER BY 1;
 SELECT relative_path, content FROM directory_table('dir_table1') ORDER BY 1;
 
@@ -634,6 +647,14 @@ COPY BINARY dir_table4 FROM '@abs_srcdir@/data/nation.csv' 'nation_subrollback6'
 SELECT relative_path, tag FROM dir_table4 ORDER BY 1;
 SAVEPOINT s2;
 ROLLBACK;
+
+-- test create directory table with location
+CREATE DIRECTORY TABLE dir_table_with_location TABLESPACE directory_tblspc WITH LOCATION '/test_dirtable';
+CREATE DIRECTORY TABLE dir_table_with_location2 TABLESPACE directory_tblspc WITH LOCATION '/test_dirtable'; -- error
+CREATE DIRECTORY TABLE dir_table_with_location3 WITH LOCATION '/test_dirtable';
+SELECT count(*) FROM pg_directory_table;
+DROP DIRECTORY TABLE dir_table_with_location WITH CONTENT;
+DROP DIRECTORY TABLE dir_table_with_location3 WITH CONTENT;
 
 -- clean up
 DROP DIRECTORY TABLE IF EXISTS dir_table1;

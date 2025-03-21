@@ -2,8 +2,6 @@
  *
  * gpextprotocol.c
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
- *
  * IDENTIFICATION
  *          contrib/extprotocol/gpextprotocol.c
  *
@@ -63,8 +61,8 @@ static void check_ext_options(const FunctionCallInfo fcinfo)
 			char *key = def->defname;
 			char *value = defGetString(def);
 
-			if (key && strcasestr(key, "database") && !strcasestr(value, "greenplum")) {
-					ereport(ERROR, errmsg("This is greenplum."));
+			if (key && strcasestr(key, "database") && !strcasestr(value, "cloudberry")) {
+					ereport(ERROR, errmsg("This is cloudberry."));
 			}
         }
 }

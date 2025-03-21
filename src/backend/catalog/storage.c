@@ -3,7 +3,6 @@
  * storage.c
  *	  code to create and destroy physical storage for relations
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -213,8 +212,7 @@ RelationDropStorage(Relation rel)
 	pending->relnode.isTempRelation = rel->rd_backend == TempRelBackendId;
 	pending->atCommit = true;	/* delete if commit */
 	pending->nestLevel = GetCurrentTransactionNestLevel();
-	pending->relnode.smgr_which =
-		RelationIsAppendOptimized(rel) ? SMGR_AO : SMGR_MD;
+	pending->relnode.smgr_which = smgr_get_impl(rel);
 	pending->action = &storage_pending_rel_deletes_action;
 	RegisterPendingDelete(pending);
 

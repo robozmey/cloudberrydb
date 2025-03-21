@@ -14,7 +14,6 @@
  * contain optimizable statements, which we should transform.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
@@ -293,12 +292,12 @@ transformOptionalSelectInto(ParseState *pstate, Node *parseTree)
 		SelectStmt *stmt = (SelectStmt *) parseTree;
 
 		/*
-		 * CloudberryDB specific behavior:
+		 * Cloudberry specific behavior:
 		 * The implementation of select statement with locking clause
 		 * (for update | no key update | share | key share) in postgres
 		 * is to hold RowShareLock on tables during parsing stage, and
 		 * generate a LockRows plan node for executor to lock the tuples.
-		 * It is not easy to lock tuples in Cloudberry database, since
+		 * It is not easy to lock tuples in Apache Cloudberry, since
 		 * tuples may be fetched through motion nodes.
 		 *
 		 * But when Global Deadlock Detector is enabled, and the select
@@ -528,7 +527,7 @@ transformDeleteStmt(ParseState *pstate, DeleteStmt *stmt)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("writable CTE queries cannot be themselves writable"),
-					 errdetail("Cloudberry Database currently only support CTEs with one writable clause, called in a non-writable context."),
+					 errdetail("Apache Cloudberry currently only support CTEs with one writable clause, called in a non-writable context."),
 					 errhint("Rewrite the query to only include one writable clause.")));
 	}
 
@@ -631,7 +630,7 @@ transformInsertStmt(ParseState *pstate, InsertStmt *stmt)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("writable CTE queries cannot be themselves writable"),
-					 errdetail("Cloudberry Database currently only support CTEs with one writable clause, called in a non-writable context."),
+					 errdetail("Apache Cloudberry currently only support CTEs with one writable clause, called in a non-writable context."),
 					 errhint("Rewrite the query to only include one writable clause.")));
 	}
 
@@ -679,7 +678,7 @@ transformInsertStmt(ParseState *pstate, InsertStmt *stmt)
 	}
 
 	/*
-	 * CloudberryDB specific behavior.
+	 * Cloudberry specific behavior.
 	 * conflict update may lock tuples on segments and behaves like
 	 * update. So we might consider if to upgrade lockmode for this
 	 * case.
@@ -701,6 +700,12 @@ transformInsertStmt(ParseState *pstate, InsertStmt *stmt)
 	/* Validate stmt->cols list, or build default list if no list given */
 	icolumns = checkInsertTargets(pstate, stmt->cols, &attrnos);
 	Assert(list_length(icolumns) == list_length(attrnos));
+
+	/* GPDB: We don't support speculative insert for AO/CO tables yet */
+	if (RelationIsAppendOptimized(pstate->p_target_relation) && stmt->onConflictClause)
+		ereport(ERROR,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("INSERT ON CONFLICT is not supported for appendoptimized relations"));
 
 	/*
 	 * Determine which variant of INSERT we have.
@@ -1003,7 +1008,7 @@ transformInsertStmt(ParseState *pstate, InsertStmt *stmt)
 		qry->onConflict = transformOnConflictClause(pstate,
 													stmt->onConflictClause);
 	/*
-	 * CloudberryDB specific behavior.
+	 * Cloudberry specific behavior.
 	 * OnConflictUpdate may modify the distkey of the table,
 	 * this can lead to wrong data distribution. Add a check
 	 * here and raise error for such case.
@@ -2793,7 +2798,7 @@ transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("writable CTE queries cannot be themselves writable"),
-					 errdetail("Cloudberry Database currently only support CTEs with one writable clause, called in a non-writable context."),
+					 errdetail("Apache Cloudberry currently only support CTEs with one writable clause, called in a non-writable context."),
 					 errhint("Rewrite the query to only include one writable clause.")));
 	}
 
@@ -3753,6 +3758,15 @@ transformLockingClause(ParseState *pstate, Query *qry, LockingClause *lc,
 				++i;
 				if (!rte->inFromCl)
 					continue;
+
+				/*
+				 * A join RTE without an alias is not visible as a relation
+				 * name and needs to be skipped (otherwise it might hide a
+				 * base relation with the same name).
+				 */
+				if (rte->rtekind == RTE_JOIN && rte->alias == NULL)
+					continue;
+
 				if (strcmp(rte->eref->aliasname, thisrel->relname) == 0)
 				{
 					switch (rte->rtekind)
@@ -4074,7 +4088,7 @@ checkCanOptSelectLockingClause(SelectStmt *stmt)
 	if (!IS_QUERY_DISPATCHER())
 		return false;
 
-	if (!gp_enable_global_deadlock_detector)
+	if (!gp_enable_global_deadlock_detector && Gp_role != GP_ROLE_UTILITY)
 		return false;
 
 	/*

@@ -20,7 +20,6 @@
  * step 2 ...
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -155,12 +154,12 @@ main(int argc, char *argv[])
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			puts("pg_resetwal (Cloudberry Database) " PG_VERSION);
+			puts("pg_resetwal (Apache Cloudberry) " PG_VERSION);
 			exit(0);
 		}
 		if (strcmp(argv[1], "--gp-version") == 0)
 		{
-			puts("pg_resetwal (Cloudberry Database) " GP_VERSION);
+			puts("pg_resetwal (Apache Cloudberry) " GP_VERSION);
 			exit(0);
 		}
 	}

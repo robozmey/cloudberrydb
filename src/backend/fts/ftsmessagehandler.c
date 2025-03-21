@@ -3,7 +3,6 @@
  * ftsmessagehandler.c
  *	  Implementation of handling of FTS messages
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  *
  *
@@ -28,6 +27,7 @@
 #include "utils/faultinjector.h"
 #include "utils/guc.h"
 #include "replication/gp_replication.h"
+#include "replication/walsender.h"
 #include "storage/fd.h"
 
 #define FTS_PROBE_FILE_NAME "fts_probe_file.bak"
@@ -277,13 +277,15 @@ HandleFtsWalRepProbe(void)
 		if (IS_QUERY_DISPATCHER())
 			ShmemSegmentConfigsCacheReset();
 #endif
-		GetMirrorStatus(&response);
+		bool ready_for_syncrep;
+
+		GetMirrorStatus(&response, &ready_for_syncrep);
 
 		/*
 		 * We check response.IsSyncRepEnabled even though syncrep is again checked
 		 * later in the set function to avoid acquiring the SyncRepLock again.
 		 */
-		if (response.IsMirrorUp && !response.IsSyncRepEnabled)
+		if (!response.IsSyncRepEnabled && ready_for_syncrep)
 		{
 			SetSyncStandbysDefined();
 			/* Syncrep is enabled now, so respond accordingly. */
@@ -313,18 +315,10 @@ HandleFtsWalRepSyncRepOff(void)
 		false, /* RequestRetry */
 	};
 
-	if (FaultInjector_InjectFaultIfSet("fts_probe",
-										   DDLNotSpecified,
-										   "" /* databaseName */,
-										   "" /* tableName */) == FaultInjectorTypeSkip)
-	{
-		SendFtsResponse(&response, FTS_MSG_SYNCREP_OFF);
-	}
-
 	ereport(LOG,
 			(errmsg("turning off synchronous wal replication due to FTS request")));
 	UnsetSyncStandbysDefined();
-	GetMirrorStatus(&response);
+	GetMirrorStatus(&response, NULL);
 
 	SendFtsResponse(&response, FTS_MSG_SYNCREP_OFF);
 }
@@ -393,14 +387,6 @@ HandleFtsWalRepPromote(void)
 	ereport(LOG,
 			(errmsg("promoting mirror to primary due to FTS request")));
 
-	if (FaultInjector_InjectFaultIfSet("fts_probe",
-										   DDLNotSpecified,
-										   "" /* databaseName */,
-										   "" /* tableName */) == FaultInjectorTypeSkip)
-	{
-		goto skip_promote;
-	}
-	
 #ifndef USE_INTERNAL_FTS
 	if (IS_QUERY_DISPATCHER()) {
 		bool succ;
@@ -426,7 +412,8 @@ HandleFtsWalRepPromote(void)
 	 * idempotent way.
 	 */
 	DBState state = GetCurrentDBState();
-	if (state == DB_IN_ARCHIVE_RECOVERY)
+	XLogRecPtr redo = GetRedoRecPtr();
+	if (state == DB_IN_ARCHIVE_RECOVERY && redo != InvalidXLogRecPtr)
 	{
 		/*
 		 * Reset sync_standby_names on promotion. This is to avoid commits
@@ -444,11 +431,17 @@ HandleFtsWalRepPromote(void)
 	}
 	else
 	{
-		elog(LOG, "ignoring promote request, walreceiver not running,"
-			 " DBState = %d", state);
+		/*
+		 * FTS will retry promotion request based on am_mirror reporting
+		 * status.
+		 */
+		elog(LOG, "ignoring promote request, not in archive recovery state,"
+			 " DBState = %d, RedoPtr = %X/%X", state, (uint32) (redo >> 32), (uint32) redo);
 	}
 
+#ifndef USE_INTERNAL_FTS
 skip_promote:
+#endif
 	SendFtsResponse(&response, FTS_MSG_PROMOTE);
 }
 

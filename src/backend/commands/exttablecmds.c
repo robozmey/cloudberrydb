@@ -3,7 +3,6 @@
  * exttablecmds.c
  *	  Commands for creating and altering external tables
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 2005-2010, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
  * Portions Copyright (c) 1996-2008, PostgreSQL Global Development Group
@@ -40,6 +39,7 @@
 #include "cdb/cdbsreh.h"
 
 static char* transformLocationUris(List *locs, bool isweb, bool iswritable);
+static char* escape_uri(char *uri);
 static char* transformExecOnClause(List *on_clause);
 static char transformFormatType(char *formatname);
 static List * transformFormatOpts(char formattype, List *formatOpts, int numcols, bool iswritable);
@@ -119,6 +119,7 @@ DefineExternalRelation(CreateExternalStmt *createExtStmt)
 	createStmt->distributedBy = createExtStmt->distributedBy; /* policy was set in transform */
 	createStmt->ownerid = userid;
 	createStmt->tags = createExtStmt->tags;
+	createStmt->origin = ORIGIN_NO_GEN;
 
 	switch (exttypeDesc->exttabletype)
 	{
@@ -234,9 +235,9 @@ DefineExternalRelation(CreateExternalStmt *createExtStmt)
 				 nodeTag(dencoding->arg));
 	}
 
-	/* If encoding is defaulted, use database encoding */
+	/* If encoding is defaulted, use database server encoding */
 	if (encoding < 0)
-		encoding = pg_get_client_encoding();
+		encoding = GetDatabaseEncoding();
 
 	/*
 	 * If the number of locations (file or http URIs) exceed the number of
@@ -360,6 +361,7 @@ transformLocationUris(List *locs, bool isweb, bool iswritable)
 		Uri		   *uri;
 		char	   *uri_str_orig;
 		char	   *uri_str_final;
+		char	   *uri_str_escape;
 		Value	   *v = lfirst(cell);
 
 		/* get the current URI string from the command */
@@ -466,21 +468,48 @@ transformLocationUris(List *locs, bool isweb, bool iswritable)
 							uri_str_final),
 					 errhint("Specify the explicit path and file name to write into.")));
 
+		uri_str_escape = escape_uri(uri_str_final);
+		pfree(uri_str_final);
 		if (first_uri)
 		{
-			appendStringInfo(&buf, "%s", uri_str_final);
+			appendStringInfo(&buf, "%s", uri_str_escape);
 			first_uri = false;
 		}
 		else
 		{
-			appendStringInfo(&buf, "|%s", uri_str_final);
+			appendStringInfo(&buf, "|%s", uri_str_escape);
 		}
 
 		FreeExternalTableUri(uri);
-		pfree(uri_str_final);
+		pfree(uri_str_escape);
 	}
 
 	return buf.data;
+}
+
+/* Since | is used as a delimiter, need to escape the | in the data,
+ * use \ as escape, and \ itself also needs to be escaped.
+ */
+static char*
+escape_uri(char *uri)
+{
+	size_t len = strlen(uri);
+	char *output = (char *)palloc((len * 2) + 1);
+	int i, j = 0;
+	for (i = 0; uri[i] != '\0'; i++)
+	{
+		if (uri[i] == '|' || uri[i] == '\\')
+		{
+			output[j++] = '\\';
+			output[j++] = uri[i];
+		}
+		else
+		{
+			output[j++] = uri[i];
+		}
+ 	}
+	output[j] = '\0';
+	return output;
 }
 
 static char*
@@ -603,7 +632,7 @@ list_join(List *list, char delimiter)
 		const char *cellval;
 
 		cellval = strVal(lfirst(cell));
-		appendStringInfo(&buf, "%s%c", quote_identifier(cellval), delimiter);
+		appendStringInfo(&buf, "%s%c", cellval, delimiter);
 	}
 
 	/*

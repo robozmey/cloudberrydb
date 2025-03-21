@@ -3113,3 +3113,39 @@ insert into attach_parted_part1 values (2, 1);
 -- ...and doesn't when the partition is detached along with its own partition
 alter table target_parted detach partition attach_parted;
 insert into attach_parted_part1 values (2, 1);
+
+CREATE TABLE IF NOT EXISTS table_issue_15494(c0 boolean NULL);
+ALTER TABLE table_issue_15494 ALTER c0 SET DEFAULT (6>5) IS NULL;
+DROP TABLE table_issue_15494;
+CREATE TABLE IF NOT EXISTS table_issue_15494(c0 boolean);
+ALTER TABLE table_issue_15494 ALTER c0 SET DEFAULT ((1.5::FLOAT) NOTNULL);
+DROP TABLE table_issue_15494;
+
+-- please refer to:  https://github.com/greenplum-db/gpdb/issues/15034
+create table transform_issue_15034(c DECIMAL);
+alter table transform_issue_15034 alter c SET DEFAULT (((0.1)>(0.9) IS UNKNOWN)::INT)::MONEY;
+drop table transform_issue_15034;
+-- please refer to:  https://github.com/greenplum-db/gpdb/issues/16805
+create table IF NOT EXISTS float2double_table(c1 float,c2 float,c3 float);
+create index float2double_table_idx_c1c2c3 on float2double_table(c1,c2,c3);
+create unique index float2double_table_uniqidx_c1c2c3 on float2double_table(c1,c2,c3);
+ALTER TABLE float2double_table ALTER COLUMN c1 TYPE double precision;
+DROP TABLE float2double_table;
+-- Test that altering owner of partition root should recurse into the child tables.
+create role atown_r1;
+create role atown_r2 in role atown_r1;
+set role atown_r2;
+create table atown_part(a int, b int) partition by range(a) (partition p1 start (1) end (100));
+select c.relname, r.rolname from pg_class c join pg_roles r on c.relowner = r.oid where relname like 'atown_part%';
+alter table atown_part owner to atown_r1;
+alter table atown_part add partition start(100) end(200);
+-- both existing and new child tables should have the new owner
+select c.relname, r.rolname from pg_class c join pg_roles r on c.relowner = r.oid where relname like 'atown_part%';
+-- should only alter the partition root with ONLY keyword
+alter table only atown_part owner to atown_r2;
+select c.relname, r.rolname from pg_class c join pg_roles r on c.relowner = r.oid where relname like 'atown_part%';
+
+drop table atown_part;
+reset role;
+drop role atown_r1;
+drop role atown_r2;

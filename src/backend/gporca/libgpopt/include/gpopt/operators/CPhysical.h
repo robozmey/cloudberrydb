@@ -265,10 +265,6 @@ protected:
 												  CDistributionSpec *pds,
 												  ULONG child_index);
 
-	// helper to compute skew estimate based on given stats and distribution spec
-	static CDouble GetSkew(IStatistics *stats, CDistributionSpec *pds);
-
-
 	// return true if the given column set includes any of the columns defined by
 	// the unary node, as given by the handle
 	static BOOL FUnaryUsesDefinedColumns(CColRefSet *pcrs,
@@ -299,6 +295,9 @@ public:
 		CRefCount::SafeRelease(m_phmrcr);
 		CRefCount::SafeRelease(m_pdrgpulpOptReqsExpanded);
 	}
+
+	// helper to compute skew estimate based on given stats and distribution spec
+	static CDouble GetSkew(IStatistics *stats, CDistributionSpec *pds);
 
 	// type of operator
 	BOOL
@@ -349,7 +348,7 @@ public:
 											CDrvdPropArray *pdrgpdpCtxt,
 											ULONG ulOptReq) const = 0;
 
-	// compute required partition propoagation spec of the n-th child
+	// compute required partition propagation spec of the n-th child
 	virtual CPartitionPropagationSpec *PppsRequired(
 		CMemoryPool *mp, CExpressionHandle &exprhdl,
 		CPartitionPropagationSpec *pppsRequired, ULONG child_index,

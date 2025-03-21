@@ -27,7 +27,6 @@ namespace gpopt
 //---------------------------------------------------------------------------
 class CPhysicalLeftOuterHashJoin : public CPhysicalHashJoin
 {
-private:
 public:
 	CPhysicalLeftOuterHashJoin(const CPhysicalLeftOuterHashJoin &) = delete;
 
@@ -35,6 +34,7 @@ public:
 	CPhysicalLeftOuterHashJoin(
 		CMemoryPool *mp, CExpressionArray *pdrgpexprOuterKeys,
 		CExpressionArray *pdrgpexprInnerKeys, IMdIdArray *hash_opfamilies,
+		BOOL is_null_aware = true,
 		CXform::EXformId origin_xform = CXform::ExfSentinel);
 
 	// dtor
@@ -53,6 +53,10 @@ public:
 	{
 		return "CPhysicalLeftOuterHashJoin";
 	}
+
+	// derive distribution
+	CDistributionSpec *PdsDerive(CMemoryPool *mp,
+								 CExpressionHandle &exprhdl) const override;
 
 	// conversion function
 	static CPhysicalLeftOuterHashJoin *

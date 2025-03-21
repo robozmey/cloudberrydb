@@ -4,7 +4,6 @@
  *	  Routines to support inter-object dependencies.
  *
  *
- * Portions Copyright (c) 2023, HashData Technology Limited.
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -169,6 +168,7 @@ typedef enum ObjectClass
 #define PERFORM_DELETION_SKIP_EXTENSIONS	0x0010	/* keep extensions */
 #define PERFORM_DELETION_CONCURRENT_LOCK	0x0020	/* normal drop with
 													 * concurrent lock mode */
+#define PERFORM_DELETION_WITH_CONTENT		0x0040	/* drop directory table file */
 
 
 /* in dependency.c */
@@ -224,6 +224,8 @@ extern void recordMultipleDependencies(const ObjectAddress *depender,
 
 extern void recordDependencyOnCurrentExtension(const ObjectAddress *object,
 											   bool isReplace);
+
+extern void checkMembershipInCurrentExtension(const ObjectAddress *object);
 
 extern long deleteDependencyRecordsFor(Oid classId, Oid objectId,
 									   bool skipExtensionDeps);
