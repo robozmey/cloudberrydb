@@ -1823,7 +1823,7 @@ cdbexplain_showExecStats(struct PlanState *planstate, ExplainState *es)
             appendStringInfoString(es->str, "Rows out: ");
 
             appendStringInfo(es->str,
-                                 "%.2f rows avg x %d workers, %.0f rows max (seg%d), %.0f rows min (seg%d).\n",
+                                 "%.2f rows avg x %dx(0) workers, %.0f rows max (seg%d), %.0f rows min (seg%d).\n",
                                  ntuples_avg,
                                  ntuples_cnt,
                                  ntuples_max,
@@ -1833,6 +1833,7 @@ cdbexplain_showExecStats(struct PlanState *planstate, ExplainState *es)
         }
         else {
             ExplainPropertyInteger("Workers", NULL, ntuples_cnt, es);
+			ExplainPropertyInteger("Subworkers", NULL, 0, es);
             ExplainPropertyFloat("Average Rows", NULL, ntuples_avg, 1, es);
             ExplainPropertyFloat("Max Rows", NULL, ntuples_max, 0, es);
             ExplainPropertyInteger("Max Rows Segment", NULL, ntuples_imax, es);
