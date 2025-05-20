@@ -64,8 +64,9 @@ cdbexplain_agg_upd(CdbExplain_Agg *agg, double v, int id)
         {
             agg->vmax = v;
             agg->imax = id;
-            return true;
         }
+
+        return agg->imin == id || agg->imax == id;
     }
     return false;
 }
