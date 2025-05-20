@@ -988,7 +988,7 @@ abort;
 
 -- test rows out
 begin;
-create table tt (a int, b int) with(parallel_workers=2) distributed by (a);
+create table tt (a int, b int) with(parallel_workers=2) distributed by(a, b);
 insert into tt select * from generate_series(1,1000)a,generate_series(1,1000)b;
 set local enable_parallel = on;
 set local max_parallel_workers_per_gather = 2;

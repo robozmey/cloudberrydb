@@ -231,7 +231,7 @@ set gp_enable_explain_allstat=DEFAULT;
 -- Test explain rows out.
 begin;
 set local gp_enable_explain_rows_out=on;
-create table tt (a int, b int);
+create table tt (a int, b int) distributed by(a, b);
 explain(costs off, summary off, timing off, analyze)
 insert into tt select * from generate_series(1,1000)a,generate_series(1,1000)b;
 explain(costs off, summary off, timing off, analyze)
