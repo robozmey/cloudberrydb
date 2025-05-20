@@ -1808,8 +1808,10 @@ cdbexplain_showExecStats(struct PlanState *planstate, ExplainState *es)
 	if (gp_enable_explain_rows_out && es->analyze && ns->ninst > 0) {
         double ntuples_max = ns->ntuples.vmax;
         int ntuples_imax = ns->ntuples.imax;
+		int ntuples_wmax = ns->ntuples.wmax;
         double ntuples_min = ns->ntuples.vmin;
         int ntuples_imin = ns->ntuples.imin;
+		int ntuples_wmin = ns->ntuples.wmin;
         double ntuples_avg = cdbexplain_agg_avg(&ns->ntuples);
 
 		int segments = ns->ninst;
@@ -1825,14 +1827,16 @@ cdbexplain_showExecStats(struct PlanState *planstate, ExplainState *es)
             appendStringInfoString(es->str, "Rows out: ");
 
             appendStringInfo(es->str,
-                                 "%.2f rows avg x %d workers from %d segments, %.0f rows max (seg%d), %.0f rows min (seg%d).\n",
+                                 "%.2f rows avg x %d workers from %d segments, %.0f rows max (seg%d worker%d), %.0f rows min (seg%d worker%d).\n",
                                  ntuples_avg,
                                  workers,
 								 segments,
                                  ntuples_max,
                                  ntuples_imax,
+								 ntuples_wmax,
                                  ntuples_min,
-                                 ntuples_imin);
+                                 ntuples_imin,
+								 ntuples_wmin);
         }
         else {
             ExplainPropertyInteger("Workers", NULL,workers, es);
@@ -1840,8 +1844,10 @@ cdbexplain_showExecStats(struct PlanState *planstate, ExplainState *es)
             ExplainPropertyFloat("Average Rows", NULL, ntuples_avg, 1, es);
             ExplainPropertyFloat("Max Rows", NULL, ntuples_max, 0, es);
             ExplainPropertyInteger("Max Rows Segment", NULL, ntuples_imax, es);
+			ExplainPropertyInteger("Max Rows Worker", NULL, ntuples_wmax, es);
             ExplainPropertyFloat("Min Rows", NULL, ntuples_min, 0, es);
             ExplainPropertyInteger("Min Rows Segment", NULL, ntuples_imin, es);
+			ExplainPropertyInteger("Min Rows Segment", NULL, ntuples_wmin, es);
         }
     }
 

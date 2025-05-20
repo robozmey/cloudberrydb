@@ -31,6 +31,8 @@ typedef struct
 	int			vcnt;			/* count of values > 0 */
 	int			imax;			/* id of 1st observation having maximum value */
     int			imin;			/* id of 1st observation having minimum value */
+    int			wmax;			/* worker id of 1st observation having maximum value */
+    int			wmin;			/* worker id of 1st observation having minimum value */
 } CdbExplain_Agg;
 
 static inline void
@@ -42,6 +44,8 @@ cdbexplain_agg_init0(CdbExplain_Agg *agg)
     agg->vcnt = 0;
     agg->imax = 0;
     agg->imin = 0;
+    agg->wmax = 0;
+    agg->wmin = 0;
 }
 
 static inline bool
@@ -57,6 +61,7 @@ cdbexplain_agg_upd(CdbExplain_Agg *agg, double v, int id)
         {
             agg->vmin = v;
             agg->imin = id;
+            agg->wmin = agg->vcnt - 1;
         }
 
         if (v > agg->vmax ||
@@ -64,6 +69,7 @@ cdbexplain_agg_upd(CdbExplain_Agg *agg, double v, int id)
         {
             agg->vmax = v;
             agg->imax = id;
+            agg->wmax = agg->vcnt - 1;
         }
 
         return agg->imin == id || agg->imax == id;
