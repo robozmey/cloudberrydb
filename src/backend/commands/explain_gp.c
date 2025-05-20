@@ -1812,8 +1812,8 @@ cdbexplain_showExecStats(struct PlanState *planstate, ExplainState *es)
         int ntuples_imin = ns->ntuples.imin;
         double ntuples_avg = cdbexplain_agg_avg(&ns->ntuples);
 
-		int ninst = ns->ninst;
-		int parallel_workers_per_segment = planstate->plan->parallel;
+		int segments = ns->ninst;
+		int workers = ns->ntuples.vcnt;
 
         if (es->format == EXPLAIN_FORMAT_TEXT)
         {
@@ -1825,18 +1825,18 @@ cdbexplain_showExecStats(struct PlanState *planstate, ExplainState *es)
             appendStringInfoString(es->str, "Rows out: ");
 
             appendStringInfo(es->str,
-                                 "%.2f rows avg x %dx(%d) workers, %.0f rows max (seg%d), %.0f rows min (seg%d).\n",
+                                 "%.2f rows avg x %d workers from %d segments, %.0f rows max (seg%d), %.0f rows min (seg%d).\n",
                                  ntuples_avg,
-                                 ninst,
-								 parallel_workers_per_segment,
+                                 workers,
+								 segments,
                                  ntuples_max,
                                  ntuples_imax,
                                  ntuples_min,
                                  ntuples_imin);
         }
         else {
-            ExplainPropertyInteger("Workers", NULL, ninst, es);
-			ExplainPropertyInteger("Subworkers", NULL, parallel_workers_per_segment, es);
+            ExplainPropertyInteger("Workers", NULL,workers, es);
+			ExplainPropertyInteger("Segments", NULL, segments, es);
             ExplainPropertyFloat("Average Rows", NULL, ntuples_avg, 1, es);
             ExplainPropertyFloat("Max Rows", NULL, ntuples_max, 0, es);
             ExplainPropertyInteger("Max Rows Segment", NULL, ntuples_imax, es);
