@@ -1605,7 +1605,7 @@ cdbexplain_NodeSummary(ExplainState *es, CdbExplain_NodeSummary *ns) {
 
 		appendStringInfoSpaces(es->str, ns_spaces);
 		cdbexplain_formatAgg(aggbuf, sizeof(aggbuf), ns->nloops);
-		appendStringInfo(es->str, "nloops:               %s\n", aggbuf);
+		appendStringInfo(es->str, "nloops:                %s\n", aggbuf);
 
 		appendStringInfoSpaces(es->str, ns_spaces);
 		cdbexplain_formatAgg(aggbuf, sizeof(aggbuf), ns->execmemused);
@@ -1636,7 +1636,7 @@ cdbexplain_NodeSummary(ExplainState *es, CdbExplain_NodeSummary *ns) {
 		appendStringInfoSpaces(es->str, ns_spaces);
 		appendStringInfoString(es->str, "StatInsts:\n");
 		appendStringInfoSpaces(es->str, ns_spaces + 2);
-		appendStringInfoString(es->str, "(segN) pstype starttime counter firsttuple startup total ntuples ntuples nloops nfiltered1 nfiltered2 execmemused workmemused workmemwanted workfileCreated firststart numPartScanned bnotes enotes, nworkers_launched\n");
+		appendStringInfoString(es->str, "(segN) pstype starttime counter firsttuple startup total ntuples ntuples2 nloops nfiltered1 nfiltered2 execmemused workmemused workmemwanted workfileCreated firststart numPartScanned bnotes enotes, nworkers_launched\n");
 	}
 	else {
 		ExplainOpenGroup("CdbExplain_NodeSummary", "CdbExplain_NodeSummary", true, es);
