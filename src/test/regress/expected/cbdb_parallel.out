@@ -3074,6 +3074,14 @@ select t1_anti.a, t1_anti.b from t1_anti left join t2_anti on t1_anti.a = t2_ant
 
 abort;
 -- test rows out
+-- start_matchsubs
+-- m/\(actual rows=\d+ loops=\d+\)/
+-- s/\(actual rows=\d+ loops=\d+\)/(actual rows=# loops=#)/
+-- m/Rows Removed by Filter: \d+/
+-- s/Rows Removed by Filter: \d+/Rows Removed by Filter: ###/
+-- m/\d+ rows max \(seg\d+ worker\d+\), \d+ rows min \(seg\d+ worker\d+\)/
+-- s/\d+ rows max \(seg\d+ worker\d+\), \d+ rows min \(seg\d+ worker\d+\)/##### rows max (seg# worker#), ##### rows min (seg# worker#)/
+-- end_matchsubs
 begin;
 create table tt (a int, b int) with(parallel_workers=2) distributed by(a, b);
 insert into tt select * from generate_series(1,1000)a,generate_series(1,1000)b;
