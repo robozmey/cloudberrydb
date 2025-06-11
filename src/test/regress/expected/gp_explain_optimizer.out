@@ -472,11 +472,11 @@ insert into tt select * from generate_series(1,1000)a,generate_series(1,1000)b;
          Hash Key: a.a, b.b
          Rows out: 333333.33 rows avg x 3 workers from 3 segments, 333518 rows max (seg2 worker2), 333150 rows min (seg1 worker1).
          ->  Nested Loop (actual rows=1000000 loops=1)
-               Rows out: 1000000.00 rows avg x 1 workers from 1 segments, 1000000 rows max (seg2 worker0), 1000000 rows min (seg2 worker0).
+               Rows out: 1000000.00 rows avg x 1 workers from 1 segments, 1000000 rows max (seg0 worker0), 1000000 rows min (seg2 worker0).
                ->  Function Scan on generate_series a (actual rows=1000 loops=1)
-                     Rows out: 1000.00 rows avg x 1 workers from 1 segments, 1000 rows max (seg2 worker0), 1000 rows min (seg2 worker0).
+                     Rows out: 1000.00 rows avg x 1 workers from 1 segments, 1000 rows max (seg0 worker0), 1000 rows min (seg2 worker0).
                ->  Function Scan on generate_series b (actual rows=1000 loops=1000)
-                     Rows out: 1000000.00 rows avg x 1 workers from 1 segments, 1000000 rows max (seg2 worker0), 1000000 rows min (seg2 worker0).
+                     Rows out: 1000000.00 rows avg x 1 workers from 1 segments, 1000000 rows max (seg0 worker0), 1000000 rows min (seg2 worker0).
  Optimizer: Postgres query optimizer
 (12 rows)
 
