@@ -1591,9 +1591,9 @@ cdbexplain_NodeSummary(ExplainState *es, CdbExplain_NodeSummary *ns) {
 	if (es->format == EXPLAIN_FORMAT_TEXT)
 	{
 		/*
-			* create a header for all stats: separate each individual stat by an
-			* underscore, separate the grouped stats for each node by a slash
-			*/
+		 * create a header for all stats: separate each individual stat by an
+		 * underscore, separate the grouped stats for each node by a slash
+		 */
 		appendStringInfoSpaces(es->str, es->indent * 2);
 		appendStringInfoString(es->str, "Node Summary:                  vmax       vsum       vcnt       imax\n");
 
