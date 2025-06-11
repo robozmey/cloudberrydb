@@ -179,10 +179,14 @@ find_typmod_conversion_function(Oid typeId, Oid *funcId)
 
 		*funcId = castForm->castfunc;
 		ReleaseSysCache(tuple);
-	}
 
-	if (!OidIsValid(*funcId))
+		if (!OidIsValid(*funcId))
+			result = CONVERSION_TYPE_NONE;
+	}
+	else
+	{
 		result = CONVERSION_TYPE_NONE;
+	}
 
 	return result;
 }
