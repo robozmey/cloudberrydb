@@ -23,7 +23,7 @@ typedef enum ConversionType
 	CONVERSION_TYPE_RELABEL,
 	CONVERSION_TYPE_VIA_IO,
 	CONVERSION_TYPE_ARRAY,	
-    CONVERSION_TYPE_NONE	
+	CONVERSION_TYPE_NONE	
 } ConversionType;
 
 
@@ -66,23 +66,23 @@ find_conversion_way(Oid targetTypeId, Oid sourceTypeId, Oid *funcId)
 	{
 		Form_pg_cast castForm = (Form_pg_cast) GETSTRUCT(tuple);
 
-        switch (castForm->castmethod)
-        {
-            case COERCION_METHOD_FUNCTION:
-                *funcId = castForm->castfunc;
-                result = CONVERSION_TYPE_FUNC;
-                break;
-            case COERCION_METHOD_INOUT:
-                result = CONVERSION_TYPE_VIA_IO;
-                break;
-            case COERCION_METHOD_BINARY:
-                result = CONVERSION_TYPE_RELABEL;
-                break;
-            default:
-                elog(ERROR, "unrecognized castmethod: %d",
-                        (int) castForm->castmethod);
-                break;
-        }
+		switch (castForm->castmethod)
+		{
+			case COERCION_METHOD_FUNCTION:
+				*funcId = castForm->castfunc;
+				result = CONVERSION_TYPE_FUNC;
+				break;
+			case COERCION_METHOD_INOUT:
+				result = CONVERSION_TYPE_VIA_IO;
+				break;
+			case COERCION_METHOD_BINARY:
+				result = CONVERSION_TYPE_RELABEL;
+				break;
+			default:
+				elog(ERROR, "unrecognized castmethod: %d",
+						(int) castForm->castmethod);
+				break;
+		}
 	
 
 		ReleaseSysCache(tuple);
@@ -183,7 +183,7 @@ find_typmod_conversion_function(Oid typeId, Oid *funcId)
 Datum
 convert_from_function(Datum value, int32 typmod, Oid funcId, bool *is_failed)
 {
-    Datum res = 0;
+	Datum res = 0;
 
 	// ErrorSaveContext escontext = {T_ErrorSaveContext, false};
 
@@ -209,7 +209,7 @@ convert_from_function(Datum value, int32 typmod, Oid funcId, bool *is_failed)
 #endif
 
 
-    return res;
+	return res;
 }
 
 
@@ -218,27 +218,27 @@ convert_via_io(Datum value, Oid sourceTypeId, Oid targetTypeId, int32 targetTypM
 {
 	FmgrInfo outfunc;
 
-    Oid infuncId = InvalidOid;
+	Oid infuncId = InvalidOid;
 	Oid outfuncId = InvalidOid;
 
 	bool outtypisvarlena = false;
-    Oid intypioparam = InvalidOid;
+	Oid intypioparam = InvalidOid;
 
-    /* Perhaps the types are domains; if so, look at their base types */
+	/* Perhaps the types are domains; if so, look at their base types */
 	if (OidIsValid(sourceTypeId))
 		sourceTypeId = getBaseType(sourceTypeId);
 	if (OidIsValid(targetTypeId))
 		targetTypeId = getBaseType(targetTypeId);
 
-    /* lookup the input type's output function */
-    getTypeOutputInfo(sourceTypeId, &outfuncId, &outtypisvarlena);
-    fmgr_info(outfuncId, &outfunc);
+	/* lookup the input type's output function */
+	getTypeOutputInfo(sourceTypeId, &outfuncId, &outtypisvarlena);
+	fmgr_info(outfuncId, &outfunc);
 
-    getTypeInputInfo(targetTypeId, &infuncId, &intypioparam);
+	getTypeInputInfo(targetTypeId, &infuncId, &intypioparam);
 
-    Datum res = 0;
+	Datum res = 0;
 	char* string;
-    bool pushed;
+	bool pushed;
 
 	// ErrorSaveContext escontext = {T_ErrorSaveContext, false};
 
@@ -271,7 +271,7 @@ convert_via_io(Datum value, Oid sourceTypeId, Oid targetTypeId, int32 targetTypM
 	PG_END_TRY();
 #endif
 
-    return res;
+	return res;
 }
 
 
@@ -338,32 +338,32 @@ Datum
 convert(Datum value, ConversionType conversion_type, Oid funcId, Oid sourceTypeId, Oid targetTypeId, int32 targetTypMod, bool *is_failed) {
 	
 	switch (conversion_type)
-    {
-    case CONVERSION_TYPE_RELABEL:
-        return value;
+	{
+	case CONVERSION_TYPE_RELABEL:
+		return value;
 
-    case CONVERSION_TYPE_FUNC:
-        return convert_from_function(value, targetTypMod, funcId, is_failed);
+	case CONVERSION_TYPE_FUNC:
+		return convert_from_function(value, targetTypMod, funcId, is_failed);
 
-    case CONVERSION_TYPE_VIA_IO:
-        return convert_via_io(value, sourceTypeId, targetTypeId, targetTypMod, is_failed);
+	case CONVERSION_TYPE_VIA_IO:
+		return convert_via_io(value, sourceTypeId, targetTypeId, targetTypMod, is_failed);
 
-    case CONVERSION_TYPE_ARRAY:
-        elog(ERROR, "no support for ARRAY CONVERSION");
-        *is_failed = true;
-        break;
+	case CONVERSION_TYPE_ARRAY:
+		elog(ERROR, "no support for ARRAY CONVERSION");
+		*is_failed = true;
+		break;
 
-    case CONVERSION_TYPE_NONE:
+	case CONVERSION_TYPE_NONE:
 		elog(ERROR, "no cast wat found");
-        *is_failed = true;
-        return 0;
-    
-    default:
-        /// TODO RAISE ERROR
-        elog(ERROR, "unrecognized conversion method: %d",
+		*is_failed = true;
+		return 0;
+	
+	default:
+		/// TODO RAISE ERROR
+		elog(ERROR, "unrecognized conversion method: %d",
 						 (int) conversion_type);
-        break;
-    }
+		break;
+	}
 
 	return 0;
 }
@@ -382,14 +382,14 @@ Datum convert_type_typmod(Datum value, int32 sourceTypMod, Oid targetTypeId, int
 Datum
 try_convert(PG_FUNCTION_ARGS)
 {
-    if (fcinfo->args[0].isnull) {
-        PG_RETURN_NULL();
-    }
+	if (fcinfo->args[0].isnull) {
+		PG_RETURN_NULL();
+	}
 
-    Oid sourceTypeId = get_fn_expr_argtype(fcinfo->flinfo, 0);
+	Oid sourceTypeId = get_fn_expr_argtype(fcinfo->flinfo, 0);
 	int32 sourceTypMod = get_fn_expr_argtypmod(fcinfo->flinfo, 0);
 
-    Oid targetTypeId = get_fn_expr_argtype(fcinfo->flinfo, 1);
+	Oid targetTypeId = get_fn_expr_argtype(fcinfo->flinfo, 1);
 	int32 targetTypMod = get_fn_expr_argtypmod(fcinfo->flinfo, 1);
 
 	int32 baseTypMod = targetTypMod;
@@ -399,17 +399,17 @@ try_convert(PG_FUNCTION_ARGS)
 		elog(ERROR, "no support for DOMAIN CONVERSION");
 	}
 
-    Oid funcId;
+	Oid funcId;
 
-    ConversionType conversion_type = find_conversion_way(targetTypeId, sourceTypeId, &funcId);
+	ConversionType conversion_type = find_conversion_way(targetTypeId, sourceTypeId, &funcId);
 
-    Datum value = fcinfo->args[0].value;
+	Datum value = fcinfo->args[0].value;
 
-    Datum res = value;
+	Datum res = value;
 	Oid resTypeId = sourceTypeId;
 	int32 resTypMod = sourceTypMod;
 
-    bool is_failed = false;
+	bool is_failed = false;
 
 	if (conversion_type != CONVERSION_TYPE_RELABEL) {
 
@@ -441,6 +441,6 @@ try_convert(PG_FUNCTION_ARGS)
 		fcinfo->isnull = fcinfo->args[1].isnull;
 		res = fcinfo->args[1].value;
 	}
-    
-    return res;
+	
+	return res;
 }
