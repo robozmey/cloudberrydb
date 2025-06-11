@@ -27,17 +27,24 @@ typedef enum ConversionType
 } ConversionType;
 
 
-ConversionType find_conversion_way(Oid targetTypeId, Oid sourceTypeId, Oid *funcId);
-ConversionType find_typmod_conversion_function(Oid typeId, Oid *funcId);
-Datum convert_from_function(Datum value, int32 typmod, Oid funcId, bool *is_failed);
-Datum convert_via_io(Datum value, Oid sourceTypeId, Oid targetTypeId, int32 targetTypMod, bool *is_failed);
-int32 get_call_expr_argtypmod(Node *expr, int argnum);
-Oid get_fn_expr_argtypmod(FmgrInfo *flinfo, int argnum);
-Datum convert(Datum value, ConversionType conversion_type, Oid funcId, Oid sourceTypeId, Oid targetTypeId, int32 targetTypMod, bool *is_failed);
-Datum convert_type_typmod(Datum value, int32 sourceTypMod, Oid targetTypeId, int32 targetTypMod, bool *is_failed);
+static ConversionType find_conversion_way(Oid targetTypeId, Oid sourceTypeId, Oid *funcId);
+static ConversionType find_typmod_conversion_function(Oid typeId, Oid *funcId);
+static Datum convert_from_function(Datum value, int32 typmod, Oid funcId, bool *is_failed);
+static Datum convert_via_io(Datum value, Oid sourceTypeId, 
+							Oid targetTypeId, int32 targetTypMod, 
+							bool *is_failed);
+static int32 get_call_expr_argtypmod(Node *expr, int argnum);
+static Oid get_fn_expr_argtypmod(FmgrInfo *flinfo, int argnum);
+static Datum convert(Datum value, ConversionType conversion_type, 
+					 Oid funcId, Oid sourceTypeId, 
+					 Oid targetTypeId, int32 targetTypMod, 
+					 bool *is_failed);
+static Datum convert_type_typmod(Datum value, int32 sourceTypMod, 
+								 Oid targetTypeId, int32 targetTypMod, 
+								 bool *is_failed);
 
 
-ConversionType
+static ConversionType
 find_conversion_way(Oid targetTypeId, Oid sourceTypeId, Oid *funcId)
 {
 	ConversionType result = CONVERSION_TYPE_NONE;
@@ -152,7 +159,7 @@ find_conversion_way(Oid targetTypeId, Oid sourceTypeId, Oid *funcId)
 	return result;
 }
 
-ConversionType
+static ConversionType
 find_typmod_conversion_function(Oid typeId, Oid *funcId)
 {
 	ConversionType result;
@@ -180,7 +187,7 @@ find_typmod_conversion_function(Oid typeId, Oid *funcId)
 	return result;
 }
 
-Datum
+static Datum
 convert_from_function(Datum value, int32 typmod, Oid funcId, bool *is_failed)
 {
 	Datum res = 0;
@@ -213,8 +220,10 @@ convert_from_function(Datum value, int32 typmod, Oid funcId, bool *is_failed)
 }
 
 
-Datum
-convert_via_io(Datum value, Oid sourceTypeId, Oid targetTypeId, int32 targetTypMod, bool *is_failed)
+static Datum
+convert_via_io(Datum value, Oid sourceTypeId, 
+			   Oid targetTypeId, int32 targetTypMod, 
+			   bool *is_failed)
 {
 	FmgrInfo outfunc;
 
@@ -281,7 +290,7 @@ convert_via_io(Datum value, Oid sourceTypeId, Oid targetTypeId, int32 targetTypM
  *
  * Returns -1 if information is not available
  */
-int32
+static int32
 get_call_expr_argtypmod(Node *expr, int argnum)
 {
 	List	   *args;
@@ -320,7 +329,7 @@ get_call_expr_argtypmod(Node *expr, int argnum)
  *
  * Returns -1 if information is not available
  */
-Oid
+static Oid
 get_fn_expr_argtypmod(FmgrInfo *flinfo, int argnum)
 {
 	/*
@@ -334,8 +343,12 @@ get_fn_expr_argtypmod(FmgrInfo *flinfo, int argnum)
 }
 
 
-Datum
-convert(Datum value, ConversionType conversion_type, Oid funcId, Oid sourceTypeId, Oid targetTypeId, int32 targetTypMod, bool *is_failed) {
+static Datum
+convert(Datum value, ConversionType conversion_type, 
+		Oid funcId, Oid sourceTypeId, 
+		Oid targetTypeId, int32 targetTypMod, 
+		bool *is_failed)
+{
 	
 	switch (conversion_type)
 	{
@@ -368,7 +381,11 @@ convert(Datum value, ConversionType conversion_type, Oid funcId, Oid sourceTypeI
 	return 0;
 }
 
-Datum convert_type_typmod(Datum value, int32 sourceTypMod, Oid targetTypeId, int32 targetTypMod, bool *is_failed) {
+static Datum
+convert_type_typmod(Datum value, int32 sourceTypMod, 
+					Oid targetTypeId, int32 targetTypMod, 
+					bool *is_failed)
+{
 	if (targetTypMod < 0 || targetTypMod == sourceTypMod)
 		return value;
 
