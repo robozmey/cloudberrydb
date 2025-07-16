@@ -466,10 +466,12 @@ set gp_enable_explain_allstat=DEFAULT;
 -- s/\(cost=\d+.\d+..\d+.\d+ /(cost=X.X..X.X /
 -- m/\(actual time=\d+.\d+..\d+.\d+ rows=\d+ loops=\d+\)/
 -- s/\(actual time=\d+.\d+..\d+.\d+ /(actual time=X.X..X.X /
--- m/"firststart": \d+,/
--- s/"firststart": \d+,/"firststart": XXXXXX,/
--- m/"Actual Total Time": \d+,/
--- s/"Actual Total Time": \d+,/"Actual Total Time": X.XXX,/
+-- m/"firststart": \d+,\s*/
+-- s/"firststart": \d+,\s*/"firststart": XXXXXX, /
+-- m/"Actual Total Time": \d+\.\d+\s*/
+-- s/"Actual Total Time": \d+\.\d+,\s*/"Actual Total Time": X.XXX, /
+-- m/"Actual Startup Time": \d+\.\d+,\s*/
+-- s/"Actual Startup Time": \d+\.\d+,\s*/"Actual Startup Time": X.XXX, /
 -- end_matchsubs
 set gp_enable_explain_node_summary=on;
 explain (analyze, summary off)
@@ -528,8 +530,8 @@ SELECT * FROM explaintest;
        "Total Cost": 1.17,                    +
        "Plan Rows": 10,                       +
        "Plan Width": 4,                       +
-       "Actual Startup Time": 0.000,          +
-       "Actual Total Time": 0.000,            +
+       "Actual Startup Time": X.XXX, +
+       "Actual Total Time": X.XXX, +
        "Actual Rows": 10,                     +
        "Actual Loops": 1,                     +
        "CdbExplain_NodeSummary": {            +
@@ -595,7 +597,7 @@ SELECT * FROM explaintest;
              "workmemused": 0,                +
              "workmemwanted": 0,              +
              "workfileCreated": false,        +
-             "firststart": XXXXXX,            +
+             "firststart": XXXXXX, +
              "numPartScanned": 0,             +
              "bnotes": 0,                     +
              "enotes": 0,                     +
@@ -618,8 +620,8 @@ SELECT * FROM explaintest;
            "Total Cost": 1.03,                +
            "Plan Rows": 3,                    +
            "Plan Width": 4,                   +
-           "Actual Startup Time": 0.000,      +
-           "Actual Total Time": 0.000,        +
+           "Actual Startup Time": X.XXX, +
+           "Actual Total Time": X.XXX, +
            "Actual Rows": 5,                  +
            "Actual Loops": 1,                 +
            "CdbExplain_NodeSummary": {        +
@@ -685,7 +687,7 @@ SELECT * FROM explaintest;
                  "workmemused": 0,            +
                  "workmemwanted": 0,          +
                  "workfileCreated": false,    +
-                 "firststart": XXXXXX,        +
+                 "firststart": XXXXXX, +
                  "numPartScanned": 0,         +
                  "bnotes": 0,                 +
                  "enotes": 0,                 +
@@ -708,7 +710,7 @@ SELECT * FROM explaintest;
                  "workmemused": 0,            +
                  "workmemwanted": 0,          +
                  "workfileCreated": false,    +
-                 "firststart": XXXXXX,        +
+                 "firststart": XXXXXX, +
                  "numPartScanned": 0,         +
                  "bnotes": 0,                 +
                  "enotes": 0,                 +
@@ -731,7 +733,7 @@ SELECT * FROM explaintest;
                  "workmemused": 0,            +
                  "workmemwanted": 0,          +
                  "workfileCreated": false,    +
-                 "firststart": XXXXXX,        +
+                 "firststart": XXXXXX, +
                  "numPartScanned": 0,         +
                  "bnotes": 0,                 +
                  "enotes": 0,                 +
